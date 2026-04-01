@@ -1,20 +1,15 @@
-// Package n2k wraps github.com/boatkit-io/n2k to convert raw CAN frames into
-// decoded NMEA 2000 ParsedMessage values.
+// Package n2k provides the ParsedMessage type and helpers for converting
+// decoded NMEA 2000 structs (from github.com/open-ships/n2k) into a
+// canonical form suitable for buffering, filtering, and forwarding.
 package n2k
 
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"reflect"
-	"sync"
 	"time"
 
-	"github.com/boatkit-io/n2k/pkg/adapter/canadapter"
-	"github.com/boatkit-io/n2k/pkg/pgn"
-	"github.com/boatkit-io/n2k/pkg/pkt"
-	"github.com/brutella/can"
-	"github.com/sirupsen/logrus"
+	"github.com/open-ships/n2k/pgn"
 )
 
 // ParsedMessage is the canonical message type flowing through the system.
@@ -27,78 +22,18 @@ type ParsedMessage struct {
 	Dest      uint8           `json:"dest"`
 	Priority  uint8           `json:"priority"`
 	Timestamp time.Time       `json:"timestamp"`
-	// Payload is the boatkit-io decoded struct serialized to JSON for storage/filtering.
+	// Payload is the decoded struct serialized to JSON for storage/filtering.
 	Payload json.RawMessage `json:"payload"`
 	// Raw is the original assembled bytes (for pass-through sinks).
 	Raw []byte `json:"raw,omitempty"`
 }
 
-// structHandler collects the result from the PacketStruct pipeline.
-type structHandler struct {
-	ch chan any
-}
-
-func (h *structHandler) HandleStruct(s any) {
-	select {
-	case h.ch <- s:
-	default:
-	}
-}
-
-// Parser wraps the boatkit-io pipeline to convert CAN frames into ParsedMessages.
-type Parser struct {
-	mu      sync.Mutex
-	adapter *canadapter.CANAdapter
-	pktStr  *pkt.PacketStruct
-	handler structHandler
-}
-
-// NewParser creates a new Parser.
-func NewParser() *Parser {
-	log := logrus.New()
-	log.SetOutput(io.Discard)
-
-	ca := canadapter.NewCANAdapter(log)
-	ps := pkt.NewPacketStruct()
-	ca.SetOutput(ps)
-
-	sh := structHandler{ch: make(chan any, 1)}
-	ps.SetOutput(&sh)
-
-	return &Parser{
-		adapter: ca,
-		pktStr:  ps,
-		handler: sh,
-	}
-}
-
-// Parse converts a single CAN frame into a ParsedMessage.
-// Fast-packet fragments that are not yet complete return nil, nil.
-func (p *Parser) Parse(frame *can.Frame) (*ParsedMessage, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Drain any stale result
-	select {
-	case <-p.handler.ch:
-	default:
-	}
-
-	p.adapter.HandleMessage(frame)
-
-	select {
-	case result := <-p.handler.ch:
-		return buildParsedMessage(result)
-	default:
-		// Fast packet fragment not yet complete
-		return nil, nil
-	}
-}
-
-func buildParsedMessage(result any) (*ParsedMessage, error) {
+// FromDecoded converts a decoded n2k struct (yielded by n2k.Receive or Scanner)
+// into a ParsedMessage.
+func FromDecoded(result any) (*ParsedMessage, error) {
 	switch v := result.(type) {
 	case pgn.UnknownPGN:
-		msg := &ParsedMessage{
+		return &ParsedMessage{
 			PGN:       v.Info.PGN,
 			Source:    v.Info.SourceId,
 			Dest:      v.Info.TargetId,
@@ -106,32 +41,28 @@ func buildParsedMessage(result any) (*ParsedMessage, error) {
 			Timestamp: v.Info.Timestamp,
 			Payload:   json.RawMessage("null"),
 			Raw:       append([]byte(nil), v.Data...),
-		}
-		return msg, nil
+		}, nil
 
 	default:
-		// Known PGN struct — all generated structs have Info MessageInfo as first field.
 		info := extractInfo(v)
 		payload, err := json.Marshal(v)
 		if err != nil {
 			return nil, fmt.Errorf("marshal PGN struct: %w", err)
 		}
-		msg := &ParsedMessage{
+		return &ParsedMessage{
 			PGN:       info.PGN,
 			Source:    info.SourceId,
 			Dest:      info.TargetId,
 			Priority:  info.Priority,
 			Timestamp: info.Timestamp,
 			Payload:   json.RawMessage(payload),
-		}
-		return msg, nil
+		}, nil
 	}
 }
 
 var messageInfoType = reflect.TypeOf(pgn.MessageInfo{})
 
 // extractInfo uses reflection to pull MessageInfo from a generated PGN struct.
-// All generated structs have `Info MessageInfo` as their first exported field.
 func extractInfo(v any) pgn.MessageInfo {
 	rv := reflect.ValueOf(v)
 	if rv.Kind() == reflect.Ptr {
@@ -140,7 +71,6 @@ func extractInfo(v any) pgn.MessageInfo {
 	if rv.Kind() != reflect.Struct {
 		return pgn.MessageInfo{Timestamp: time.Now()}
 	}
-	// Look for first field of type pgn.MessageInfo
 	rt := rv.Type()
 	for i := 0; i < rt.NumField(); i++ {
 		if rt.Field(i).Type == messageInfoType {

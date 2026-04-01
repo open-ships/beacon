@@ -97,7 +97,36 @@ interface = ""
 max_rows = 1000
 `
 	_, err := config.Load(writeConfig(t, content))
-	assert.ErrorContains(t, err, "can.interface is required")
+	assert.ErrorContains(t, err, "can.interface or can.usb_ports is required")
+}
+
+func TestLoadConfigUSBOnly(t *testing.T) {
+	content := `
+[can]
+usb_ports = ["/dev/ttyUSB0"]
+
+[buffer]
+path = "/tmp/test.db"
+`
+	cfg, err := config.Load(writeConfig(t, content))
+	require.NoError(t, err)
+	assert.Empty(t, cfg.CAN.Interface)
+	assert.Equal(t, []string{"/dev/ttyUSB0"}, cfg.CAN.USBPorts)
+}
+
+func TestLoadConfigCANAndUSB(t *testing.T) {
+	content := `
+[can]
+interface = "can0"
+usb_ports = ["/dev/ttyUSB0", "/dev/ttyACM0"]
+
+[buffer]
+path = "/tmp/test.db"
+`
+	cfg, err := config.Load(writeConfig(t, content))
+	require.NoError(t, err)
+	assert.Equal(t, "can0", cfg.CAN.Interface)
+	assert.Equal(t, []string{"/dev/ttyUSB0", "/dev/ttyACM0"}, cfg.CAN.USBPorts)
 }
 
 func TestLoadConfigMissingFile(t *testing.T) {
