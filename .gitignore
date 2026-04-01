@@ -37,7 +37,7 @@ config.toml
 beacon.db
 
 # Artifacts
-beacon
+/beacon
 
 # Editor/IDE
 # .idea/
