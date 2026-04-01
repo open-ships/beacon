@@ -14,10 +14,11 @@ type AppConfig struct {
 
 // CANConfig holds CAN bus interface settings.
 type CANConfig struct {
-	Interface string `mapstructure:"interface" json:"interface"`
-	Bitrate   int    `mapstructure:"bitrate"   json:"bitrate"`
-	AutoUp    bool   `mapstructure:"auto_up"   json:"auto_up"`
-	RestartMS int    `mapstructure:"restart_ms" json:"restart_ms"`
+	Interface string   `mapstructure:"interface"  json:"interface"`
+	Bitrate   int      `mapstructure:"bitrate"    json:"bitrate"`
+	AutoUp    bool     `mapstructure:"auto_up"    json:"auto_up"`
+	RestartMS int      `mapstructure:"restart_ms" json:"restart_ms"`
+	USBPorts  []string `mapstructure:"usb_ports"  json:"usb_ports"`
 }
 
 // BufferConfig holds SQLite buffer settings.
@@ -104,8 +105,8 @@ func Load(path string) (*Config, error) {
 }
 
 func validate(cfg *Config) error {
-	if cfg.CAN.Interface == "" {
-		return fmt.Errorf("can.interface is required")
+	if cfg.CAN.Interface == "" && len(cfg.CAN.USBPorts) == 0 {
+		return fmt.Errorf("can.interface or can.usb_ports is required")
 	}
 	if cfg.Buffer.MaxRows <= 0 {
 		return fmt.Errorf("buffer.max_rows must be positive")

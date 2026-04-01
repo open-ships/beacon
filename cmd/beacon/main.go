@@ -5,17 +5,17 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/brutella/can"
+	n2klib "github.com/open-ships/n2k"
 	"github.com/spf13/cobra"
 
 	"github.com/open-ships/beacon/internal/admin"
 	"github.com/open-ships/beacon/internal/buffer"
-	internalcan "github.com/open-ships/beacon/internal/can"
 	"github.com/open-ships/beacon/internal/config"
 	"github.com/open-ships/beacon/internal/filter"
 	"github.com/open-ships/beacon/internal/n2k"
@@ -116,19 +116,22 @@ func run(cmd *cobra.Command, _ []string) error {
 		checks["sink_tcp"] = tcpSink
 	}
 
-	// CAN reader
-	canReader := internalcan.NewReader(
-		cfg.CAN.Interface,
-		cfg.CAN.Bitrate,
-		cfg.CAN.AutoUp,
-		cfg.CAN.RestartMS,
-		log,
-		metrics,
-	)
-	checks["can_reader"] = canReader
+	// Auto-up SocketCAN interface if configured
+	if cfg.CAN.Interface != "" && cfg.CAN.AutoUp {
+		cmd := exec.Command("ip", "link", "set", cfg.CAN.Interface, "up", "type", "can", "bitrate", fmt.Sprintf("%d", cfg.CAN.Bitrate))
+		if out, err := cmd.CombinedOutput(); err != nil {
+			log.Warn("CAN auto_up failed", "iface", cfg.CAN.Interface, "err", err, "output", string(out))
+		}
+	}
 
-	// N2K parser
-	parser := n2k.NewParser()
+	// Build n2k source options
+	n2kOpts := []n2klib.Option{n2klib.IncludeUnknown(), n2klib.WithLogger(log)}
+	if cfg.CAN.Interface != "" {
+		n2kOpts = append(n2kOpts, n2klib.CAN(cfg.CAN.Interface))
+	}
+	for _, port := range cfg.CAN.USBPorts {
+		n2kOpts = append(n2kOpts, n2klib.USB(port))
+	}
 
 	var wg sync.WaitGroup
 
@@ -179,45 +182,34 @@ func run(cmd *cobra.Command, _ []string) error {
 		}
 	}()
 
-	// Start CAN reader
-	frameCh := make(chan *can.Frame, 1000)
-	if err := canReader.Start(ctx, frameCh); err != nil {
-		log.Warn("CAN reader start failed", "err", err)
-		// Not fatal on non-Linux or if CAN unavailable — continue running sinks
-	} else {
-		// Ingest loop: CAN frames -> N2K parser -> buffer
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case frame := <-frameCh:
-					msg, err := parser.Parse(frame)
-					if err != nil {
-						log.Debug("parse error", "err", err)
-						continue
-					}
-					if msg == nil {
-						continue // incomplete fast packet
-					}
+	// Ingest loop: n2k.Receive reads CAN frames, decodes, and yields messages
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for result, err := range n2klib.Receive(ctx, n2kOpts...) {
+			if err != nil {
+				log.Debug("n2k receive error", "err", err)
+				continue
+			}
 
-					// Increment PGN metrics
-					if metrics != nil {
-						metrics.PGNMessagesTotal.Add(ctx, 1, admin.AttrPGN(msg.PGN))
-						if string(msg.Payload) == "null" {
-							metrics.PGNUnknownTotal.Add(ctx, 1)
-						}
-					}
+			msg, err := n2k.FromDecoded(result)
+			if err != nil {
+				log.Debug("decode error", "err", err)
+				continue
+			}
 
-					if err := buf.Insert(ctx, msg); err != nil {
-						log.Error("buffer insert error", "err", err)
-					}
+			if metrics != nil {
+				metrics.PGNMessagesTotal.Add(ctx, 1, admin.AttrPGN(msg.PGN))
+				if string(msg.Payload) == "null" {
+					metrics.PGNUnknownTotal.Add(ctx, 1)
 				}
 			}
-		}()
-	}
+
+			if err := buf.Insert(ctx, msg); err != nil {
+				log.Error("buffer insert error", "err", err)
+			}
+		}
+	}()
 
 	log.Info("beacon ready")
 

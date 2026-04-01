@@ -5,13 +5,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boatkit-io/n2k/pkg/pgn"
-	"github.com/brutella/can"
+	"github.com/open-ships/n2k/pgn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestBuildParsedMessageUnknownPGN(t *testing.T) {
+func TestFromDecodedUnknownPGN(t *testing.T) {
 	ts := time.Now()
 	unknown := pgn.UnknownPGN{
 		Info: pgn.MessageInfo{
@@ -24,7 +23,7 @@ func TestBuildParsedMessageUnknownPGN(t *testing.T) {
 		Data: []byte{0x01, 0x02, 0x03},
 	}
 
-	msg, err := buildParsedMessage(unknown)
+	msg, err := FromDecoded(unknown)
 	require.NoError(t, err)
 	require.NotNil(t, msg)
 	assert.Equal(t, uint32(129029), msg.PGN)
@@ -35,7 +34,7 @@ func TestBuildParsedMessageUnknownPGN(t *testing.T) {
 	assert.Equal(t, []byte{0x01, 0x02, 0x03}, msg.Raw)
 }
 
-func TestBuildParsedMessageKnownPGN(t *testing.T) {
+func TestFromDecodedKnownPGN(t *testing.T) {
 	type testPGN struct {
 		Info    pgn.MessageInfo `json:"-"`
 		Heading float64         `json:"heading"`
@@ -53,7 +52,7 @@ func TestBuildParsedMessageKnownPGN(t *testing.T) {
 		Heading: 1.57,
 	}
 
-	msg, err := buildParsedMessage(s)
+	msg, err := FromDecoded(s)
 	require.NoError(t, err)
 	require.NotNil(t, msg)
 	assert.Equal(t, uint32(127250), msg.PGN)
@@ -102,25 +101,6 @@ func TestExtractInfoFromPointer(t *testing.T) {
 func TestExtractInfoNonStruct(t *testing.T) {
 	info := extractInfo("not a struct")
 	assert.False(t, info.Timestamp.IsZero(), "should return default with non-zero timestamp")
-}
-
-func TestNewParser(t *testing.T) {
-	p := NewParser()
-	assert.NotNil(t, p)
-}
-
-func TestParseNilResult(t *testing.T) {
-	p := NewParser()
-	frame := &can.Frame{
-		ID:     0x18EEFF01,
-		Length: 8,
-		Data:   [8]uint8{0x40, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07},
-	}
-
-	msg, err := p.Parse(frame)
-	assert.NoError(t, err)
-	// Either nil (incomplete fast-packet) or a valid message — both acceptable
-	_ = msg
 }
 
 func TestParsedMessageJSON(t *testing.T) {
