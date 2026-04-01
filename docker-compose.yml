@@ -1,0 +1,19 @@
+services:
+  beacon:
+    build: .
+    # host networking is required so the container can access the CAN interface
+    network_mode: host
+    # NET_ADMIN capability is required for auto_up (ip link set can0 up ...)
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      # Persist SQLite buffer across restarts
+      - ./data:/data
+      # Mount your production config
+      - ./config.toml:/app/config.toml:ro
+    restart: unless-stopped
+    environment:
+      # Override any config key via environment variable:
+      # N2KBRIDGE_CAN_INTERFACE=can0
+      # N2KBRIDGE_BUFFER_PATH=/data/beacon.db
+      - N2KBRIDGE_APP_LOG_LEVEL=info

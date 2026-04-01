@@ -1,0 +1,51 @@
+# beacon example configuration
+# Copy to config.toml and edit as needed.
+
+[app]
+# Log level: debug | info | warn | error
+log_level = "info"
+
+[can]
+# SocketCAN interface name
+interface  = "can0"
+# CAN bus bit rate (bits/sec)
+bitrate    = 250000
+# If true, run `ip link set <interface> up type can bitrate <bitrate>` on startup.
+# Requires NET_ADMIN capability (or root) in Docker.
+auto_up    = false
+# Milliseconds to wait before restarting after a CAN error frame
+restart_ms = 100
+
+[buffer]
+# SQLite database path. Mount /data as a persistent volume in Docker.
+path          = "/data/beacon.db"
+# Ring buffer size: oldest rows are deleted when this is exceeded
+max_rows      = 100000
+# Flush checkpoint cursors to SQLite every N milliseconds
+checkpoint_ms = 500
+
+[sinks.sse]
+# Enable the SSE HTTP sink
+enabled = true
+# Listen address for the SSE HTTP server
+address = "0.0.0.0:8080"
+# HTTP path for the SSE event stream
+path    = "/events"
+# CEL filter expressions (AND semantics). Empty = pass all.
+# Examples:
+#   "msg.pgn == 127250"                         -- single PGN
+#   "msg.pgn in [127250, 128259, 129026]"        -- PGN allow-list
+#   "msg.payload.SpeedWaterReferenced > 2.5"     -- payload field threshold
+filters = []
+
+[sinks.tcp]
+# Enable the raw TCP NDJSON sink
+enabled = true
+# Listen address for the TCP server
+address = "0.0.0.0:9090"
+# CEL filter expressions (AND semantics). Empty = pass all.
+filters = []
+
+[admin]
+# Listen address for the admin HTTP server (/health and /metrics)
+address = "0.0.0.0:2112"

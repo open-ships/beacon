@@ -1,0 +1,47 @@
+# engine-room.toml — filters to engine and propulsion monitoring PGNs.
+#
+# Included PGNs:
+#   127488  Engine Parameters, Rapid Update  (RPM, throttle)
+#   127489  Engine Parameters, Dynamic       (oil pressure, coolant temp, hours)
+#   127493  Transmission Parameters, Dynamic (gear, oil pressure, oil temp)
+#   127497  Trip Parameters, Engine
+#   127498  Engine Parameters, Static        (serial number, rated RPM)
+#   127505  Fluid Level                      (fuel, water, waste, live well)
+#   127506  DC Detailed Status               (battery voltage/current)
+#   127508  Battery Status
+#   127509  Inverter Status
+#   128275  Distance Log
+
+[app]
+log_level = "info"
+
+[can]
+interface  = "can0"
+bitrate    = 250000
+auto_up    = true
+restart_ms = 200
+
+[buffer]
+path          = "beacon.db"
+max_rows      = 25000
+checkpoint_ms = 1000
+
+[sinks.sse]
+enabled = true
+address = "0.0.0.0:8080"
+path    = "/events"
+# All engine / electrical PGNs
+filters = [
+  "msg.pgn in [127488, 127489, 127493, 127497, 127498, 127505, 127506, 127508, 127509, 128275]",
+]
+
+[sinks.tcp]
+enabled = true
+address = "0.0.0.0:9090"
+# TCP mirrors the SSE set; only engine parameters (not battery/inverter)
+filters = [
+  "msg.pgn in [127488, 127489, 127493, 127497, 127498]",
+]
+
+[admin]
+address = "0.0.0.0:2112"

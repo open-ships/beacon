@@ -1,0 +1,27 @@
+# Git
+.git
+.gitignore
+.github
+
+# Claude
+.claude
+
+# Build artifacts
+n2kbridge
+*.db
+data/
+
+# Documentation
+*.md
+spec.md
+
+# Dev tools
+Makefile
+docker-compose.yml
+.dockerignore
+
+# Test files
+*_test.go
+
+# Go test cache
+/tmp

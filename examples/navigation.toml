@@ -1,0 +1,48 @@
+# navigation.toml — filters both sinks to navigation-relevant PGNs only.
+#
+# Included PGNs:
+#   127250  Vessel Heading
+#   127251  Rate of Turn
+#   127257  Attitude (pitch/roll/yaw)
+#   128259  Speed Through Water
+#   128267  Water Depth
+#   129025  Position, Rapid Update
+#   129026  COG & SOG, Rapid Update
+#   129029  GNSS Position Data (full fix)
+#   129283  Cross Track Error
+#   129284  Navigation Data (waypoint)
+
+[app]
+log_level = "info"
+
+[can]
+interface  = "can0"
+bitrate    = 250000
+auto_up    = true
+restart_ms = 100
+
+[buffer]
+path          = "beacon.db"
+max_rows      = 50000
+checkpoint_ms = 250
+
+[sinks.sse]
+enabled = true
+address = "0.0.0.0:8080"
+path    = "/events"
+# SSE stream carries only the core navigation PGNs
+filters = [
+  "msg.pgn in [127250, 127251, 127257, 128259, 128267, 129025, 129026, 129029, 129283, 129284]",
+]
+
+[sinks.tcp]
+enabled = true
+address = "0.0.0.0:9090"
+# TCP carries the same navigation set, additionally limited to high-priority frames
+filters = [
+  "msg.pgn in [127250, 127251, 127257, 128259, 128267, 129025, 129026, 129029, 129283, 129284]",
+  "msg.priority <= 3",
+]
+
+[admin]
+address = "0.0.0.0:2112"
