@@ -139,7 +139,7 @@ func TestAdminServerHealthz(t *testing.T) {
 func TestConfigHandler(t *testing.T) {
 	cfg := &config.Config{
 		App: config.AppConfig{LogLevel: "debug"},
-		CAN: config.CANConfig{Interface: "can0", Bitrate: 250000},
+		CAN: config.CANConfig{Interface: "can0"},
 		Buffer: config.BufferConfig{
 			Path:         "beacon.db",
 			MaxRows:      100000,
@@ -172,7 +172,6 @@ func TestConfigHandler(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	assert.Equal(t, "debug", got.App.LogLevel)
 	assert.Equal(t, "can0", got.CAN.Interface)
-	assert.Equal(t, 250000, got.CAN.Bitrate)
 	assert.Equal(t, "beacon.db", got.Buffer.Path)
 	assert.True(t, got.Sinks.SSE.Enabled)
 	assert.Equal(t, []string{"msg.pgn == 127250"}, got.Sinks.SSE.Filters)

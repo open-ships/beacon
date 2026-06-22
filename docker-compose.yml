@@ -3,9 +3,6 @@ services:
     build: .
     # host networking is required so the container can access the CAN interface
     network_mode: host
-    # NET_ADMIN capability is required for auto_up (ip link set can0 up ...)
-    cap_add:
-      - NET_ADMIN
     volumes:
       # Persist SQLite buffer across restarts
       - ./data:/data

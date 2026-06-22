@@ -16,8 +16,6 @@ log_level = "debug"   # verbose output during development
 
 [can]
 interface  = "vcan0"
-bitrate    = 0        # ignored for virtual interfaces
-auto_up    = false    # vcan0 is brought up manually above
 restart_ms = 50
 
 [buffer]

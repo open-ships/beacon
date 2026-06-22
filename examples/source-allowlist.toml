@@ -22,8 +22,6 @@ log_level = "info"
 
 [can]
 interface  = "can0"
-bitrate    = 250000
-auto_up    = true
 restart_ms = 100
 
 [buffer]

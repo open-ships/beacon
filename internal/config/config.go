@@ -15,8 +15,6 @@ type AppConfig struct {
 // CANConfig holds CAN bus interface settings.
 type CANConfig struct {
 	Interface string   `mapstructure:"interface"  json:"interface"`
-	Bitrate   int      `mapstructure:"bitrate"    json:"bitrate"`
-	AutoUp    bool     `mapstructure:"auto_up"    json:"auto_up"`
 	RestartMS int      `mapstructure:"restart_ms" json:"restart_ms"`
 	USBPorts  []string `mapstructure:"usb_ports"  json:"usb_ports"`
 }
@@ -75,8 +73,6 @@ func Load(path string) (*Config, error) {
 
 	// Defaults
 	v.SetDefault("app.log_level", "info")
-	v.SetDefault("can.bitrate", 250000)
-	v.SetDefault("can.auto_up", false)
 	v.SetDefault("can.restart_ms", 100)
 	v.SetDefault("buffer.path", "/data/beacon.db")
 	v.SetDefault("buffer.max_rows", 100000)

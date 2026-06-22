@@ -24,8 +24,6 @@ log_level = "debug"
 
 [can]
 interface  = "can0"
-bitrate    = 250000
-auto_up    = true
 restart_ms = 200
 
 [buffer]
@@ -52,8 +50,6 @@ address = "0.0.0.0:2112"
 
 	assert.Equal(t, "debug", cfg.App.LogLevel)
 	assert.Equal(t, "can0", cfg.CAN.Interface)
-	assert.Equal(t, 250000, cfg.CAN.Bitrate)
-	assert.True(t, cfg.CAN.AutoUp)
 	assert.Equal(t, 200, cfg.CAN.RestartMS)
 	assert.Equal(t, "/tmp/test.db", cfg.Buffer.Path)
 	assert.Equal(t, 50000, cfg.Buffer.MaxRows)
@@ -79,8 +75,6 @@ path = "/tmp/test.db"
 	require.NoError(t, err)
 
 	assert.Equal(t, "info", cfg.App.LogLevel)
-	assert.Equal(t, 250000, cfg.CAN.Bitrate)
-	assert.False(t, cfg.CAN.AutoUp)
 	assert.Equal(t, 100, cfg.CAN.RestartMS)
 	assert.Equal(t, 100000, cfg.Buffer.MaxRows)
 	assert.Equal(t, 500, cfg.Buffer.CheckpointMS)

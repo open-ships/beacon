@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,8 +30,6 @@ type canFrame struct {
 // Reader reads CAN frames from a Linux SocketCAN interface.
 type Reader struct {
 	iface     string
-	bitrate   int
-	autoUp    bool
 	restartMS int
 	log       *slog.Logger
 	metrics   *admin.Metrics
@@ -46,11 +43,9 @@ type Reader struct {
 }
 
 // NewReader creates a new CAN Reader.
-func NewReader(iface string, bitrate int, autoUp bool, restartMS int, log *slog.Logger, metrics *admin.Metrics) *Reader {
+func NewReader(iface string, restartMS int, log *slog.Logger, metrics *admin.Metrics) *Reader {
 	return &Reader{
 		iface:     iface,
-		bitrate:   bitrate,
-		autoUp:    autoUp,
 		restartMS: restartMS,
 		log:       log,
 		metrics:   metrics,
@@ -74,26 +69,11 @@ func (r *Reader) HealthCheck(_ context.Context) error {
 // Start begins reading CAN frames and sends them to out.
 // It blocks until ctx is cancelled.
 func (r *Reader) Start(ctx context.Context, out chan<- *can.Frame) error {
-	if r.autoUp {
-		if err := r.bringUp(); err != nil {
-			r.log.Warn("auto_up failed", "iface", r.iface, "err", err)
-		}
-	}
-
 	if err := r.openSocket(); err != nil {
 		return fmt.Errorf("open CAN socket: %w", err)
 	}
 
 	go r.readLoop(ctx, out)
-	return nil
-}
-
-func (r *Reader) bringUp() error {
-	cmd := exec.Command("ip", "link", "set", r.iface, "up", "type", "can", "bitrate", fmt.Sprintf("%d", r.bitrate))
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("ip link: %w, output: %s", err, out)
-	}
 	return nil
 }
 
