@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -114,14 +113,6 @@ func run(cmd *cobra.Command, _ []string) error {
 		sinks = append(sinks, tcpSink)
 		readySinks = append(readySinks, tcpSink)
 		checks["sink_tcp"] = tcpSink
-	}
-
-	// Auto-up SocketCAN interface if configured
-	if cfg.CAN.Interface != "" && cfg.CAN.AutoUp {
-		cmd := exec.Command("ip", "link", "set", cfg.CAN.Interface, "up", "type", "can", "bitrate", fmt.Sprintf("%d", cfg.CAN.Bitrate))
-		if out, err := cmd.CombinedOutput(); err != nil {
-			log.Warn("CAN auto_up failed", "iface", cfg.CAN.Interface, "err", err, "output", string(out))
-		}
 	}
 
 	// Build n2k source options

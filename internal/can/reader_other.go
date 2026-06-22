@@ -15,19 +15,15 @@ import (
 // Reader is a stub for non-Linux platforms.
 type Reader struct {
 	iface     string
-	bitrate   int
-	autoUp    bool
 	restartMS int
 	log       *slog.Logger
 	metrics   *admin.Metrics
 }
 
 // NewReader creates a new CAN Reader stub (not functional on non-Linux platforms).
-func NewReader(iface string, bitrate int, autoUp bool, restartMS int, log *slog.Logger, metrics *admin.Metrics) *Reader {
+func NewReader(iface string, restartMS int, log *slog.Logger, metrics *admin.Metrics) *Reader {
 	return &Reader{
 		iface:     iface,
-		bitrate:   bitrate,
-		autoUp:    autoUp,
 		restartMS: restartMS,
 		log:       log,
 		metrics:   metrics,

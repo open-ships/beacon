@@ -22,9 +22,8 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 # --- Runtime stage ---
 FROM alpine:3.19
 
-# iproute2: required for `ip link` (auto_up)
 # ca-certificates: TLS support
-RUN apk add --no-cache iproute2 ca-certificates
+RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 

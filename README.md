@@ -17,7 +17,7 @@ beacon reads raw frames from a SocketCAN interface, decodes them into structured
 - **Per-client replay** — clients reconnecting with `Last-Event-ID` receive missed messages from the SQLite ring buffer
 - **CEL filter expressions** — filter by PGN, source, priority, or any decoded payload field with Google's Common Expression Language
 - **Zero CGO** — pure Go binary, no C toolchain required; cross-compiles cleanly for `linux/amd64` and `linux/arm64`
-- **Tiny footprint** — single static binary, minimal runtime dependencies (`iproute2` + `ca-certificates`)
+- **Tiny footprint** — single static binary, minimal runtime dependency (`ca-certificates`)
 - **Prometheus metrics** — frame counts, sink lag, client counts, filter error rates, buffer utilization
 - **Graceful shutdown** — SIGTERM/SIGINT flushes all checkpoints before exit; at-least-once delivery semantics
 - **TOML config with env overrides** — every option overridable via `BEACON_*` environment variables
@@ -31,7 +31,6 @@ beacon reads raw frames from a SocketCAN interface, decodes them into structured
 ```bash
 docker run --rm \
   --network host \
-  --cap-add NET_ADMIN \
   -v $(pwd)/config.toml:/app/config.toml \
   -v beacon-data:/data \
   ghcr.io/open-ships/beacon:latest
@@ -48,7 +47,11 @@ chmod +x beacon-linux-arm64
 
 ### Minimal config
 
-Save this as `config.toml` and set `interface` to match your adapter:
+Bring your SocketCAN interface up before starting beacon, then save this as `config.toml` and set `interface` to match your adapter:
+
+```bash
+sudo ip link set can0 up type can bitrate 250000
+```
 
 ```toml
 [app]
@@ -56,8 +59,6 @@ log_level = "info"
 
 [can]
 interface = "can0"
-bitrate   = 250000
-auto_up   = true     # runs `ip link set can0 up` — requires NET_ADMIN
 
 [buffer]
 path     = "beacon.db"
@@ -102,8 +103,6 @@ See [`examples/`](examples/) for annotated configs covering navigation filtering
 | Key | Default | Description |
 |-----|---------|-------------|
 | `interface` | — | SocketCAN interface name (e.g. `"can0"`, `"vcan0"`) |
-| `bitrate` | `250000` | Bus bitrate in bps (ignored for virtual interfaces) |
-| `auto_up` | `false` | Run `ip link set <iface> up` on startup (requires `NET_ADMIN`) |
 | `restart_ms` | `100` | Delay in ms before reconnecting after a socket error |
 
 ### `[buffer]`
@@ -224,8 +223,6 @@ services:
   beacon:
     image: ghcr.io/open-ships/beacon:latest
     network_mode: host
-    cap_add:
-      - NET_ADMIN
     volumes:
       - ./config.toml:/app/config.toml:ro
       - beacon-data:/data
@@ -235,7 +232,7 @@ volumes:
   beacon-data:
 ```
 
-`network_mode: host` gives the container access to the host's CAN interfaces. `NET_ADMIN` is only required if `auto_up = true`.
+`network_mode: host` gives the container access to the host's CAN interfaces.
 
 ---
 

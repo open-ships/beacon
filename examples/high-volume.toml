@@ -13,8 +13,6 @@ log_level = "warn"
 
 [can]
 interface  = "can0"
-bitrate    = 250000
-auto_up    = true
 restart_ms = 50
 
 [buffer]

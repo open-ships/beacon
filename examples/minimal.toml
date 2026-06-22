@@ -6,8 +6,6 @@ log_level = "info"
 
 [can]
 interface = "can0"
-bitrate   = 250000
-auto_up   = false   # bring the interface up manually before starting
 
 [buffer]
 path          = "beacon.db"

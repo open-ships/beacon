@@ -8,11 +8,6 @@ log_level = "info"
 [can]
 # SocketCAN interface name
 interface  = "can0"
-# CAN bus bit rate (bits/sec)
-bitrate    = 250000
-# If true, run `ip link set <interface> up type can bitrate <bitrate>` on startup.
-# Requires NET_ADMIN capability (or root) in Docker.
-auto_up    = false
 # Milliseconds to wait before restarting after a CAN error frame
 restart_ms = 100
 
