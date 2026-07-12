@@ -87,6 +87,10 @@ func FromPGN(m pgn.Message) (*Envelope, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal PGN %d payload: %w", e.PGN, err)
 	}
+	payload, err = stripInfo(payload)
+	if err != nil {
+		return nil, fmt.Errorf("strip info from PGN %d payload: %w", e.PGN, err)
+	}
 	e.Payload = payload
 	raw, err := pgn.EncodeMessage(m)
 	if err != nil {
@@ -96,6 +100,20 @@ func FromPGN(m pgn.Message) (*Envelope, error) {
 		e.Raw = raw
 	}
 	return e, nil
+}
+
+// stripInfo removes the redundant top-level "info" key that pgn.PGN types
+// embed in their JSON encoding (MessageInfo: timestamp, priority, pgn,
+// source/target id). The envelope header fields already carry that data, so
+// keeping it in the payload too would duplicate it on the wire. Done once at
+// envelope creation, not per read.
+func stripInfo(payload json.RawMessage) (json.RawMessage, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return nil, err
+	}
+	delete(m, "info")
+	return json.Marshal(m)
 }
 
 // Info rebuilds the MessageInfo for encoding this envelope back onto a CAN bus.

@@ -17,6 +17,7 @@ import (
 	"github.com/open-ships/beacon/internal/msg"
 	"github.com/open-ships/beacon/internal/queue"
 	"github.com/open-ships/beacon/internal/sink"
+	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/store"
 )
 
@@ -32,7 +33,7 @@ func setup(t *testing.T) (*store.Store, *Supervisor, *sink.DataServer) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ds.Stop(context.Background()) })
-	sup := New(st, nil, ds, slog.Default(), nil)
+	sup := New(st, nil, ds, slog.Default(), nil, nil)
 	t.Cleanup(sup.Stop)
 	return st, sup, ds
 }
@@ -221,6 +222,50 @@ func TestDeletedConnectorQueueIsPurged(t *testing.T) {
 	}
 }
 
+// A connector's live stats must not linger in the registry once it is
+// deleted from config entirely (the purge path), mirroring the queue purge
+// above: otherwise the API/UI would keep reporting rates for a connector
+// that no longer exists.
+func TestDeletedConnectorStatsAreRemoved(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ds := sink.NewDataServer("127.0.0.1:0", slog.Default())
+	if err := ds.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ds.Stop(context.Background()) })
+	reg := stats.NewRegistry()
+	sup := New(st, nil, ds, slog.Default(), nil, reg)
+	t.Cleanup(sup.Stop)
+
+	ctx := context.Background()
+	_ = st.ReplaceConfig(ctx, baseConfig())
+	_ = sup.Reconcile(ctx)
+
+	// The purge sweep only considers connectors with storage (queue rows or
+	// a checkpoint) — seed one directly, as TestDeletedConnectorQueueIsPurged
+	// does, so "link" is "known" to the sweep.
+	q := queue.NewSQLite(st, "link", model.BufferLimits{MaxMessages: 10})
+	_ = q.Append(ctx, []*msg.Envelope{{PGN: 1, Timestamp: time.Now(), Payload: json.RawMessage(`{}`)}})
+
+	reg.Record("link", 1, 10)
+	if _, ok := reg.Snapshot("link"); !ok {
+		t.Fatal("precondition: connector stats not recorded")
+	}
+
+	cfg := baseConfig()
+	cfg.Connectors = nil
+	_ = st.ReplaceConfig(ctx, cfg)
+	_ = sup.Reconcile(ctx)
+
+	if _, ok := reg.Snapshot("link"); ok {
+		t.Fatal("deleted connector stats still present in registry")
+	}
+}
+
 func TestDisabledConnectorQueueSurvives(t *testing.T) {
 	st, sup, _ := setup(t)
 	ctx := context.Background()
@@ -374,7 +419,7 @@ func TestComponentStateGaugeTransitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ds.Stop(context.Background()) })
-	sup := New(st, nil, ds, slog.Default(), met)
+	sup := New(st, nil, ds, slog.Default(), met, nil)
 	t.Cleanup(sup.Stop)
 
 	// gaugeValue scrapes the Prometheus handler and returns the

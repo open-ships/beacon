@@ -46,6 +46,19 @@ func TestFromPGNKnown(t *testing.T) {
 	}
 }
 
+func TestPayloadOmitsInfo(t *testing.T) {
+	e, err := FromPGN(heading(15708))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := e.PayloadMap()["info"]; ok {
+		t.Fatalf("payload still contains info: %s", e.Payload)
+	}
+	if e.PayloadMap()["heading"] == nil {
+		t.Fatalf("stripping info lost data fields: %s", e.Payload)
+	}
+}
+
 func TestFromPGNUnknown(t *testing.T) {
 	u := &pgn.UnknownPGN{
 		Info: pgn.MessageInfo{PGN: 130999, SourceId: 9, Timestamp: time.Now()},

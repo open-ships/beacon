@@ -18,6 +18,7 @@ import (
 	"github.com/open-ships/beacon/internal/queue"
 	"github.com/open-ships/beacon/internal/sink"
 	"github.com/open-ships/beacon/internal/source"
+	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/store"
 )
 
@@ -88,6 +89,7 @@ type Supervisor struct {
 	ds  *sink.DataServer
 	log *slog.Logger
 	met *metrics.Set
+	reg *stats.Registry
 
 	runCtx    context.Context
 	runCancel context.CancelFunc
@@ -118,9 +120,9 @@ type Supervisor struct {
 	errored    []Status
 }
 
-func New(st *store.Store, busMgr *bus.Manager, ds *sink.DataServer, log *slog.Logger, met *metrics.Set) *Supervisor {
+func New(st *store.Store, busMgr *bus.Manager, ds *sink.DataServer, log *slog.Logger, met *metrics.Set, reg *stats.Registry) *Supervisor {
 	runCtx, cancel := context.WithCancel(context.Background())
-	return &Supervisor{st: st, bus: busMgr, ds: ds, log: log, met: met,
+	return &Supervisor{st: st, bus: busMgr, ds: ds, log: log, met: met, reg: reg,
 		runCtx: runCtx, runCancel: cancel,
 		needsPurgeSweep: true,
 		sources:         map[string]*runningSource{},
@@ -296,6 +298,7 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 				}
 				s.met.RemoveConnector(id)
 				s.met.RemoveComponent("connector", id)
+				s.reg.Remove(id)
 			}
 			if swept {
 				s.needsPurgeSweep = false
@@ -370,7 +373,7 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 			continue
 		}
 		q := queue.NewSQLite(s.st, id, want.Buffer)
-		c := connector.New(want, src.rt, snk.rt, q, chain, s.log, s.met)
+		c := connector.New(want, src.rt, snk.rt, q, chain, s.log, s.met, s.reg)
 		c.Start(s.runCtx)
 		s.log.Info("started connector", "id", id)
 		s.met.SetComponentState("connector", id, 2)

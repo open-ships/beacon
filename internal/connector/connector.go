@@ -16,6 +16,7 @@ import (
 	"github.com/open-ships/beacon/internal/queue"
 	"github.com/open-ships/beacon/internal/sink"
 	"github.com/open-ships/beacon/internal/source"
+	"github.com/open-ships/beacon/internal/stats"
 )
 
 const (
@@ -36,6 +37,7 @@ type Connector struct {
 	chain *filter.Chain
 	log   *slog.Logger
 	met   *metrics.Set
+	st    *stats.Registry
 
 	cancel context.CancelFunc
 	notify chan struct{}
@@ -45,9 +47,9 @@ type Connector struct {
 }
 
 func New(cfg model.Connector, src source.Runtime, snk sink.Runtime, q queue.Queue,
-	chain *filter.Chain, log *slog.Logger, met *metrics.Set) *Connector {
+	chain *filter.Chain, log *slog.Logger, met *metrics.Set, st *stats.Registry) *Connector {
 	return &Connector{cfg: cfg, src: src, snk: snk, q: q, chain: chain,
-		log: log.With("connector", cfg.ID), met: met, notify: make(chan struct{}, 1)}
+		log: log.With("connector", cfg.ID), met: met, st: st, notify: make(chan struct{}, 1)}
 }
 
 func (c *Connector) ID() string { return c.cfg.ID }
@@ -219,6 +221,7 @@ func (c *Connector) deliver(ctx context.Context) {
 				for _, e := range entries {
 					c.met.ConnectorMessages(ctx, c.cfg.ID, "delivered", 1)
 					c.met.ConnectorBytes(ctx, c.cfg.ID, int64(e.Env.SizeBytes()))
+					c.st.Record(c.cfg.ID, 1, int64(e.Env.SizeBytes()))
 				}
 			default:
 				c.log.Error("sink implements neither Pusher nor Broadcaster")
@@ -243,6 +246,7 @@ func (c *Connector) pushAll(ctx context.Context, p sink.Pusher, entries []queue.
 				}
 				c.met.ConnectorMessages(ctx, c.cfg.ID, "delivered", 1)
 				c.met.ConnectorBytes(ctx, c.cfg.ID, int64(e.Env.SizeBytes()))
+				c.st.Record(c.cfg.ID, 1, int64(e.Env.SizeBytes()))
 				*cursor = e.Seq
 				*dirty = true
 				break
@@ -275,6 +279,7 @@ func (c *Connector) prune(ctx context.Context) {
 			}
 			if st, err := c.q.Stats(ctx); err == nil {
 				c.met.SetQueueDepth(c.cfg.ID, st.Depth, st.Bytes)
+				c.st.SetQueue(c.cfg.ID, st.Depth, st.Bytes)
 			}
 		}
 	}

@@ -160,7 +160,7 @@ func TestFilterThenBroadcast(t *testing.T) {
 	chain, _ := filter.Compile([]string{"msg.pgn == 127250"})
 	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true,
 		Buffer: model.BufferLimits{MaxMessages: 1000}},
-		src, snk, testQueue(t), chain, slog.Default(), nil)
+		src, snk, testQueue(t), chain, slog.Default(), nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c.Start(ctx)
@@ -182,7 +182,7 @@ func TestPushRetriesUntilSinkRecovers(t *testing.T) {
 	chain, _ := filter.Compile(nil)
 	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true,
 		Buffer: model.BufferLimits{MaxMessages: 1000}},
-		src, snk, testQueue(t), chain, slog.Default(), nil)
+		src, snk, testQueue(t), chain, slog.Default(), nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c.Start(ctx)
@@ -205,7 +205,7 @@ func TestResumeFromCheckpointAfterRestart(t *testing.T) {
 	src1 := &fakeSource{}
 	snk1 := &pushSink{}
 	c1 := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true},
-		src1, snk1, q, chain, slog.Default(), nil)
+		src1, snk1, q, chain, slog.Default(), nil, nil)
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	c1.Start(ctx1)
 	src1.emit(env(1))
@@ -218,7 +218,7 @@ func TestResumeFromCheckpointAfterRestart(t *testing.T) {
 	src2 := &fakeSource{}
 	snk2 := &pushSink{}
 	c2 := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true},
-		src2, snk2, q, chain, slog.Default(), nil)
+		src2, snk2, q, chain, slog.Default(), nil, nil)
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
 	c2.Start(ctx2)
@@ -243,7 +243,7 @@ func TestStopFlushesPendingBatch(t *testing.T) {
 
 	src := &fakeSource{}
 	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true},
-		src, &pushSink{}, q, chain, slog.Default(), nil)
+		src, &pushSink{}, q, chain, slog.Default(), nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c.Start(ctx)
@@ -278,7 +278,7 @@ func TestStopMidRetryCheckpointsPartialProgress(t *testing.T) {
 	src1 := &fakeSource{}
 	snk1 := &hangSink{}
 	c1 := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true},
-		src1, snk1, q, chain, slog.Default(), nil)
+		src1, snk1, q, chain, slog.Default(), nil, nil)
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	c1.Start(ctx1)
 	src1.emit(env(1))
@@ -304,7 +304,7 @@ func TestStopMidRetryCheckpointsPartialProgress(t *testing.T) {
 	src2 := &fakeSource{}
 	snk2 := &pushSink{}
 	c2 := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true},
-		src2, snk2, q, chain, slog.Default(), nil)
+		src2, snk2, q, chain, slog.Default(), nil, nil)
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
 	c2.Start(ctx2)
@@ -318,6 +318,6 @@ func TestStopMidRetryCheckpointsPartialProgress(t *testing.T) {
 func TestStopBeforeStartDoesNotPanic(t *testing.T) {
 	chain, _ := filter.Compile(nil)
 	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true},
-		&fakeSource{}, &pushSink{}, testQueue(t), chain, slog.Default(), nil)
+		&fakeSource{}, &pushSink{}, testQueue(t), chain, slog.Default(), nil, nil)
 	c.Stop() // must be a no-op, not a nil-cancel panic
 }

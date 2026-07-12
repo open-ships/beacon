@@ -101,6 +101,17 @@ func TestEndToEndFilteredSSEWithReplay(t *testing.T) {
 		if e["pgn"].(float64) != 127250 {
 			t.Fatalf("filter leaked pgn %v", e["pgn"])
 		}
+		// Wire-freeze regression: the payload's redundant "info" object
+		// (duplicating envelope header fields already present at the top
+		// level: pgn, source, timestamp, ...) must have been stripped at
+		// envelope creation, not merely omitted by convention.
+		payload, ok := e["payload"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload not an object: %v", e["payload"])
+		}
+		if _, hasInfo := payload["info"]; hasInfo {
+			t.Fatalf("SSE payload still contains info: %v", payload)
+		}
 	}
 	resp.Body.Close()
 

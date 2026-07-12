@@ -19,6 +19,7 @@ import (
 	"github.com/open-ships/beacon/internal/metrics"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/sink"
+	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/store"
 	"github.com/open-ships/beacon/internal/supervisor"
 )
@@ -43,6 +44,7 @@ type App struct {
 	st       *store.Store
 	ds       *sink.DataServer
 	sup      *supervisor.Supervisor
+	reg      *stats.Registry
 	adminSrv *http.Server
 	adminLn  net.Listener
 }
@@ -85,7 +87,8 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 		return nil, fmt.Errorf("start data server: %w", err)
 	}
 
-	sup := supervisor.New(st, busMgr, ds, log, met)
+	reg := stats.NewRegistry()
+	sup := supervisor.New(st, busMgr, ds, log, met, reg)
 	if err := sup.Reconcile(ctx); err != nil {
 		sup.Stop()
 		_ = ds.Stop(ctx)
@@ -93,7 +96,7 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 		return nil, fmt.Errorf("initial reconcile: %w", err)
 	}
 
-	a := &App{log: log, st: st, ds: ds, sup: sup}
+	a := &App{log: log, st: st, ds: ds, sup: sup, reg: reg}
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", promHandler)
@@ -183,6 +186,11 @@ func (a *App) AdminAddr() string {
 // Reconcile re-converges running components with stored config (Phase 2 API
 // hook: hot config apply will call this after writing to the store).
 func (a *App) Reconcile(ctx context.Context) error { return a.sup.Reconcile(ctx) }
+
+// Stats returns the live per-connector stats registry (Phase 2 API hook:
+// serves rate/throughput data to the config API and, later, the UI
+// dashboard).
+func (a *App) Stats() *stats.Registry { return a.reg }
 
 // Close shuts the admin server down, stops the supervisor (which stops every
 // running connector, sink, and source and flushes final queue checkpoints),
