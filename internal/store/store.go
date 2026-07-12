@@ -119,9 +119,11 @@ func (s *Store) PutConnector(ctx context.Context, v model.Connector) error {
 	return put(ctx, s.db, "connectors", v.ID, v)
 }
 
-func (s *Store) DeleteSource(ctx context.Context, id string) error    { return s.del(ctx, "sources", id) }
-func (s *Store) DeleteSink(ctx context.Context, id string) error      { return s.del(ctx, "sinks", id) }
-func (s *Store) DeleteConnector(ctx context.Context, id string) error { return s.del(ctx, "connectors", id) }
+func (s *Store) DeleteSource(ctx context.Context, id string) error { return s.del(ctx, "sources", id) }
+func (s *Store) DeleteSink(ctx context.Context, id string) error   { return s.del(ctx, "sinks", id) }
+func (s *Store) DeleteConnector(ctx context.Context, id string) error {
+	return s.del(ctx, "connectors", id)
+}
 
 func (s *Store) del(ctx context.Context, table, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM `+table+` WHERE id = ?`, id)
