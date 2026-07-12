@@ -25,6 +25,7 @@ const (
 	ackInterval   = 500 * time.Millisecond
 	pruneInterval = 5 * time.Second
 	maxBackoff    = 5 * time.Second
+	appendTimeout = 5 * time.Second
 )
 
 type Connector struct {
@@ -66,12 +67,15 @@ func (c *Connector) Start(ctx context.Context) {
 	go c.prune(runCtx)
 }
 
-// Stop cancels the pipeline and waits for a final ack. Safe to call more
-// than once.
+// Stop cancels the pipeline and waits for the final flush and ack. Safe to
+// call more than once, and a no-op if Start was never called.
 func (c *Connector) Stop() {
 	c.stopOnce.Do(func() {
 		if reg, ok := c.snk.(sink.ConnectorRegistrar); ok {
 			reg.UnregisterConnector(c.cfg.ID)
+		}
+		if c.cancel == nil { // Stop before Start
+			return
 		}
 		c.cancel()
 		c.wg.Wait()
@@ -97,10 +101,14 @@ func (c *Connector) intake(ctx context.Context, in <-chan *msg.Envelope, unsub f
 		if len(batch) == 0 {
 			return
 		}
-		if err := c.q.Append(ctx, batch); err != nil {
-			if ctx.Err() == nil {
-				c.log.Error("queue append failed", "err", err)
-			}
+		// Append with a fresh short-timeout context, not the run ctx: on
+		// Stop the run ctx is already cancelled and the trailing partial
+		// batch must still be persisted — losing it would be silent data
+		// loss on every graceful shutdown.
+		appendCtx, cancel := context.WithTimeout(context.Background(), appendTimeout)
+		defer cancel()
+		if err := c.q.Append(appendCtx, batch); err != nil {
+			c.log.Error("queue append failed", "err", err, "dropped", len(batch))
 		} else {
 			c.wake()
 		}
@@ -108,31 +116,48 @@ func (c *Connector) intake(ctx context.Context, in <-chan *msg.Envelope, unsub f
 	}
 	defer flush()
 
+	ingest := func(e *msg.Envelope) {
+		c.met.ConnectorMessages(ctx, c.cfg.ID, "received", 1)
+		match, err := c.chain.Match(e)
+		if err != nil {
+			c.met.ConnectorMessages(ctx, c.cfg.ID, "filter_error", 1)
+			c.log.Debug("filter eval error", "err", err)
+			return
+		}
+		if !match {
+			return
+		}
+		c.met.ConnectorMessages(ctx, c.cfg.ID, "matched", 1)
+		batch = append(batch, e)
+		if len(batch) >= batchSize {
+			flush()
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			// Drain envelopes already buffered in the subscription so a
+			// graceful stop persists everything the source handed us; the
+			// deferred flush writes whatever remains batched.
+			for {
+				select {
+				case e, ok := <-in:
+					if !ok {
+						return
+					}
+					ingest(e)
+				default:
+					return
+				}
+			}
 		case <-flushTimer.C:
 			flush()
 		case e, ok := <-in:
 			if !ok {
 				return
 			}
-			c.met.ConnectorMessages(ctx, c.cfg.ID, "received", 1)
-			match, err := c.chain.Match(e)
-			if err != nil {
-				c.met.ConnectorMessages(ctx, c.cfg.ID, "filter_error", 1)
-				c.log.Debug("filter eval error", "err", err)
-				continue
-			}
-			if !match {
-				continue
-			}
-			c.met.ConnectorMessages(ctx, c.cfg.ID, "matched", 1)
-			batch = append(batch, e)
-			if len(batch) >= batchSize {
-				flush()
-			}
+			ingest(e)
 		}
 	}
 }
@@ -140,7 +165,7 @@ func (c *Connector) intake(ctx context.Context, in <-chan *msg.Envelope, unsub f
 func (c *Connector) deliver(ctx context.Context) {
 	defer c.wg.Done()
 	cursor, err := c.q.Cursor(ctx)
-	if err != nil {
+	if err != nil && ctx.Err() == nil {
 		c.log.Error("read checkpoint", "err", err)
 	}
 	lastAck := time.Now()
@@ -180,12 +205,17 @@ func (c *Connector) deliver(ctx context.Context) {
 			}
 			switch snk := c.snk.(type) {
 			case sink.Pusher:
-				if !c.pushAll(ctx, snk, entries, &cursor) {
+				// pushAll marks dirty per delivered entry so the deferred
+				// final ack checkpoints partial progress even when we are
+				// cancelled mid-retry — otherwise already-pushed entries
+				// would be redelivered to a non-idempotent sink on restart.
+				if !c.pushAll(ctx, snk, entries, &cursor, &dirty) {
 					return // ctx cancelled mid-retry
 				}
 			case sink.Broadcaster:
 				snk.Broadcast(entries)
 				cursor = entries[len(entries)-1].Seq
+				dirty = true
 				for _, e := range entries {
 					c.met.ConnectorMessages(ctx, c.cfg.ID, "delivered", 1)
 					c.met.ConnectorBytes(ctx, c.cfg.ID, int64(e.Env.SizeBytes()))
@@ -194,14 +224,15 @@ func (c *Connector) deliver(ctx context.Context) {
 				c.log.Error("sink implements neither Pusher nor Broadcaster")
 				return
 			}
-			dirty = true
 			ack(false)
 		}
 	}
 }
 
 // pushAll delivers entries one-by-one with retry; returns false if ctx ended.
-func (c *Connector) pushAll(ctx context.Context, p sink.Pusher, entries []queue.Entry, cursor *int64) bool {
+// cursor and dirty advance per delivered entry, not per batch, so partial
+// progress survives a cancellation mid-retry via the caller's deferred ack.
+func (c *Connector) pushAll(ctx context.Context, p sink.Pusher, entries []queue.Entry, cursor *int64, dirty *bool) bool {
 	for _, e := range entries {
 		backoff := 250 * time.Millisecond
 		for {
@@ -213,6 +244,7 @@ func (c *Connector) pushAll(ctx context.Context, p sink.Pusher, entries []queue.
 				c.met.ConnectorMessages(ctx, c.cfg.ID, "delivered", 1)
 				c.met.ConnectorBytes(ctx, c.cfg.ID, int64(e.Env.SizeBytes()))
 				*cursor = e.Seq
+				*dirty = true
 				break
 			}
 			c.log.Debug("push failed; retrying", "err", err, "backoff", backoff)

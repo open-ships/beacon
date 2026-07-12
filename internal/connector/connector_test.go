@@ -102,6 +102,31 @@ func (b *bcastSink) count() int {
 	return len(b.got)
 }
 
+// hangSink delivers the first push then fails every subsequent one,
+// pinning the delivery loop in retry on the second entry.
+type hangSink struct {
+	mu  sync.Mutex
+	got []*msg.Envelope
+}
+
+func (h *hangSink) ID() string             { return "fake-hang" }
+func (h *hangSink) Stop()                  {}
+func (h *hangSink) State() (string, error) { return "up", nil }
+func (h *hangSink) Push(_ context.Context, e *msg.Envelope) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.got) >= 1 {
+		return errors.New("stuck")
+	}
+	h.got = append(h.got, e)
+	return nil
+}
+func (h *hangSink) count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.got)
+}
+
 func testQueue(t *testing.T) queue.Queue {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "c.db"))
@@ -203,4 +228,96 @@ func TestResumeFromCheckpointAfterRestart(t *testing.T) {
 	if got := snk2.got[0].PGN; got != 3 {
 		t.Fatalf("redelivered old message, pgn=%d", got)
 	}
+}
+
+// Regression: messages emitted just before Stop (before the 50ms flush
+// timer fires) must still be persisted to the queue by the shutdown flush.
+func TestStopFlushesPendingBatch(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "f.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	q := queue.NewSQLite(st, "conn1", model.BufferLimits{MaxMessages: 1000})
+	chain, _ := filter.Compile(nil)
+
+	src := &fakeSource{}
+	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true},
+		src, &pushSink{}, q, chain, slog.Default(), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+
+	src.emit(env(1))
+	src.emit(env(2))
+	src.emit(env(3))
+	c.Stop() // immediately, before the batch flush timer fires
+
+	entries, err := q.Read(context.Background(), 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("queue has %d entries after Stop, want 3", len(entries))
+	}
+}
+
+// Regression: when Stop lands mid-retry, entries already pushed from the
+// in-flight batch must be checkpointed so a restart does not redeliver
+// them to a non-idempotent sink.
+func TestStopMidRetryCheckpointsPartialProgress(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "p.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	q := queue.NewSQLite(st, "conn1", model.BufferLimits{MaxMessages: 1000})
+	chain, _ := filter.Compile(nil)
+
+	// First run: entry 1 delivers, entry 2 fails forever (sink stuck).
+	src1 := &fakeSource{}
+	snk1 := &hangSink{}
+	c1 := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true},
+		src1, snk1, q, chain, slog.Default(), nil)
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	c1.Start(ctx1)
+	src1.emit(env(1))
+	src1.emit(env(2))
+	waitFor(t, 3*time.Second, func() bool { return snk1.count() == 1 }, "first entry delivered")
+	c1.Stop() // mid-retry on entry 2
+	cancel1()
+
+	// The checkpoint must reflect entry 1's seq.
+	entries, err := q.Read(context.Background(), 0, 10)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("queue read: %d entries, err=%v; want 2", len(entries), err)
+	}
+	cur, err := q.Cursor(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur != entries[0].Seq {
+		t.Fatalf("checkpoint=%d, want seq of delivered entry 1 (%d)", cur, entries[0].Seq)
+	}
+
+	// Second run with a healthy sink: only entry 2 replays, never entry 1.
+	src2 := &fakeSource{}
+	snk2 := &pushSink{}
+	c2 := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true},
+		src2, snk2, q, chain, slog.Default(), nil)
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	c2.Start(ctx2)
+	defer c2.Stop()
+	waitFor(t, 3*time.Second, func() bool { return snk2.count() == 1 }, "entry 2 replay")
+	if got := snk2.got[0].PGN; got != 2 {
+		t.Fatalf("redelivered already-pushed entry, pgn=%d, want 2", got)
+	}
+}
+
+func TestStopBeforeStartDoesNotPanic(t *testing.T) {
+	chain, _ := filter.Compile(nil)
+	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true},
+		&fakeSource{}, &pushSink{}, testQueue(t), chain, slog.Default(), nil)
+	c.Stop() // must be a no-op, not a nil-cancel panic
 }
