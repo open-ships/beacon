@@ -71,6 +71,34 @@ func TestUpsertAndDelete(t *testing.T) {
 	}
 }
 
+func TestKnownConnectorIDs(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+
+	// "a" has queue rows only, "b" has a checkpoint only, "a" appears in
+	// both — the result must be the deduplicated union.
+	if _, err := s.DB().ExecContext(ctx,
+		`INSERT INTO queue (connector_id, ts, envelope, bytes) VALUES ('a', 1, '{}', 2)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx,
+		`INSERT INTO checkpoints (connector_id, last_seq) VALUES ('a', 1), ('b', 0)`); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.KnownConnectorIDs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, id := range got {
+		seen[id] = true
+	}
+	if len(seen) != 2 || !seen["a"] || !seen["b"] {
+		t.Fatalf("KnownConnectorIDs = %v, want [a b]", got)
+	}
+}
+
 func TestReopenKeepsData(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.db")

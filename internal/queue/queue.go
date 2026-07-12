@@ -33,4 +33,8 @@ type Queue interface {
 	// Prune enforces the configured limits; returns rows removed.
 	Prune(ctx context.Context) (int64, error)
 	Stats(ctx context.Context) (Stats, error)
+	// Purge deletes every queue row and the checkpoint row for the
+	// connector. Used when a connector is removed from config entirely (not
+	// merely disabled) so its durable storage doesn't linger forever.
+	Purge(ctx context.Context) error
 }

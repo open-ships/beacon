@@ -145,6 +145,26 @@ func (s *Store) LoadConfig(ctx context.Context) (model.Config, error) {
 	return cfg, nil
 }
 
+// KnownConnectorIDs returns every connector id that has queue or checkpoint
+// rows — used to purge storage of connectors deleted from config.
+func (s *Store) KnownConnectorIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT connector_id FROM queue UNION SELECT connector_id FROM checkpoints`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // ReplaceConfig transactionally replaces the whole configuration.
 func (s *Store) ReplaceConfig(ctx context.Context, cfg model.Config) error {
 	tx, err := s.db.BeginTx(ctx, nil)

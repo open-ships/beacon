@@ -2,11 +2,15 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/open-ships/beacon/internal/model"
+	"github.com/open-ships/beacon/internal/msg"
+	"github.com/open-ships/beacon/internal/queue"
 	"github.com/open-ships/beacon/internal/sink"
 	"github.com/open-ships/beacon/internal/store"
 )
@@ -188,5 +192,107 @@ func TestReconcileAfterStopIsNoop(t *testing.T) {
 	}
 	if sts := sup.Statuses(); len(sts) != 0 {
 		t.Fatalf("reconcile after stop started components: %+v", sts)
+	}
+}
+
+func TestDeletedConnectorQueueIsPurged(t *testing.T) {
+	st, sup, _ := setup(t)
+	ctx := context.Background()
+	_ = st.ReplaceConfig(ctx, baseConfig())
+	_ = sup.Reconcile(ctx)
+
+	// Seed the connector's queue directly, then delete the connector.
+	q := queue.NewSQLite(st, "link", model.BufferLimits{MaxMessages: 10})
+	_ = q.Append(ctx, []*msg.Envelope{{PGN: 1, Timestamp: time.Now(), Payload: json.RawMessage(`{}`)}})
+
+	cfg := baseConfig()
+	cfg.Connectors = nil
+	_ = st.ReplaceConfig(ctx, cfg)
+	_ = sup.Reconcile(ctx)
+
+	stats, _ := q.Stats(ctx)
+	if stats.Depth != 0 {
+		t.Fatalf("deleted connector queue depth = %d, want 0 (purged)", stats.Depth)
+	}
+}
+
+func TestDisabledConnectorQueueSurvives(t *testing.T) {
+	st, sup, _ := setup(t)
+	ctx := context.Background()
+	_ = st.ReplaceConfig(ctx, baseConfig())
+	_ = sup.Reconcile(ctx)
+	q := queue.NewSQLite(st, "link", model.BufferLimits{MaxMessages: 10})
+	_ = q.Append(ctx, []*msg.Envelope{{PGN: 1, Timestamp: time.Now(), Payload: json.RawMessage(`{}`)}})
+
+	cfg := baseConfig()
+	cfg.Connectors[0].Enabled = false
+	_ = st.ReplaceConfig(ctx, cfg)
+	_ = sup.Reconcile(ctx)
+
+	stats, _ := q.Stats(ctx)
+	if stats.Depth != 1 {
+		t.Fatalf("disabled connector queue depth = %d, want 1 (kept)", stats.Depth)
+	}
+}
+
+// TestStatusesDoesNotBlockDuringReconcile asserts the core lock-split
+// guarantee: Statuses() (the /health path) must never wait behind a slow
+// component teardown in Reconcile's stop phase.
+//
+// The brief's sketch (delete a connector whose Stop() may or may not
+// actually take any measurable time, depending on what the source/sink are
+// doing) is not deterministic enough to reliably fail pre-fix and pass
+// post-fix: baseConfig's connector talks to an SSE (Broadcaster) sink with
+// no retry/backoff path, so its real Stop() usually returns near-instantly
+// regardless of locking. To get a deterministic signal we inject a
+// test-only fixed delay (testStopDelay, zero in production) at the exact
+// point Reconcile's stop phase is about to tear down a component — this
+// simulates a slow-stopping component without depending on real network
+// timing. A short preroll sleep lets the background Reconcile goroutine
+// reach that injected delay before we start timing Statuses().
+func TestStatusesDoesNotBlockDuringReconcile(t *testing.T) {
+	st, sup, _ := setup(t)
+	ctx := context.Background()
+	_ = st.ReplaceConfig(ctx, baseConfig())
+	_ = sup.Reconcile(ctx)
+
+	cfg := baseConfig()
+	cfg.Connectors = nil
+	_ = st.ReplaceConfig(ctx, cfg)
+
+	testStopDelay = 500 * time.Millisecond
+	defer func() { testStopDelay = 0 }()
+
+	done := make(chan struct{})
+	go func() { _ = sup.Reconcile(ctx); close(done) }()
+	time.Sleep(50 * time.Millisecond) // let Reconcile reach the injected delay
+
+	start := time.Now()
+	_ = sup.Statuses()
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("Statuses blocked %v during reconcile", elapsed)
+	}
+	<-done
+}
+
+func TestRecoveredComponentStateNotSticky(t *testing.T) {
+	// A component that fails to start records error status; after the config
+	// is fixed and reconciled, Statuses must no longer report the error.
+	st, sup, _ := setup(t)
+	ctx := context.Background()
+	cfg := baseConfig()
+	cfg.Sinks = append(cfg.Sinks, model.Sink{ID: "bad", Name: "Bad", Type: model.SinkTCP,
+		Enabled: true, Address: "256.256.256.256:1"})
+	_ = st.ReplaceConfig(ctx, cfg)
+	_ = sup.Reconcile(ctx)
+	if s := find(sup.Statuses(), "sink", "bad"); s == nil || s.State != "error" {
+		t.Fatalf("precondition: bad sink should be error, got %+v", s)
+	}
+
+	cfg.Sinks[1].Address = "127.0.0.1:0" // now bindable
+	_ = st.ReplaceConfig(ctx, cfg)
+	_ = sup.Reconcile(ctx)
+	if s := find(sup.Statuses(), "sink", "bad"); s == nil || s.State == "error" {
+		t.Fatalf("recovered sink still error: %+v", s)
 	}
 }

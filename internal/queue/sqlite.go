@@ -130,6 +130,21 @@ func (q *sqliteQueue) Prune(ctx context.Context) (int64, error) {
 	return total, nil
 }
 
+func (q *sqliteQueue) Purge(ctx context.Context) error {
+	tx, err := q.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM queue WHERE connector_id = ?`, q.connectorID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM checkpoints WHERE connector_id = ?`, q.connectorID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (q *sqliteQueue) Stats(ctx context.Context) (Stats, error) {
 	var s Stats
 	var oldest sql.NullInt64

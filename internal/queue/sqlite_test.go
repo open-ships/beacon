@@ -118,6 +118,26 @@ func TestPruneByBytes(t *testing.T) {
 	}
 }
 
+func TestPurgeRemovesRowsAndCheckpoint(t *testing.T) {
+	q := testQueue(t, model.BufferLimits{MaxMessages: 100})
+	ctx := context.Background()
+	appendN(t, q, 5, time.Now())
+	entries, _ := q.Read(ctx, 0, 10)
+	_ = q.Ack(ctx, entries[4].Seq)
+
+	if err := q.Purge(ctx); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := q.Stats(ctx)
+	if st.Depth != 0 {
+		t.Fatalf("depth = %d after purge", st.Depth)
+	}
+	cur, _ := q.Cursor(ctx)
+	if cur != 0 {
+		t.Fatalf("cursor = %d after purge, want 0", cur)
+	}
+}
+
 func TestQueuesAreIsolated(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "q.db"))
 	if err != nil {

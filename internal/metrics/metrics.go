@@ -113,3 +113,27 @@ func (s *Set) SetComponentState(kind, id string, state int64) {
 	s.states[gaugeKey{kind, id}] = state
 	s.mu.Unlock()
 }
+
+// RemoveConnector drops the queue depth/bytes gauge entry for a connector.
+// Called when a connector is removed from config entirely so its last
+// observed queue depth doesn't linger in the exposition forever.
+func (s *Set) RemoveConnector(connector string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	delete(s.depths, connector)
+	s.mu.Unlock()
+}
+
+// RemoveComponent drops the component-state gauge entry for a source, sink,
+// or connector. Called when a component is stopped and no longer desired
+// (disabled or deleted) so its last state doesn't linger in the exposition.
+func (s *Set) RemoveComponent(kind, id string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	delete(s.states, gaugeKey{kind, id})
+	s.mu.Unlock()
+}

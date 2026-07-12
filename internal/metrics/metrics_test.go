@@ -16,6 +16,40 @@ func TestNilSetIsSafe(t *testing.T) {
 	s.SetComponentState("source", "can0", 2)
 	s.SourceMessages(context.Background(), "can0", 1)
 	s.SinkClients("sse", 1)
+	s.RemoveComponent("source", "can0")
+	s.RemoveConnector("c")
+}
+
+func TestRemoveComponentAndConnectorDropMapEntries(t *testing.T) {
+	s, _, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetComponentState("source", "can0", 2)
+	s.SetQueueDepth("nav", 5, 100)
+
+	s.mu.Lock()
+	if _, ok := s.states[gaugeKey{"source", "can0"}]; !ok {
+		s.mu.Unlock()
+		t.Fatal("precondition: state not recorded")
+	}
+	if _, ok := s.depths["nav"]; !ok {
+		s.mu.Unlock()
+		t.Fatal("precondition: depth not recorded")
+	}
+	s.mu.Unlock()
+
+	s.RemoveComponent("source", "can0")
+	s.RemoveConnector("nav")
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.states[gaugeKey{"source", "can0"}]; ok {
+		t.Fatal("RemoveComponent did not drop state entry")
+	}
+	if _, ok := s.depths["nav"]; ok {
+		t.Fatal("RemoveConnector did not drop depth entry")
+	}
 }
 
 func TestPrometheusExposition(t *testing.T) {
