@@ -64,6 +64,13 @@ func (s *serveSink) Stop() {
 	s.mu.Unlock()
 }
 
+// clientCount reports connected clients (test hook, like bus.Manager's).
+func (s *serveSink) clientCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.clients)
+}
+
 func (s *serveSink) RegisterConnector(id string, r ReplayReader) {
 	s.mu.Lock()
 	s.replays[id] = r
@@ -238,7 +245,13 @@ func serveWS(s *serveSink, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.CloseNow()
-	ctx := r.Context()
+	// CloseRead spawns the read pump this write-only handler otherwise
+	// lacks: it services control frames (ping/pong/close) and returns a
+	// context cancelled when the connection dies or r.Context() is
+	// cancelled (e.g. DataServer.Stop). Without it a dead client is never
+	// noticed until a write happens to fail, leaking the handler goroutine,
+	// its channel, and the SinkClients count.
+	ctx := conn.CloseRead(r.Context())
 
 	writeEvent := func(e queue.Entry) error {
 		doc, err := json.Marshal(e.Env)

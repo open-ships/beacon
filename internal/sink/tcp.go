@@ -100,7 +100,12 @@ func (s *tcpSink) Stop() {
 	s.conns = map[net.Conn]bool{}
 	s.mu.Unlock()
 	_ = s.ln.Close()
+	// Emptying s.conns above claimed these conns: a concurrent Broadcast
+	// write failure now finds dropConn's `known` false and won't double-
+	// close or double-decrement. Each accepted conn's +1 gets exactly one
+	// -1 here, keeping the gauge drift-free across sink restarts.
 	for _, c := range conns {
 		_ = c.Close()
+		s.met.SinkClients(s.id, -1)
 	}
 }

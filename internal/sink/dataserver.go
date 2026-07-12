@@ -10,9 +10,10 @@ import (
 
 // DataServer hosts serve-mode sink endpoints with dynamically managed routes.
 type DataServer struct {
-	log *slog.Logger
-	srv *http.Server
-	ln  net.Listener
+	log    *slog.Logger
+	srv    *http.Server
+	ln     net.Listener
+	cancel context.CancelFunc // cancels the base context, ending live streams
 
 	mu     sync.RWMutex
 	routes map[string]http.Handler
@@ -20,7 +21,14 @@ type DataServer struct {
 
 func NewDataServer(addr string, log *slog.Logger) *DataServer {
 	d := &DataServer{log: log, routes: map[string]http.Handler{}}
-	d.srv = &http.Server{Addr: addr, Handler: http.HandlerFunc(d.route)}
+	// Request contexts derive from this base context, so cancelling it in
+	// Stop unblocks every streaming handler (SSE select loop, WS CloseRead
+	// pump). Without it Shutdown only closes idle connections and would
+	// hang on active streams until its ctx expired.
+	baseCtx, cancel := context.WithCancel(context.Background())
+	d.cancel = cancel
+	d.srv = &http.Server{Addr: addr, Handler: http.HandlerFunc(d.route),
+		BaseContext: func(net.Listener) context.Context { return baseCtx }}
 	return d
 }
 
@@ -68,4 +76,9 @@ func (d *DataServer) RemoveRoute(path string) {
 	d.mu.Unlock()
 }
 
-func (d *DataServer) Stop(ctx context.Context) error { return d.srv.Shutdown(ctx) }
+// Stop cancels all active request contexts (ending SSE/WS streams), then
+// shuts the server down, waiting for handlers up to ctx's deadline.
+func (d *DataServer) Stop(ctx context.Context) error {
+	d.cancel()
+	return d.srv.Shutdown(ctx)
+}

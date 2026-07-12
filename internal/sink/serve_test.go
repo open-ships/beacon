@@ -11,10 +11,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/msg"
 	"github.com/open-ships/beacon/internal/queue"
 )
+
+// waitFor polls cond until true or the timeout elapses.
+func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", desc)
+}
 
 // memReplay is an in-memory ReplayReader.
 type memReplay struct{ entries []queue.Entry }
@@ -144,4 +159,65 @@ func TestDataServerRouteLifecycle(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("removed path = %d, want 404", resp.StatusCode)
 	}
+}
+
+// TestDataServerStopWithActiveSSEStream asserts Stop returns promptly while
+// a client is connected and streaming: cancelling the server's base context
+// must end the handler so Shutdown is not held open until ctx expiry.
+func TestDataServerStopWithActiveSSEStream(t *testing.T) {
+	ds, rt := startSSE(t)
+
+	resp, err := http.Get(fmt.Sprintf("http://%s/events", ds.Addr()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// Prove the stream is live before stopping.
+	waitFor(t, 3*time.Second, "SSE client to register",
+		func() bool { return rt.(*serveSink).clientCount() == 1 })
+	rt.(Broadcaster).Broadcast([]queue.Entry{entry("nav", 1, 127250)})
+	_ = readSSEEvents(t, resp, 1, 3*time.Second)
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	if err := ds.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Stop took %v with an active stream, want < 1s", elapsed)
+	}
+}
+
+// TestWSDeadClientDetected asserts the server notices a WS client that went
+// away without any Broadcast traffic: the read pump (CloseRead) must observe
+// the closed connection and unwind the handler, releasing the client slot.
+func TestWSDeadClientDetected(t *testing.T) {
+	ds := NewDataServer("127.0.0.1:0", slog.Default())
+	if err := ds.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ds.Stop(context.Background()) })
+	rt, err := New(context.Background(), model.Sink{
+		ID: "ws", Name: "WS", Type: model.SinkHTTPWS, Enabled: true, Path: "/ws",
+	}, nil, ds, slog.Default(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(rt.Stop)
+	s := rt.(*serveSink)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s/ws", ds.Addr()), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 3*time.Second, "WS client to register",
+		func() bool { return s.clientCount() == 1 })
+
+	_ = conn.CloseNow() // abrupt client death, no traffic in flight
+	waitFor(t, 3*time.Second, "dead WS client to be dropped",
+		func() bool { return s.clientCount() == 0 })
 }
