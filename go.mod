@@ -4,6 +4,7 @@ go 1.25.2
 
 require (
 	github.com/brutella/can v0.0.2
+	github.com/coder/websocket v1.8.15
 	github.com/google/cel-go v0.29.2
 	github.com/open-ships/n2k v0.0.0-20260708200005-f053587126b6
 	github.com/prometheus/client_golang v1.23.2
