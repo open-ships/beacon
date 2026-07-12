@@ -50,7 +50,7 @@ The canonical message form used in queues, on HTTP wires, and as CEL input:
 
 - `id` is the connector-queue sequence number; it doubles as the SSE event id for client replay.
 - `payload` is the JSON serialization of the typed `pgn.Message` struct from n2k.
-- `raw` carries the assembled payload bytes. It is populated only for unknown PGNs (where it is the sole payload and enables lossless CAN→CAN bridging); known PGNs omit it and are re-encoded from `payload` via the n2k codec.
+- `raw` always carries the assembled payload bytes (base64): for unknown PGNs the original bytes (`UnknownPGN.Data`), for known PGNs the canonical re-encoding via `pgn.EncodeMessage`. This makes the CAN-sink write path uniform — `pgn.DecodeMessage(info, raw)` → `Client.Write` — with no JSON→struct reconstruction needed anywhere.
 
 ### 2.2 Source
 
@@ -133,15 +133,15 @@ Default implementation: SQLite (WAL mode, one shared `queue` table keyed by `con
 ### 3.5 Delivery semantics
 
 - **Push-confirmed** (CAN sinks): delivery blocks until the bus write succeeds. On bus failure the queue accumulates up to its limits and drains on recovery. At-least-once delivery onto the bus.
-- **Broadcast + client replay** (SSE/WS/TCP sinks): the delivery cursor advances as messages are broadcast to currently connected clients. Each client may replay independently: SSE via `Last-Event-ID`, WS/TCP via an optional `?after=<seq>` query/handshake parameter, served directly from the connector queue up to its retention limits. Zero connected clients does not create backpressure.
+- **Broadcast + client replay** (SSE/WS sinks): the delivery cursor advances as messages are broadcast to currently connected clients. Each client may replay independently, served directly from the connector queue up to its retention limits. Because a sink may be fed by multiple connectors, event ids are composite: `<connector_id>:<seq>` (SSE `id:` field; also the envelope `id` on WS). SSE clients replay via `Last-Event-ID`; SSE and WS clients can also pass `?after=<connector_id>:<seq>` (repeatable). TCP sinks are live-tail only (their point is `nc`-grade simplicity; no replay). Zero connected clients does not create backpressure.
 
 ### 3.6 Hot apply (reconciler)
 
 API/UI writes desired state to SQLite → supervisor diffs desired vs. running → stops/starts only affected pipelines. A connector edit restarts just that connector; its queue and checkpoint persist (keyed by connector id). Component start failures (e.g. missing CAN interface) put the component in an `error` state visible in API/UI instead of rejecting the config — visible, not fatal. Static validation (CEL compile, reference integrity, path collisions) still rejects bad config at write time.
 
-### 3.7 JSON → pgn.Message reconstruction (spike)
+### 3.7 CAN write path (resolved — no spike needed)
 
-The HTTP-source → CAN-sink path requires rebuilding a typed `pgn.Message` from `{pgn, payload JSON}` so the n2k codec can encode it. If n2k lacks a construct-by-PGN registry, add one to n2k (it benefits the library generally). Fallback for unknown PGNs: write the preserved `raw` bytes. This spike is the first task of Phase 1.
+n2k exposes `pgn.DecodeMessage(info, payload) (PGN, error)` and `pgn.EncodeMessage(msg) ([]byte, error)`. Since every envelope carries `raw` (§2.1), a CAN sink writes any message — whether it originated on a local bus or arrived as JSON from an HTTP source — by `pgn.DecodeMessage(info, raw)` → `Client.Write`. No JSON→struct registry is required. (Known caveat: 8 of 599 PGNs don't value-round-trip through the codec per n2k's changelog; acceptable for an at-least-once gateway.)
 
 ## 4. Persistence
 
@@ -233,7 +233,7 @@ UI rate tiles come from an in-process rolling-window rate calculator over the sa
 
 Each phase leaves beacon in a working, releasable state:
 
-1. **Core runtime** — envelope, bus manager, `Queue` + SQLite implementation, source/sink/connector runtimes, supervisor/reconciler; config seeded from a JSON file. Includes the JSON→`pgn.Message` spike (§3.7).
+1. **Core runtime** — envelope, bus manager, `Queue` + SQLite implementation, source/sink/connector runtimes, supervisor/reconciler; config seeded from a JSON file.
 2. **Config API** — huma CRUD, filter validation, export/import, system endpoints; OpenAPI + embedded API reference; hot reconciliation wired to the API.
 3. **Web UI** — htmx app: dashboard with live metrics, sources/sinks/connectors CRUD, OpenBridge/daisyUI theming, embedded assets.
 4. **Docs & polish** — `/docs` manual content, README rewrite, examples as importable JSON config files, Dockerfile/compose/CI updates, e2e hardening.
