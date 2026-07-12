@@ -2,8 +2,10 @@ package bus
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -179,6 +181,52 @@ func TestWriteEncodesToBus(t *testing.T) {
 	}
 }
 
+// stallBus is a fakeBus whose WriteFrame can be gated shut. stall starts
+// false so address claiming (which writes a claim frame during NewClient)
+// proceeds normally; tests flip it once the client is up to make the next
+// write block until open() is called.
+type stallBus struct {
+	*fakeBus
+	stall    atomic.Bool
+	gate     chan struct{}
+	openOnce sync.Once
+}
+
+func newStallBus() *stallBus {
+	return &stallBus{fakeBus: newFakeBus(), gate: make(chan struct{})}
+}
+
+func (s *stallBus) WriteFrame(f can.Frame) error {
+	if s.stall.Load() {
+		<-s.gate
+	}
+	return s.fakeBus.WriteFrame(f)
+}
+
+func (s *stallBus) open() { s.openOnce.Do(func() { close(s.gate) }) }
+
+// headingEnvelope hand-builds a writable envelope for PGN 127250 with the
+// same payload bytes as vesselHeadingFrame.
+func headingEnvelope() *msg.Envelope {
+	return &msg.Envelope{
+		PGN: 127250, Source: 12, Dest: 255, Priority: 2,
+		Timestamp: time.Now(),
+		Raw:       []byte{0xFF, 0x5C, 0x3D, 0xFF, 0x7F, 0xFF, 0x7F, 0xFC},
+	}
+}
+
+func waitUp(t *testing.T, h *Handle) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if s, _ := h.State(); s == "up" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("client never reached up state")
+}
+
 func TestWriteRejectsEmptyRaw(t *testing.T) {
 	fake := newFakeBus()
 	m := testManager(t, fake)
@@ -193,5 +241,70 @@ func TestWriteRejectsEmptyRaw(t *testing.T) {
 	e := &msg.Envelope{PGN: 127250, Source: 12}
 	if err := h.Write(ctx, e); err == nil {
 		t.Fatal("expected error for envelope with empty Raw")
+	}
+}
+
+// TestWriteToConcurrentlyClosedClient closes the shared client out from
+// under a handle and asserts Write surfaces an error rather than panicking.
+// (The exact n2k panic window — Close landing between client.Write's closed
+// check and its channel send — cannot be forced deterministically without
+// hooks into n2k; this exercises the closed-client path, and Handle.Write's
+// recover covers the racy window.)
+func TestWriteToConcurrentlyClosedClient(t *testing.T) {
+	fake := newFakeBus()
+	m := testManager(t, fake)
+	ctx := context.Background()
+
+	h, err := m.Acquire(ctx, Endpoint{Kind: "socketcan", Name: "can0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Release()
+	waitUp(t, h)
+
+	h.bc.mu.Lock()
+	client := h.bc.client
+	h.bc.mu.Unlock()
+	if client == nil {
+		t.Fatal("no client after up state")
+	}
+	_ = client.Close() // close it out from under the handle
+
+	if err := h.Write(ctx, headingEnvelope()); err == nil {
+		t.Fatal("Write to closed client returned nil, want error")
+	}
+}
+
+// TestWriteReturnsOnCtxCancel stalls the fake bus's WriteFrame so the write
+// never completes, then cancels the Write ctx and asserts Write returns
+// promptly with context.Canceled instead of blocking on Wait.
+func TestWriteReturnsOnCtxCancel(t *testing.T) {
+	sb := newStallBus()
+	m := NewManager(slog.Default(), nil,
+		n2k.WithBus(sb), n2k.WithClaimTimeout(50*time.Millisecond))
+
+	h, err := m.Acquire(context.Background(), Endpoint{Kind: "socketcan", Name: "can0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Release()
+	defer sb.open() // unblock the stalled write before Release tears down
+	waitUp(t, h)
+
+	sb.stall.Store(true)
+	wctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- h.Write(wctx, headingEnvelope()) }()
+
+	time.Sleep(100 * time.Millisecond) // let the write reach the stalled WriteFrame
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Write err = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Write did not return promptly after ctx cancel")
 	}
 }

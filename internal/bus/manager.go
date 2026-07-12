@@ -55,7 +55,15 @@ func (m *Manager) clientCount() int {
 
 // Acquire returns a refcounted handle on the endpoint's shared client,
 // starting it if this is the first reference.
+//
+// ctx bounds only the acquisition itself; it does NOT bound the client's
+// lifetime. The shared client runs on its own background context because it
+// is shared between acquirers with independent lifecycles — it lives until
+// the last Handle is Released.
 func (m *Manager) Acquire(ctx context.Context, ep Endpoint) (*Handle, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	bc, ok := m.clients[ep]
@@ -83,10 +91,14 @@ type busClient struct {
 	ep     Endpoint
 	opt    n2k.Option
 	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	wg     sync.WaitGroup // tracks the run goroutine; waited on by the last Release
+
+	// refs is guarded by mgr.mu (not this mu): Acquire and Release both
+	// mutate it while holding the manager lock, which also serializes it
+	// with the clients-map bookkeeping.
+	refs int
 
 	mu      sync.Mutex
-	refs    int
 	client  *n2k.Client
 	subs    map[int64]chan *msg.Envelope
 	nextSub int64
@@ -124,6 +136,20 @@ func (bc *busClient) run(ctx context.Context) {
 		bc.setState("up", nil)
 		backoff = 250 * time.Millisecond
 
+		// n2k's real socketcan/usbcan Bus.Run implementations ignore ctx
+		// (they only unblock when the underlying socket/port is closed), so
+		// cancelling ctx would not by itself end the Receive loop on real
+		// hardware. Force-close the client on cancellation; client.Close is
+		// idempotent, so racing the loop-exit Close below is harmless.
+		iterDone := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = client.Close()
+			case <-iterDone:
+			}
+		}()
+
 		for m, err := range client.Receive() {
 			if err != nil {
 				bc.mgr.log.Debug("n2k receive error", "endpoint", bc.ep.Name, "err", err)
@@ -138,6 +164,7 @@ func (bc *busClient) run(ctx context.Context) {
 		}
 		// Receive ended: client dead or ctx cancelled.
 		_ = client.Close()
+		close(iterDone) // retire this iteration's close watchdog
 		bc.mu.Lock()
 		bc.client = nil
 		bc.mu.Unlock()
@@ -192,6 +219,10 @@ type Handle struct {
 // client, and an unsubscribe function that removes it. buf sets the
 // channel's buffer size; a full subscriber has envelopes dropped rather than
 // blocking the shared receive loop.
+//
+// unsub does NOT close the channel (envelopes may be in flight from the
+// broadcast loop when it runs). Consumers must select on their own
+// context/done signal alongside the channel — never bare-range over it.
 func (h *Handle) Subscribe(buf int) (<-chan *msg.Envelope, func()) {
 	bc := h.bc
 	bc.mu.Lock()
@@ -207,7 +238,9 @@ func (h *Handle) Subscribe(buf int) (<-chan *msg.Envelope, func()) {
 	}
 }
 
-// Write re-encodes the envelope onto the bus. Requires Raw bytes.
+// Write re-encodes the envelope onto the bus. Requires Raw bytes. It blocks
+// until the write completes or ctx is done; cancellation abandons the wait
+// but does not retract a write already handed to the client.
 func (h *Handle) Write(ctx context.Context, e *msg.Envelope) error {
 	if len(e.Raw) == 0 {
 		return fmt.Errorf("pgn %d: envelope has no raw bytes; cannot encode to CAN", e.PGN)
@@ -222,7 +255,31 @@ func (h *Handle) Write(ctx context.Context, e *msg.Envelope) error {
 	if err != nil {
 		return fmt.Errorf("decode envelope for CAN write: %w", err)
 	}
-	return client.Write(m).Wait()
+
+	// client may be concurrently Closed by run()'s reconnect path after we
+	// captured it above. n2k's Client.Write has a check-then-act race on its
+	// closed flag that can panic ("send on closed channel") in that window,
+	// so run it in a goroutine that converts a panic into an error. The
+	// goroutine cannot leak: n2k's Close drains every accepted write job
+	// (completing its WriteResult with an error) before returning, and a
+	// send blocked on the client's full write queue panics — and is
+	// recovered here — when Close closes that channel.
+	done := make(chan error, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- fmt.Errorf("bus %s: client closed during write of pgn %d: %v",
+					h.bc.ep.Name, e.PGN, r)
+			}
+		}()
+		done <- client.Write(m).Wait()
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // State reports the shared client's current connection state ("up",
@@ -234,20 +291,25 @@ func (h *Handle) State() (state string, lastErr error) {
 }
 
 // Release decrements the handle's reference on the shared client. The last
-// Release for an endpoint cancels the receive loop and closes the client.
+// Release for an endpoint cancels the receive loop, closes the client, and
+// blocks until the run goroutine has fully exited.
 func (h *Handle) Release() {
 	h.released.Do(func() {
 		bc := h.bc
 		mgr := bc.mgr
 		mgr.mu.Lock()
-		defer mgr.mu.Unlock()
-		bc.mu.Lock()
-		bc.refs--
+		bc.refs-- // guarded by mgr.mu, matching Acquire
 		last := bc.refs == 0
-		bc.mu.Unlock()
 		if last {
 			bc.cancel()
 			delete(mgr.clients, bc.ep)
+		}
+		mgr.mu.Unlock()
+		if last {
+			// Wait outside mgr.mu so a slow client teardown doesn't block
+			// Acquires of other endpoints. run never takes mgr.mu, so this
+			// cannot deadlock.
+			bc.wg.Wait()
 		}
 	})
 }
