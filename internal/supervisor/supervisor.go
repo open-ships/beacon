@@ -93,10 +93,20 @@ type Supervisor struct {
 	runCancel context.CancelFunc
 
 	// reconcileMu serializes Reconcile and Stop bodies. It also guards
-	// `stopped`, which is only ever read/written from within those two
-	// methods.
+	// `stopped`, `needsPurgeSweep`, and `prevConfigured`, all of which are
+	// only ever read/written from within those two methods (Statuses never
+	// touches them, so stateMu is not involved).
 	reconcileMu sync.Mutex
 	stopped     bool
+	// needsPurgeSweep arms the KnownConnectorIDs purge sweep in Reconcile.
+	// It starts true (so the first Reconcile cleans up storage of connectors
+	// deleted from config while the process was down), is re-armed whenever
+	// the configured-connector id set shrinks, and is disarmed only after a
+	// fully successful sweep so a failed purge retries next Reconcile.
+	needsPurgeSweep bool
+	// prevConfigured is the configured-connector id set (enabled or not)
+	// seen by the previous Reconcile, used to detect shrinkage.
+	prevConfigured map[string]bool
 
 	// stateMu guards sources/sinks/connectors/errored only. Held briefly for
 	// map reads/writes — never across a component constructor or Stop()
@@ -112,9 +122,10 @@ func New(st *store.Store, busMgr *bus.Manager, ds *sink.DataServer, log *slog.Lo
 	runCtx, cancel := context.WithCancel(context.Background())
 	return &Supervisor{st: st, bus: busMgr, ds: ds, log: log, met: met,
 		runCtx: runCtx, runCancel: cancel,
-		sources:    map[string]*runningSource{},
-		sinks:      map[string]*runningSink{},
-		connectors: map[string]*runningConnector{},
+		needsPurgeSweep: true,
+		sources:         map[string]*runningSource{},
+		sinks:           map[string]*runningSink{},
+		connectors:      map[string]*runningConnector{},
 	}
 }
 
@@ -176,6 +187,19 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	for _, v := range cfg.Connectors {
 		configuredConnectors[v.ID] = true
 	}
+	// Re-arm the purge sweep only when the configured id set shrank — an id
+	// present last Reconcile is gone now. Within-process deletions only ever
+	// take effect through Reconcile, so shrink detection (plus the
+	// first-Reconcile arm set in New for deletions that happened while the
+	// process was down) catches every deletion without running the sweep on
+	// the steady-state path.
+	for id := range s.prevConfigured {
+		if !configuredConnectors[id] {
+			s.needsPurgeSweep = true
+			break
+		}
+	}
+	s.prevConfigured = configuredConnectors
 
 	// --- Compute the stop set under stateMu, mutating the maps there, but
 	// defer the actual (potentially slow) Stop() calls until after the lock
@@ -245,21 +269,37 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	// from config entirely (deleted, not merely disabled) lose their durable
 	// queue + checkpoint. This also catches connectors that were already
 	// stopped (e.g. disabled) in an earlier reconcile and only now got
-	// deleted, so their storage was never touched by the stop phase above. ---
-	if known, err := s.st.KnownConnectorIDs(ctx); err != nil {
-		s.log.Error("list known connector ids failed", "err", err)
-	} else {
-		for _, id := range known {
-			if configuredConnectors[id] {
-				continue
+	// deleted, so their storage was never touched by the stop phase above.
+	//
+	// Gated behind needsPurgeSweep (first Reconcile + configured-set
+	// shrinkage, see above) because KnownConnectorIDs is an unfiltered scan
+	// of the whole queue table plus a UNION temp b-tree, and the app shares
+	// one SQLite connection (store.Open sets SetMaxOpenConns(1)): running it
+	// on every Reconcile would stall every connector's Append/Read/Ack
+	// system-wide for the duration of the scan. It must stay after the stop
+	// phase so a just-deleted connector's final flush/ack lands before its
+	// rows are purged. ---
+	if s.needsPurgeSweep {
+		if known, err := s.st.KnownConnectorIDs(ctx); err != nil {
+			s.log.Error("list known connector ids failed", "err", err)
+		} else {
+			swept := true
+			for _, id := range known {
+				if configuredConnectors[id] {
+					continue
+				}
+				q := queue.NewSQLite(s.st, id, model.BufferLimits{})
+				if err := q.Purge(context.Background()); err != nil {
+					s.log.Error("purge deleted connector queue failed", "id", id, "err", err)
+					swept = false
+					continue
+				}
+				s.met.RemoveConnector(id)
+				s.met.RemoveComponent("connector", id)
 			}
-			q := queue.NewSQLite(s.st, id, model.BufferLimits{})
-			if err := q.Purge(context.Background()); err != nil {
-				s.log.Error("purge deleted connector queue failed", "id", id, "err", err)
-				continue
+			if swept {
+				s.needsPurgeSweep = false
 			}
-			s.met.RemoveConnector(id)
-			s.met.RemoveComponent("connector", id)
 		}
 	}
 

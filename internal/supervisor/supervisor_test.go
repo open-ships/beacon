@@ -3,11 +3,16 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
+	"net/http/httptest"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/open-ships/beacon/internal/metrics"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/msg"
 	"github.com/open-ships/beacon/internal/queue"
@@ -294,5 +299,128 @@ func TestRecoveredComponentStateNotSticky(t *testing.T) {
 	_ = sup.Reconcile(ctx)
 	if s := find(sup.Statuses(), "sink", "bad"); s == nil || s.State == "error" {
 		t.Fatalf("recovered sink still error: %+v", s)
+	}
+}
+
+// The KnownConnectorIDs purge sweep scans the whole queue table over the
+// app's single shared SQLite connection, so it must stay off the steady-state
+// Reconcile path: it runs on the first Reconcile after construction and again
+// only when the configured-connector id set shrinks.
+func TestPurgeSweepGating(t *testing.T) {
+	st, sup, _ := setup(t)
+	ctx := context.Background()
+	_ = st.ReplaceConfig(ctx, baseConfig())
+	_ = sup.Reconcile(ctx) // first reconcile: sweep runs (and disarms) here
+
+	// Seed storage for a connector id that was never configured.
+	ghost := queue.NewSQLite(st, "ghost", model.BufferLimits{MaxMessages: 10})
+	_ = ghost.Append(ctx, []*msg.Envelope{{PGN: 1, Timestamp: time.Now(), Payload: json.RawMessage(`{}`)}})
+
+	// Same config, no shrink: the sweep must not run again.
+	_ = sup.Reconcile(ctx)
+	if stats, _ := ghost.Stats(ctx); stats.Depth != 1 {
+		t.Fatalf("ghost depth = %d after non-shrinking reconcile, want 1 (sweep gated off)", stats.Depth)
+	}
+
+	// Shrink the configured set: the sweep re-arms and purges every
+	// unconfigured id, the deleted connector and the ghost alike.
+	cfg := baseConfig()
+	cfg.Connectors = nil
+	_ = st.ReplaceConfig(ctx, cfg)
+	_ = sup.Reconcile(ctx)
+	if stats, _ := ghost.Stats(ctx); stats.Depth != 0 {
+		t.Fatalf("ghost depth = %d after shrinking reconcile, want 0 (swept)", stats.Depth)
+	}
+	link := queue.NewSQLite(st, "link", model.BufferLimits{MaxMessages: 10})
+	if stats, _ := link.Stats(ctx); stats.Depth != 0 {
+		t.Fatalf("deleted connector depth = %d after shrinking reconcile, want 0", stats.Depth)
+	}
+}
+
+// The first Reconcile after construction must sweep storage of connectors
+// deleted from config while the process was down (they were never in any
+// previous in-process configured set, so shrink detection alone would miss
+// them).
+func TestFirstReconcileSweepsOrphanedStorage(t *testing.T) {
+	st, sup, _ := setup(t)
+	ctx := context.Background()
+	ghost := queue.NewSQLite(st, "ghost", model.BufferLimits{MaxMessages: 10})
+	_ = ghost.Append(ctx, []*msg.Envelope{{PGN: 1, Timestamp: time.Now(), Payload: json.RawMessage(`{}`)}})
+
+	_ = st.ReplaceConfig(ctx, baseConfig())
+	_ = sup.Reconcile(ctx)
+	if stats, _ := ghost.Stats(ctx); stats.Depth != 0 {
+		t.Fatalf("orphaned depth = %d after first reconcile, want 0 (swept)", stats.Depth)
+	}
+}
+
+// TestComponentStateGaugeTransitions exercises the metric call sites with a
+// real metrics.Set (every other supervisor test passes met=nil, which no-ops
+// them) and asserts the beacon.component.state gauge through the exported
+// Prometheus exposition: error start -> 0, recovered start -> 2, deleted ->
+// series gone.
+func TestComponentStateGaugeTransitions(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	met, handler, err := metrics.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds := sink.NewDataServer("127.0.0.1:0", slog.Default())
+	if err := ds.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ds.Stop(context.Background()) })
+	sup := New(st, nil, ds, slog.Default(), met)
+	t.Cleanup(sup.Stop)
+
+	// gaugeValue scrapes the Prometheus handler and returns the
+	// beacon_component_state sample with the given kind/id labels.
+	gaugeValue := func(kind, id string) (float64, bool) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+		body, _ := io.ReadAll(rec.Body)
+		for _, line := range strings.Split(string(body), "\n") {
+			if !strings.HasPrefix(line, "beacon_component_state") ||
+				!strings.Contains(line, `kind="`+kind+`"`) ||
+				!strings.Contains(line, `id="`+id+`"`) {
+				continue
+			}
+			fields := strings.Fields(line)
+			v, err := strconv.ParseFloat(fields[len(fields)-1], 64)
+			if err != nil {
+				t.Fatalf("unparseable sample %q: %v", line, err)
+			}
+			return v, true
+		}
+		return 0, false
+	}
+
+	ctx := context.Background()
+	cfg := baseConfig()
+	cfg.Sinks = append(cfg.Sinks, model.Sink{ID: "bad", Name: "Bad", Type: model.SinkTCP,
+		Enabled: true, Address: "256.256.256.256:1"})
+	_ = st.ReplaceConfig(ctx, cfg)
+	_ = sup.Reconcile(ctx)
+	if v, ok := gaugeValue("sink", "bad"); !ok || v != 0 {
+		t.Fatalf("failed sink gauge = %v (present=%v), want 0", v, ok)
+	}
+
+	cfg.Sinks[1].Address = "127.0.0.1:0" // now bindable
+	_ = st.ReplaceConfig(ctx, cfg)
+	_ = sup.Reconcile(ctx)
+	if v, ok := gaugeValue("sink", "bad"); !ok || v != 2 {
+		t.Fatalf("recovered sink gauge = %v (present=%v), want 2", v, ok)
+	}
+
+	cfg.Sinks = cfg.Sinks[:1] // delete the sink entirely
+	_ = st.ReplaceConfig(ctx, cfg)
+	_ = sup.Reconcile(ctx)
+	if v, ok := gaugeValue("sink", "bad"); ok {
+		t.Fatalf("deleted sink gauge still exported (value %v), want series gone", v)
 	}
 }
