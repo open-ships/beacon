@@ -38,13 +38,10 @@ beacon.db
 
 # Artifacts
 /beacon
-./docs/**
 
 # Editor/IDE
 # .idea/
 # .vscode/
-beacon
-beacon.db
 *.db-wal
 *.db-shm
 .claude/

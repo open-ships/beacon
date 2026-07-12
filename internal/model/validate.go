@@ -81,6 +81,9 @@ func (c Connector) Validate() error {
 	if c.SourceID == "" || c.SinkID == "" {
 		return fmt.Errorf("connector %q: source_id and sink_id are required", c.ID)
 	}
+	if c.Buffer.MaxMessages < 0 || c.Buffer.MaxAge < 0 || c.Buffer.MaxBytes < 0 {
+		return fmt.Errorf("connector %q: buffer limits must not be negative", c.ID)
+	}
 	return nil
 }
 

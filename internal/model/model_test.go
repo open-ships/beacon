@@ -49,6 +49,7 @@ func TestValidateRejects(t *testing.T) {
 		{"connector unknown source", func(c *Config) { c.Connectors[0].SourceID = "nope" }},
 		{"connector unknown sink", func(c *Config) { c.Connectors[0].SinkID = "nope" }},
 		{"unknown source type", func(c *Config) { c.Sources[0].Type = "carrier-pigeon" }},
+		{"negative buffer limit", func(c *Config) { c.Connectors[0].Buffer.MaxMessages = -1 }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
