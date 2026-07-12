@@ -1,0 +1,127 @@
+// Package msg defines the canonical message envelope that flows through
+// queues, HTTP wire formats, and CEL filters.
+package msg
+
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/open-ships/n2k/pgn"
+)
+
+type Envelope struct {
+	Seq         int64           `json:"id,omitempty"`
+	ConnectorID string          `json:"connector,omitempty"`
+	PGN         uint32          `json:"pgn"`
+	Source      uint8           `json:"source"`
+	Dest        uint8           `json:"dest"`
+	Priority    uint8           `json:"priority"`
+	Timestamp   time.Time       `json:"timestamp"`
+	Payload     json.RawMessage `json:"payload"`
+	Raw         []byte          `json:"raw,omitempty"`
+
+	payloadMap map[string]any // lazy cache for CEL
+}
+
+const (
+	defaultPriority = 6
+	broadcastDest   = 255
+)
+
+// FromPGN converts a decoded n2k message into an Envelope. Known PGNs get
+// their payload marshaled to JSON and Raw set to the canonical re-encoding;
+// UnknownPGN keeps its original bytes and a null payload.
+func FromPGN(m pgn.Message) (*Envelope, error) {
+	// Handle UnknownPGN separately since it doesn't implement pgn.PGN
+	if u, isUnknown := m.(*pgn.UnknownPGN); isUnknown {
+		e := &Envelope{
+			PGN:       u.Info.PGN,
+			Source:    u.Info.SourceId,
+			Dest:      broadcastDest,
+			Priority:  defaultPriority,
+			Timestamp: u.Info.Timestamp,
+			Payload:   json.RawMessage("null"),
+			Raw:       append([]byte(nil), u.Data...),
+		}
+		if e.Timestamp.IsZero() {
+			e.Timestamp = time.Now()
+		}
+		if u.Info.TargetId != nil {
+			e.Dest = *u.Info.TargetId
+		}
+		if u.Info.Priority != nil {
+			e.Priority = *u.Info.Priority
+		}
+		return e, nil
+	}
+
+	p, ok := m.(pgn.PGN)
+	if !ok {
+		return nil, fmt.Errorf("%T does not implement pgn.PGN", m)
+	}
+	info := p.MessageInfo()
+	e := &Envelope{
+		PGN:       info.PGN,
+		Source:    info.SourceId,
+		Dest:      broadcastDest,
+		Priority:  defaultPriority,
+		Timestamp: info.Timestamp,
+	}
+	if e.PGN == 0 {
+		e.PGN = m.PGNNumber()
+	}
+	if info.TargetId != nil {
+		e.Dest = *info.TargetId
+	}
+	if info.Priority != nil {
+		e.Priority = *info.Priority
+	}
+	if e.Timestamp.IsZero() {
+		e.Timestamp = time.Now()
+	}
+
+	payload, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("marshal PGN %d payload: %w", e.PGN, err)
+	}
+	e.Payload = payload
+	raw, err := pgn.EncodeMessage(m)
+	if err != nil {
+		// Still deliverable to HTTP sinks; CAN sinks will skip it.
+		e.Raw = nil
+	} else {
+		e.Raw = raw
+	}
+	return e, nil
+}
+
+// Info rebuilds the MessageInfo for encoding this envelope back onto a CAN bus.
+func (e *Envelope) Info() pgn.MessageInfo {
+	return pgn.MessageInfo{
+		Timestamp: e.Timestamp,
+		Priority:  pgn.Priority(e.Priority),
+		PGN:       e.PGN,
+		SourceId:  e.Source,
+		TargetId:  pgn.Target(e.Dest),
+	}
+}
+
+// PayloadMap returns the payload as a map for CEL evaluation, cached after
+// the first call. A null/empty payload yields an empty map.
+func (e *Envelope) PayloadMap() map[string]any {
+	if e.payloadMap != nil {
+		return e.payloadMap
+	}
+	m := map[string]any{}
+	if len(e.Payload) > 0 && string(e.Payload) != "null" {
+		_ = json.Unmarshal(e.Payload, &m)
+	}
+	e.payloadMap = m
+	return m
+}
+
+// SizeBytes approximates the stored size for buffer byte-limit accounting.
+func (e *Envelope) SizeBytes() int {
+	return len(e.Payload) + len(e.Raw) + 64
+}
