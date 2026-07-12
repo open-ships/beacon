@@ -2,6 +2,7 @@ package msg
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -84,4 +85,19 @@ func TestSizeBytes(t *testing.T) {
 	if e.SizeBytes() < len(e.Payload)+len(e.Raw) {
 		t.Fatalf("SizeBytes too small: %d", e.SizeBytes())
 	}
+}
+
+func TestPayloadMapConcurrent(t *testing.T) {
+	e := &Envelope{Payload: json.RawMessage(`{"a":1,"b":"x"}`)}
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if e.PayloadMap()["a"] == nil {
+				t.Error("missing key a")
+			}
+		}()
+	}
+	wg.Wait()
 }

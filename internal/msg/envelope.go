@@ -5,6 +5,7 @@ package msg
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/open-ships/n2k/pgn"
@@ -21,7 +22,8 @@ type Envelope struct {
 	Payload     json.RawMessage `json:"payload"`
 	Raw         []byte          `json:"raw,omitempty"`
 
-	payloadMap map[string]any // lazy cache for CEL
+	payloadOnce sync.Once
+	payloadMap  map[string]any // lazy cache for CEL
 }
 
 const (
@@ -107,18 +109,18 @@ func (e *Envelope) Info() pgn.MessageInfo {
 	}
 }
 
-// PayloadMap returns the payload as a map for CEL evaluation, cached after
-// the first call. A null/empty payload yields an empty map.
+// PayloadMap returns the payload as a map for CEL evaluation, decoded once
+// and cached. Callers must treat the returned map as read-only — it is
+// shared across all subscribers of this envelope.
 func (e *Envelope) PayloadMap() map[string]any {
-	if e.payloadMap != nil {
-		return e.payloadMap
-	}
-	m := map[string]any{}
-	if len(e.Payload) > 0 && string(e.Payload) != "null" {
-		_ = json.Unmarshal(e.Payload, &m)
-	}
-	e.payloadMap = m
-	return m
+	e.payloadOnce.Do(func() {
+		m := map[string]any{}
+		if len(e.Payload) > 0 && string(e.Payload) != "null" {
+			_ = json.Unmarshal(e.Payload, &m)
+		}
+		e.payloadMap = m
+	})
+	return e.payloadMap
 }
 
 // SizeBytes approximates the stored size for buffer byte-limit accounting.
