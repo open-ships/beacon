@@ -15,6 +15,7 @@ import (
 	n2k "github.com/open-ships/n2k"
 
 	"github.com/open-ships/beacon/internal/bus"
+	"github.com/open-ships/beacon/internal/config"
 	"github.com/open-ships/beacon/internal/filter"
 	"github.com/open-ships/beacon/internal/metrics"
 	"github.com/open-ships/beacon/internal/model"
@@ -45,6 +46,7 @@ type App struct {
 	ds       *sink.DataServer
 	sup      *supervisor.Supervisor
 	reg      *stats.Registry
+	cfgSvc   *config.Service
 	adminSrv *http.Server
 	adminLn  net.Listener
 }
@@ -95,8 +97,9 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("initial reconcile: %w", err)
 	}
+	cfgSvc := config.NewService(st, sup, log)
 
-	a := &App{log: log, st: st, ds: ds, sup: sup, reg: reg}
+	a := &App{log: log, st: st, ds: ds, sup: sup, reg: reg, cfgSvc: cfgSvc}
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", promHandler)
@@ -191,6 +194,12 @@ func (a *App) Reconcile(ctx context.Context) error { return a.sup.Reconcile(ctx)
 // serves rate/throughput data to the config API and, later, the UI
 // dashboard).
 func (a *App) Stats() *stats.Registry { return a.reg }
+
+// Service returns the config service layer: the single
+// validation+persist+reconcile choke point that the HTTP config API (Phase
+// 2 Task 4) and, later, the Phase 3 UI sit on instead of touching the store
+// directly.
+func (a *App) Service() *config.Service { return a.cfgSvc }
 
 // Close shuts the admin server down, stops the supervisor (which stops every
 // running connector, sink, and source and flushes final queue checkpoints),
