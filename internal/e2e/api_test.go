@@ -209,6 +209,19 @@ func TestEndToEndAPIDrivenLifecycle(t *testing.T) {
 		Buffer:  model.BufferLimits{MaxMessages: 1000},
 	}), http.StatusOK)
 
+	// Step 3b: a just-created, still-idle connector (no frames injected yet)
+	// must already be listed by GET /api/v1/metrics — Connector.Start
+	// registers it in the stats registry synchronously, so the UI dashboard
+	// never has a window where a new connector is invisible.
+	t.Log("step 3b: list-metrics includes the just-created idle connector")
+	var allMetrics struct {
+		Connectors map[string]metricsSnapshot `json:"connectors"`
+	}
+	decodeJSON(t, doJSON(t, http.MethodGet, adminBase+"/api/v1/metrics", nil), &allMetrics)
+	if _, ok := allMetrics.Connectors["heading"]; !ok {
+		t.Fatalf("GET /api/v1/metrics = %+v, want idle connector \"heading\" listed immediately", allMetrics.Connectors)
+	}
+
 	// Step 4: connect an SSE client, inject heading + depth frames, and
 	// assert only the heading (127250) messages arrive, with the "info"
 	// object stripped from the payload (wire-freeze regression).

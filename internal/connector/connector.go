@@ -60,16 +60,19 @@ func (c *Connector) Start(ctx context.Context) {
 	if reg, ok := c.snk.(sink.ConnectorRegistrar); ok {
 		reg.RegisterConnector(c.cfg.ID, c.q)
 	}
-	// Seed the stats registry synchronously so a just-created (idle)
+	// Register in the stats registry synchronously so a just-created (idle)
 	// connector shows up in Registry.All()/Snapshot immediately, rather than
-	// waiting for the first prune tick (up to pruneInterval later). A read
-	// error (e.g. a brand-new queue) seeds zero values, which is the correct
-	// idle state anyway.
-	depth, bytes := int64(0), int64(0)
-	if st, err := c.q.Stats(ctx); err == nil {
-		depth, bytes = st.Depth, st.Bytes
-	}
-	c.st.SetQueue(c.cfg.ID, depth, bytes)
+	// waiting for the first prune tick (up to pruneInterval later).
+	// Deliberately zero-valued, with NO queue read here: Start runs while the
+	// supervisor holds reconcileMu, on a store limited to a single shared
+	// SQLite connection — a synchronous q.Stats (COUNT/SUM over this
+	// connector's queue rows) would add a large backlog's scan latency to any
+	// config write that restarts this connector and stall every other DB op
+	// for the duration. The prune goroutine refreshes the real depth/bytes
+	// immediately on entry (before its first tick), so a restarted
+	// connector's true backlog appears within milliseconds, asynchronously,
+	// outside the lock.
+	c.st.SetQueue(c.cfg.ID, 0, 0)
 
 	// Subscribe synchronously so no envelopes published right after Start
 	// returns can race the intake goroutine's startup and be dropped.
@@ -278,6 +281,19 @@ func (c *Connector) pushAll(ctx context.Context, p sink.Pusher, entries []queue.
 
 func (c *Connector) prune(ctx context.Context) {
 	defer c.wg.Done()
+	// Refresh queue depth/bytes immediately on entry, not only on the first
+	// tick: Start registers the connector with zero values (see Start for why
+	// it must not touch the DB itself), so a restarted connector with a
+	// backlog would otherwise report depth 0 for up to pruneInterval. This
+	// read runs on the prune goroutine — outside the supervisor's
+	// reconcileMu — so a slow COUNT/SUM never extends a config write.
+	refreshStats := func() {
+		if st, err := c.q.Stats(ctx); err == nil {
+			c.met.SetQueueDepth(c.cfg.ID, st.Depth, st.Bytes)
+			c.st.SetQueue(c.cfg.ID, st.Depth, st.Bytes)
+		}
+	}
+	refreshStats()
 	t := time.NewTicker(pruneInterval)
 	defer t.Stop()
 	for {
@@ -288,10 +304,7 @@ func (c *Connector) prune(ctx context.Context) {
 			if n, err := c.q.Prune(ctx); err == nil && n > 0 {
 				c.met.ConnectorMessages(ctx, c.cfg.ID, "pruned", n)
 			}
-			if st, err := c.q.Stats(ctx); err == nil {
-				c.met.SetQueueDepth(c.cfg.ID, st.Depth, st.Bytes)
-				c.st.SetQueue(c.cfg.ID, st.Depth, st.Bytes)
-			}
+			refreshStats()
 		}
 	}
 }

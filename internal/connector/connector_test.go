@@ -320,6 +320,9 @@ func TestStopMidRetryCheckpointsPartialProgress(t *testing.T) {
 // up in the stats registry as soon as Start returns, not only after the
 // first prune tick (pruneInterval later) — the UI dashboard's live tiles
 // depend on this to list a brand-new connector without a startup gap.
+// Presence only: Start seeds zero values without touching the DB (it runs
+// under the supervisor's reconcile lock); the real queue depth arrives
+// asynchronously moments later (see the backlog test below).
 func TestStartRegistersInStatsRegistryImmediately(t *testing.T) {
 	src := &fakeSource{}
 	snk := &bcastSink{}
@@ -333,18 +336,52 @@ func TestStartRegistersInStatsRegistryImmediately(t *testing.T) {
 	c.Start(ctx)
 	defer c.Stop()
 
-	snap, ok := reg.Snapshot("conn1")
-	if !ok {
+	if _, ok := reg.Snapshot("conn1"); !ok {
 		t.Fatal("connector not present in stats registry immediately after Start (no sleep)")
 	}
-	if snap.QueueDepth != 0 || snap.QueueBytes != 0 || snap.TotalMessages != 0 {
-		t.Fatalf("idle connector snapshot = %+v, want all-zero", snap)
-	}
-
 	all := reg.All()
 	if _, ok := all["conn1"]; !ok {
 		t.Fatalf("connector not present in Registry.All() immediately after Start: %+v", all)
 	}
+}
+
+// A connector restarted over an existing backlog registers with zero queue
+// stats (Start must not read the DB while the supervisor holds its
+// reconcile lock), but the prune goroutine refreshes the real depth/bytes
+// immediately on entry — so the true backlog must appear well before the
+// first 5s prune tick, without any delivery having to happen (the sink here
+// always fails).
+func TestBacklogQueueDepthAppearsPromptlyAfterStart(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "b.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	q := queue.NewSQLite(st, "conn1", model.BufferLimits{MaxMessages: 1000})
+	// Pre-fill a backlog before the connector starts, simulating a restart
+	// (e.g. a config-change reconcile) over undelivered entries.
+	if err := q.Append(context.Background(), []*msg.Envelope{env(1), env(2), env(3)}); err != nil {
+		t.Fatal(err)
+	}
+
+	chain, _ := filter.Compile(nil)
+	reg := stats.NewRegistry()
+	snk := &pushSink{failures: 1 << 30} // never delivers: the backlog must persist
+	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true,
+		Buffer: model.BufferLimits{MaxMessages: 1000}},
+		&fakeSource{}, snk, q, chain, slog.Default(), nil, reg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	defer c.Stop()
+
+	if _, ok := reg.Snapshot("conn1"); !ok {
+		t.Fatal("connector not present in stats registry immediately after Start")
+	}
+	waitFor(t, 3*time.Second, func() bool {
+		snap, _ := reg.Snapshot("conn1")
+		return snap.QueueDepth == 3 && snap.QueueBytes > 0
+	}, "real backlog depth from the prune goroutine's on-entry stats refresh")
 }
 
 func TestStopBeforeStartDoesNotPanic(t *testing.T) {
