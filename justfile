@@ -27,6 +27,14 @@ test-race:
 run *args:
     go run {{cmd}} {{args}}
 
+# rebuild internal/ui/assets/app.css from internal/ui/uisrc/input.css
+# (requires internal/ui/uisrc/build/ — see internal/ui/uisrc/README.md to fetch it)
+ui-css:
+    internal/ui/uisrc/build/tailwindcss-macos-arm64 \
+        -i internal/ui/uisrc/input.css \
+        -o internal/ui/assets/app.css \
+        --minify
+
 # format all Go source files
 fmt:
     gofmt -w .

@@ -24,6 +24,7 @@ import (
 	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/store"
 	"github.com/open-ships/beacon/internal/supervisor"
+	"github.com/open-ships/beacon/internal/ui"
 )
 
 // Options configures a Run. DBPath, DataAddr, and AdminAddr are required;
@@ -108,11 +109,16 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 	a := &App{log: log, st: st, ds: ds, sup: sup, reg: reg, cfgSvc: cfgSvc}
 
 	apiHandler, _ := api.New(cfgSvc, reg, version, log)
+	uiHandler := ui.Handler(cfgSvc, reg, sup.Statuses, version)
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", promHandler)
 	mux.HandleFunc("GET /health", a.handleHealth)
 	mux.Handle("/api/", apiHandler)
+	mux.Handle("/ui/", uiHandler)
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ui/dashboard", http.StatusFound)
+	})
 	a.adminSrv = &http.Server{Handler: mux}
 	ln, err := net.Listen("tcp", opts.AdminAddr)
 	if err != nil {

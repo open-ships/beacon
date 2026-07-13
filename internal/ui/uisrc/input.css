@@ -1,0 +1,89 @@
+/* internal/ui/uisrc/input.css — the OpenBridge <-> daisyUI bridge.
+ *
+ * See internal/ui/uisrc/README.md for how to regenerate
+ * internal/ui/assets/app.css from this file. Do not edit app.css by hand.
+ *
+ * daisyUI's theme tokens are mapped onto OpenBridge's palette custom
+ * properties (vendored at internal/ui/assets/palettes.css, loaded by
+ * layout.html before this stylesheet). Those properties are redefined per
+ * `data-obc-theme` value (bright/day/dusk/night) on :root, so daisyUI
+ * components restyle automatically when the brilliance menu changes the
+ * theme — no daisyUI theme switch is involved, only OpenBridge's own
+ * palette swap underneath a single daisyUI theme named "openbridge".
+ *
+ * The real OpenBridge variable names below were found by reading the
+ * vendored palettes.css (identical to
+ * ~/code/openships/openbridge-webcomponents/packages/openbridge-webcomponents/src/palettes/variables.css)
+ * rather than guessed — the brief's sketch variable names were
+ * illustrative and several do not actually exist (--container-border-color,
+ * --on-container-color, --on-active-color, --alert-ok-color). Each mapped
+ * variable below was confirmed present, with a distinct sane value, in all
+ * four :root[data-obc-theme="..."] blocks (bright/day/dusk/night):
+ *
+ *   --container-background-color  page/app background            -> base-100
+ *   --container-section-color     recessed section background    -> base-200
+ *   --border-divider-color        divider/border color            -> base-300
+ *   --element-active-color        primary text/icon color on a
+ *                                  container (there is no
+ *                                  "on-container-color" token)     -> base-content
+ *   --raised-enabled-background-color
+ *                                  fill of obc-button's "raised"
+ *                                  variant, OpenBridge's elevated/
+ *                                  emphasis button style — the
+ *                                  closest analog to daisyUI
+ *                                  "primary" (obc-button's default
+ *                                  "normal" variant is unstyled/
+ *                                  near-white, not a brand color)   -> primary
+ *   --on-raised-active-color      text/icon color on a raised
+ *                                  button                          -> primary-content
+ *   --alert-alarm-color           highest-severity alert color     -> error
+ *   --on-alarm-color              text/icon color on alert-alarm   -> error-content
+ *   --alert-warning-color         mid-severity alert color         -> warning
+ *   --on-warning-color            text/icon color on alert-warning -> warning-content
+ *   --alert-running-color         "system running normally" green  -> success
+ *                                  (there is no "alert-ok-color" token)
+ *   --on-running-color            text/icon color on alert-running -> success-content
+ *
+ * Radius/size tokens are left at daisyUI's defaults; OpenBridge components
+ * carry their own shapes, and daisyUI is only asked to style the plain
+ * HTML elements beacon's own templates render (nav, cards, buttons).
+ */
+@import "tailwindcss" source("../templates");
+@plugin "./build/daisyui.js";
+@plugin "./build/daisyui-theme.js" {
+  name: "openbridge";
+  default: true;
+
+  --color-base-100: var(--container-background-color);
+  --color-base-200: var(--container-section-color);
+  --color-base-300: var(--border-divider-color);
+  --color-base-content: var(--element-active-color);
+
+  --color-primary: var(--raised-enabled-background-color);
+  --color-primary-content: var(--on-raised-active-color);
+
+  --color-error: var(--alert-alarm-color);
+  --color-error-content: var(--on-alarm-color);
+  --color-warning: var(--alert-warning-color);
+  --color-warning-content: var(--on-warning-color);
+  --color-success: var(--alert-running-color);
+  --color-success-content: var(--on-running-color);
+}
+
+/* Vendored, offline Noto Sans (see ../assets/README.md); OpenBridge's own
+ * palette variables already reference "Noto Sans" as
+ * --global-typography-font-family, so this @font-face just supplies the
+ * actual font file beacon vendors instead of relying on the system to have
+ * it installed. */
+@font-face {
+  font-family: "Noto Sans";
+  src: url("/ui/assets/NotoSans.ttf") format("truetype");
+  font-display: swap;
+}
+
+body {
+  font-family:
+    var(--global-typography-font-family, "Noto Sans"),
+    -apple-system,
+    sans-serif;
+}
