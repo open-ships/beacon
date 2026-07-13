@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -68,6 +69,36 @@ func TestUpsertAndDelete(t *testing.T) {
 	cfg, _ = s.LoadConfig(ctx)
 	if len(cfg.Sources) != 0 {
 		t.Fatal("delete failed")
+	}
+}
+
+// A fresh store's LoadConfig must return non-nil empty slices, not nil, so
+// callers built on it (config.Service, the /api/v1/config/export JSON body)
+// serialize "sources":[] rather than "sources":null.
+func TestLoadConfigEmptySlicesNotNil(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+
+	cfg, err := s.LoadConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sources == nil || cfg.Sinks == nil || cfg.Connectors == nil {
+		t.Fatalf("LoadConfig on empty store returned nil slice(s): sources=%v sinks=%v connectors=%v",
+			cfg.Sources, cfg.Sinks, cfg.Connectors)
+	}
+	if len(cfg.Sources) != 0 || len(cfg.Sinks) != 0 || len(cfg.Connectors) != 0 {
+		t.Fatalf("LoadConfig on empty store returned non-empty slice(s): %+v", cfg)
+	}
+
+	doc, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(doc)
+	want := `{"sources":[],"sinks":[],"connectors":[]}`
+	if got != want {
+		t.Fatalf("LoadConfig JSON = %s, want %s", got, want)
 	}
 }
 

@@ -1,9 +1,11 @@
 package api_test
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/open-ships/beacon/internal/api"
@@ -162,6 +164,30 @@ func seedConfig(t *testing.T, srv *httptest.Server) {
 		ID: "c1", Name: "C1", SourceID: "s1", SinkID: "k1", Enabled: true,
 		Filters: []string{"msg.pgn == 127250"},
 	}), http.StatusOK)
+}
+
+// GET /api/v1/config/export on an empty store must serialize its array
+// fields as "[]", not "null" — some JSON clients (and the Phase 3 UI) don't
+// tolerate a null array where an empty list is expected.
+func TestExportEmptyStoreReturnsEmptyArraysNotNull(t *testing.T) {
+	srv, _, _ := newStatsServer(t)
+
+	resp := doJSON(t, http.MethodGet, srv.URL+"/api/v1/config/export", nil)
+	mustStatus(t, resp, http.StatusOK)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+	for _, field := range []string{`"sources":[]`, `"sinks":[]`, `"connectors":[]`} {
+		if !strings.Contains(got, field) {
+			t.Fatalf("export body = %s, want it to contain %s", got, field)
+		}
+	}
+	if strings.Contains(got, "null") {
+		t.Fatalf("export body = %s, want no null fields", got)
+	}
 }
 
 func TestExportImportRoundTrip(t *testing.T) {

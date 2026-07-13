@@ -88,13 +88,17 @@ func put[T any](ctx context.Context, db *sql.DB, table, id string, v T) error {
 	return err
 }
 
+// list runs a SELECT doc FROM table and unmarshals each row's JSON doc into
+// a T. It always returns a non-nil slice — empty rather than nil when the
+// table has no rows — so callers built on it (LoadConfig, in turn
+// config.Service's ListX/Export) marshal to JSON "[]" rather than "null".
 func list[T any](ctx context.Context, db *sql.DB, table string) ([]T, error) {
 	rows, err := db.QueryContext(ctx, `SELECT doc FROM `+table+` ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []T
+	out := make([]T, 0)
 	for rows.Next() {
 		var doc string
 		if err := rows.Scan(&doc); err != nil {

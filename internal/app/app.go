@@ -171,13 +171,7 @@ func seed(ctx context.Context, st *store.Store, path string, log *slog.Logger) e
 // Statuses() reads from the supervisor's in-memory view, not the store.
 func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 	statuses := a.sup.Statuses()
-	status := "ok"
-	for _, s := range statuses {
-		if s.State != "up" {
-			status = "degraded"
-			break
-		}
-	}
+	status := supervisor.RollupHealth(statuses)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status": status, "components": statuses,

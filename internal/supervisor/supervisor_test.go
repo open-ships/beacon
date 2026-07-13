@@ -540,3 +540,37 @@ func TestComponentStateGaugeTransitions(t *testing.T) {
 		t.Fatalf("deleted sink gauge still exported (value %v), want series gone", v)
 	}
 }
+
+// --- RollupHealth ---
+
+// TestRollupHealth exercises the shared helper directly (both
+// internal/app's top-level GET /health and internal/api's GET
+// /api/v1/health delegate to it), so this is the single source of truth for
+// the "any non-up state -> degraded" rule.
+func TestRollupHealth(t *testing.T) {
+	cases := []struct {
+		name     string
+		statuses []Status
+		want     string
+	}{
+		{"empty", nil, "ok"},
+		{"all up", []Status{
+			{Kind: "source", ID: "s1", State: "up"},
+			{Kind: "sink", ID: "k1", State: "up"},
+		}, "ok"},
+		{"one degraded", []Status{
+			{Kind: "source", ID: "s1", State: "up"},
+			{Kind: "sink", ID: "k1", State: "degraded"},
+		}, "degraded"},
+		{"one error", []Status{
+			{Kind: "connector", ID: "c1", State: "error", Err: "boom"},
+		}, "degraded"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RollupHealth(tc.statuses); got != tc.want {
+				t.Fatalf("RollupHealth(%+v) = %q, want %q", tc.statuses, got, tc.want)
+			}
+		})
+	}
+}

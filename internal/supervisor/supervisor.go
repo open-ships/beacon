@@ -36,6 +36,22 @@ type Status struct {
 	Err   string `json:"err,omitempty"`
 }
 
+// RollupHealth reduces a set of component statuses (as returned by
+// Supervisor.Statuses / config.Service.Statuses) to a single overall health
+// string: "ok" when every component's State is "up" (including the empty
+// set — a fresh, unconfigured system is healthy), "degraded" if any
+// component is in any other state. Shared by the admin server's top-level
+// GET /health (internal/app) and the config API's GET /api/v1/health
+// (internal/api) so the two surfaces can never drift on this logic.
+func RollupHealth(statuses []Status) string {
+	for _, s := range statuses {
+		if s.State != "up" {
+			return "degraded"
+		}
+	}
+	return "ok"
+}
+
 type runningSource struct {
 	hash string
 	rt   source.Runtime

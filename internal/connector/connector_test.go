@@ -15,6 +15,7 @@ import (
 	"github.com/open-ships/beacon/internal/msg"
 	"github.com/open-ships/beacon/internal/queue"
 	"github.com/open-ships/beacon/internal/sink"
+	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/store"
 )
 
@@ -312,6 +313,37 @@ func TestStopMidRetryCheckpointsPartialProgress(t *testing.T) {
 	waitFor(t, 3*time.Second, func() bool { return snk2.count() == 1 }, "entry 2 replay")
 	if got := snk2.got[0].PGN; got != 2 {
 		t.Fatalf("redelivered already-pushed entry, pgn=%d, want 2", got)
+	}
+}
+
+// Regression: a just-started (idle, no deliveries yet) connector must show
+// up in the stats registry as soon as Start returns, not only after the
+// first prune tick (pruneInterval later) — the UI dashboard's live tiles
+// depend on this to list a brand-new connector without a startup gap.
+func TestStartRegistersInStatsRegistryImmediately(t *testing.T) {
+	src := &fakeSource{}
+	snk := &bcastSink{}
+	chain, _ := filter.Compile(nil)
+	reg := stats.NewRegistry()
+	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true,
+		Buffer: model.BufferLimits{MaxMessages: 1000}},
+		src, snk, testQueue(t), chain, slog.Default(), nil, reg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	defer c.Stop()
+
+	snap, ok := reg.Snapshot("conn1")
+	if !ok {
+		t.Fatal("connector not present in stats registry immediately after Start (no sleep)")
+	}
+	if snap.QueueDepth != 0 || snap.QueueBytes != 0 || snap.TotalMessages != 0 {
+		t.Fatalf("idle connector snapshot = %+v, want all-zero", snap)
+	}
+
+	all := reg.All()
+	if _, ok := all["conn1"]; !ok {
+		t.Fatalf("connector not present in Registry.All() immediately after Start: %+v", all)
 	}
 }
 

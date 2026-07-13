@@ -60,6 +60,17 @@ func (c *Connector) Start(ctx context.Context) {
 	if reg, ok := c.snk.(sink.ConnectorRegistrar); ok {
 		reg.RegisterConnector(c.cfg.ID, c.q)
 	}
+	// Seed the stats registry synchronously so a just-created (idle)
+	// connector shows up in Registry.All()/Snapshot immediately, rather than
+	// waiting for the first prune tick (up to pruneInterval later). A read
+	// error (e.g. a brand-new queue) seeds zero values, which is the correct
+	// idle state anyway.
+	depth, bytes := int64(0), int64(0)
+	if st, err := c.q.Stats(ctx); err == nil {
+		depth, bytes = st.Depth, st.Bytes
+	}
+	c.st.SetQueue(c.cfg.ID, depth, bytes)
+
 	// Subscribe synchronously so no envelopes published right after Start
 	// returns can race the intake goroutine's startup and be dropped.
 	in, unsub := c.src.Subscribe(readLimit)

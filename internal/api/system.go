@@ -252,13 +252,7 @@ func registerHealthRoutes(api huma.API, svc *config.Service) {
 	}, func(ctx context.Context, _ *struct{}) (*healthOutput, error) {
 		statuses := svc.Statuses()
 		out := &healthOutput{}
-		out.Body.Status = "ok"
-		for _, s := range statuses {
-			if s.State != "up" {
-				out.Body.Status = "degraded"
-				break
-			}
-		}
+		out.Body.Status = supervisor.RollupHealth(statuses)
 		out.Body.Components = statuses
 		return out, nil
 	})

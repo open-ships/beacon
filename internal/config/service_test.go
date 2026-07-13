@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"path/filepath"
@@ -464,6 +465,44 @@ func TestImportInvalidLeavesStoreUnchanged(t *testing.T) {
 	}
 	if len(got.Sources) != 1 || got.Sources[0].ID != "a" || len(got.Connectors) != 0 {
 		t.Fatalf("store changed after invalid import: %+v", got)
+	}
+}
+
+// --- Empty-config reads (carry-over: null -> [] in JSON) ---
+
+// ListSources/ListSinks/ListConnectors and Export must return non-nil empty
+// slices on a freshly opened (empty) store, since they pass through
+// store.LoadConfig — and that JSON must serialize as "[]", not "null", so
+// GET /api/v1/config/export on an empty store is well-formed for clients
+// that don't tolerate a null array.
+func TestEmptyConfigReadsReturnEmptySlicesNotNil(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := newTestService(t)
+
+	sources, err := svc.ListSources(ctx)
+	if err != nil || sources == nil || len(sources) != 0 {
+		t.Fatalf("ListSources on empty store = %+v, %v, want non-nil empty slice", sources, err)
+	}
+	sinks, err := svc.ListSinks(ctx)
+	if err != nil || sinks == nil || len(sinks) != 0 {
+		t.Fatalf("ListSinks on empty store = %+v, %v, want non-nil empty slice", sinks, err)
+	}
+	connectors, err := svc.ListConnectors(ctx)
+	if err != nil || connectors == nil || len(connectors) != 0 {
+		t.Fatalf("ListConnectors on empty store = %+v, %v, want non-nil empty slice", connectors, err)
+	}
+
+	cfg, err := svc.Export(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"sources":[],"sinks":[],"connectors":[]}`
+	if got := string(doc); got != want {
+		t.Fatalf("Export JSON on empty store = %s, want %s", got, want)
 	}
 }
 
