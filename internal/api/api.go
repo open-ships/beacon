@@ -68,6 +68,7 @@ func New(svc *config.Service, reg *stats.Registry, version string, log *slog.Log
 	registerMetricsRoutes(humaAPI, svc, reg, log)
 	registerConfigIORoutes(humaAPI, svc, log)
 	registerHealthRoutes(humaAPI, svc)
+	registerDocsRoutes(router)
 
 	return router, humaAPI
 }
