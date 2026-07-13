@@ -414,8 +414,19 @@ func indexOf[T any](items []T, target string, id func(T) string) int {
 // reconcile triggers the reconciler after a successful store write. Failure
 // is logged and left for Statuses() to surface; per spec §3.6 it is
 // deliberately NOT returned to the write's caller and NOT rolled back.
+//
+// It runs Reconcile on context.WithoutCancel(ctx), not ctx itself: by this
+// point the config change is already durably persisted in the store, so the
+// reconcile's job is just to make the running system match what's now on
+// disk. ctx is the inbound HTTP request context — if the client disconnects
+// mid-PUT, ctx is cancelled right as (or just after) this call starts, which
+// would abort the reconcile's store read/apply and leave the runtime stale
+// relative to the persisted config. There is no periodic reconcile to catch
+// that later; the next Reconcile only happens on the next write. Detaching
+// from cancellation ensures a persisted config change is always applied,
+// regardless of whether the requester is still around to see it.
 func (s *Service) reconcile(ctx context.Context) {
-	if err := s.rec.Reconcile(ctx); err != nil {
+	if err := s.rec.Reconcile(context.WithoutCancel(ctx)); err != nil {
 		s.log.Error("reconcile after config write failed", "err", err)
 	}
 }

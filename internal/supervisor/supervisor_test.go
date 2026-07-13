@@ -266,6 +266,77 @@ func TestDeletedConnectorStatsAreRemoved(t *testing.T) {
 	}
 }
 
+// An idle connector — one that never delivered a message and so has no
+// queue/checkpoint rows at all — is invisible to the KnownConnectorIDs purge
+// sweep (it only unions the queue and checkpoints tables). Its prune loop
+// still calls stats.Registry.SetQueue and metrics.Set.SetQueueDepth every
+// tick purely from existing, so both registry entries must be dropped
+// unconditionally on deletion, not just when the sweep happens to find
+// storage. Deliberately does NOT seed any queue rows, unlike
+// TestDeletedConnectorStatsAreRemoved above (which exercises the sweep
+// path) — this test must fail against the current code.
+func TestDeletedIdleConnectorStatsAndGaugeAreRemoved(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ds := sink.NewDataServer("127.0.0.1:0", slog.Default())
+	if err := ds.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ds.Stop(context.Background()) })
+	met, handler, err := metrics.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := stats.NewRegistry()
+	sup := New(st, nil, ds, slog.Default(), met, reg)
+	t.Cleanup(sup.Stop)
+
+	gaugePresent := func(connector string) bool {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+		body, _ := io.ReadAll(rec.Body)
+		for _, line := range strings.Split(string(body), "\n") {
+			if strings.HasPrefix(line, "beacon_connector_queue_depth") &&
+				strings.Contains(line, `connector="`+connector+`"`) {
+				return true
+			}
+		}
+		return false
+	}
+
+	ctx := context.Background()
+	_ = st.ReplaceConfig(ctx, baseConfig())
+	_ = sup.Reconcile(ctx)
+
+	// No traffic at all: record the queue depth directly, exactly as the
+	// connector's own prune loop would (internal/connector/connector.go
+	// prune()), without ever appending a message (no queue/checkpoint rows).
+	met.SetQueueDepth("link", 3, 30)
+	reg.SetQueue("link", 3, 30)
+	if _, ok := reg.Snapshot("link"); !ok {
+		t.Fatal("precondition: connector stats not recorded")
+	}
+	if !gaugePresent("link") {
+		t.Fatal("precondition: queue depth gauge not recorded")
+	}
+
+	cfg := baseConfig()
+	cfg.Connectors = nil
+	_ = st.ReplaceConfig(ctx, cfg)
+	_ = sup.Reconcile(ctx)
+
+	if _, ok := reg.Snapshot("link"); ok {
+		t.Fatal("deleted idle connector stats still present in registry")
+	}
+	if gaugePresent("link") {
+		t.Fatal("deleted idle connector queue depth gauge still exported")
+	}
+}
+
 func TestDisabledConnectorQueueSurvives(t *testing.T) {
 	st, sup, _ := setup(t)
 	ctx := context.Background()

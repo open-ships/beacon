@@ -22,12 +22,21 @@ type fakeReconciler struct {
 	calls    int
 	err      error
 	statuses []supervisor.Status
+	lastCtx  context.Context
+	// onReconcile, if set, runs synchronously as the first thing Reconcile
+	// does — before lastCtx is captured — so a test can simulate the
+	// request context being cancelled exactly as reconcile begins.
+	onReconcile func()
 }
 
 func (f *fakeReconciler) Reconcile(ctx context.Context) error {
+	if f.onReconcile != nil {
+		f.onReconcile()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	f.lastCtx = ctx
 	return f.err
 }
 
@@ -41,6 +50,15 @@ func (f *fakeReconciler) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
+}
+
+func (f *fakeReconciler) lastCtxErr() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lastCtx == nil {
+		return nil
+	}
+	return f.lastCtx.Err()
 }
 
 func newTestService(t *testing.T) (*Service, *store.Store, *fakeReconciler) {
@@ -329,6 +347,39 @@ func TestReconcileFailureNotRolledBack(t *testing.T) {
 	sts := svc.Statuses()
 	if len(sts) != 1 || sts[0].Err != "boom" {
 		t.Fatalf("Statuses() = %+v, want the reconcile failure surfaced", sts)
+	}
+}
+
+// A config write must be applied to the running system even if the request
+// that triggered it goes away mid-write: the config is already durably
+// persisted (PutSource's store write completed) by the time reconcile()
+// invokes the reconciler, and there is no periodic reconcile to pick up the
+// slack later (only the next write triggers another one). So reconcile()
+// must detach from the inbound context's cancellation rather than passing it
+// straight through to Reconcile. Simulated here by cancelling the request
+// context from inside the fake reconciler itself, timed to land exactly as
+// Reconcile begins — i.e. strictly after the store write it followed has
+// already succeeded, matching a real client disconnect mid-PUT.
+func TestReconcileRunsDespiteCallerContextCancellation(t *testing.T) {
+	svc, _, rec := newTestService(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	rec.onReconcile = cancel
+
+	if err := svc.PutSource(ctx, baseSource("s1"), true); err != nil {
+		t.Fatalf("PutSource returned error despite the request context being cancelled: %v", err)
+	}
+	if rec.callCount() != 1 {
+		t.Fatalf("reconcile calls = %d, want 1", rec.callCount())
+	}
+	if err := rec.lastCtxErr(); err != nil {
+		t.Fatalf("reconcile received a cancelled context (err=%v); it must run detached from the caller's ctx", err)
+	}
+	// Store write completed before cancellation landed (it happens inside
+	// Reconcile, after PutSource's own write) — verify with a fresh ctx,
+	// since the caller's ctx above is now cancelled by design.
+	if _, err := svc.GetSource(context.Background(), "s1"); err != nil {
+		t.Fatalf("source not persisted: %v", err)
 	}
 }
 

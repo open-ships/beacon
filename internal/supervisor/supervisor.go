@@ -195,10 +195,16 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	// first-Reconcile arm set in New for deletions that happened while the
 	// process was down) catches every deletion without running the sweep on
 	// the steady-state path.
+	// deletedConnectors collects every id that was configured last Reconcile
+	// but is absent from config now — i.e. actually deleted, not merely
+	// disabled (configuredConnectors, like prevConfigured, includes disabled
+	// entries). Used below, after the stop phase, to drop their stats/gauge
+	// entries unconditionally.
+	var deletedConnectors []string
 	for id := range s.prevConfigured {
 		if !configuredConnectors[id] {
 			s.needsPurgeSweep = true
-			break
+			deletedConnectors = append(deletedConnectors, id)
 		}
 	}
 	s.prevConfigured = configuredConnectors
@@ -265,6 +271,25 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 		if item.notDesired {
 			s.met.RemoveComponent(item.kind, item.id)
 		}
+	}
+
+	// --- Drop stats/gauge entries for every connector actually deleted from
+	// config this Reconcile, regardless of whether it ever had durable
+	// storage. An idle connector (never delivered a message, so no
+	// queue/checkpoint rows) is invisible to the KnownConnectorIDs purge
+	// sweep below, yet its prune loop calls stats.Registry.SetQueue and
+	// metrics.Set.SetQueueDepth on a timer purely from existing — those
+	// registry/gauge entries would otherwise linger forever (GET
+	// /api/v1/metrics would keep listing it, and the queue_depth gauge would
+	// keep exporting its last value) until process restart. This must run
+	// after the stop phase above: connector Stop() is synchronous (it waits
+	// on the connector's internal WaitGroup), so every deleted connector's
+	// pipeline has already fully stopped by this point and cannot race a
+	// concurrent Record/SetQueue call that would resurrect the entry (see
+	// stats.Registry.Remove's doc comment).
+	for _, id := range deletedConnectors {
+		s.reg.Remove(id)
+		s.met.RemoveConnector(id)
 	}
 
 	// --- Purge sweep: connectors whose storage exists but who are absent

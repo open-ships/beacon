@@ -185,6 +185,18 @@ func (r *Registry) SetQueue(connector string, depth, bytes int64) {
 }
 
 // Remove drops a connector's stats (deleted connectors).
+//
+// Ordering contract: callers must ensure the connector's pipeline is fully
+// stopped (Connector.Stop is synchronous — it blocks on the connector's
+// internal WaitGroup) before calling Remove. Record does not distinguish a
+// never-seen id from a just-removed one: get lazily (re)creates a fresh,
+// zeroed *counters entry for any id not currently in the map. So a Record
+// (or SetQueue) call that lands after Remove — from a pipeline that is
+// somehow still running or racing the removal — will silently resurrect the
+// entry under the same id, just reset to zero rather than holding the
+// pre-removal totals. It won't reappear with stale data, but it will
+// reappear. Removing only after the pipeline has fully stopped is what
+// prevents that resurrection.
 func (r *Registry) Remove(connector string) {
 	if r == nil {
 		return
