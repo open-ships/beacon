@@ -67,11 +67,15 @@ why.
 that font actually renders instead of silently falling back to a system
 sans-serif on a machine that doesn't happen to have Noto Sans installed.
 `input.css` declares the `@font-face` that points at it
-(`/ui/assets/NotoSans.ttf`).
+(`/ui/assets/NotoSans.ttf?v=1.0.1` — the `?v=` hand-pins this package's
+version as the cache-buster, since it's baked into the compiled `app.css`
+and can't carry beacon's runtime version like `layout.html`'s asset URLs
+do; see `../uisrc/README.md`).
 
 To upgrade: re-run the curl commands above with a pinned
-`@<new-version>` instead of `@1.0.1`, update the version noted here, and
-re-run `internal/ui/ui_test.go` plus the visual smoke check in
+`@<new-version>` instead of `@1.0.1`, update the version noted here, bump
+the `?v=` in `../uisrc/input.css`'s `@font-face` and rerun `just ui-css`,
+then re-run `internal/ui/ui_test.go` plus the visual smoke check in
 `../uisrc/README.md`.
 
 ## app.css

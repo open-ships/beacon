@@ -1,8 +1,10 @@
 package ui
 
 import (
+	"bytes"
 	"embed"
 	"html/template"
+	"log/slog"
 	"net/http"
 )
 
@@ -68,21 +70,25 @@ type pageData struct {
 // Handler's doc comment for why it's tied to beacon's own binary version
 // rather than a hand-maintained constant.
 //
-// Errors from ExecuteTemplate are deliberately dropped: with static,
-// compile-time-known template data they only happen after some output may
-// already have been written (so a clean error response is no longer
-// possible), and every page's data comes from this package's own fixed
-// struct literals, not user input, so a template execution error here would
-// indicate a bug caught by ui_test.go rather than a runtime condition
-// callers need to react to.
-func render(w http.ResponseWriter, name, title, assetVersion string) {
+// The page is executed into a buffer first, and only a fully successful
+// render is written to w: streaming the template straight into w would mean
+// a mid-render failure had already sent a 200 status and a truncated body,
+// with no way to take either back. With the buffer, any failure — a name
+// missing from pages, or ExecuteTemplate erroring — is logged and answered
+// with a clean 500 instead of a silently broken page. (Both failures
+// indicate bugs — pages/routes drift, or a template referencing data the
+// page doesn't provide — that ui_test.go should catch first, but Tasks 3-5
+// put live, request-dependent data through these templates, so surfacing
+// them loudly beats rendering garbage.)
+func render(w http.ResponseWriter, log *slog.Logger, name, title, assetVersion string) {
 	t, ok := pages[name]
 	if !ok {
 		// Unreachable from HTTP: callers only pass names they've registered
 		// a "GET /ui/<name>" route for, which by construction exist in
 		// pages. Guarded anyway so a future routing/pages drift fails loud
 		// instead of executing a nil template.
-		http.Error(w, "page not found", http.StatusInternalServerError)
+		log.Error("ui: render failed", "page", name, "err", "no template registered for page")
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	data := pageData{
@@ -91,6 +97,12 @@ func render(w http.ResponseWriter, name, title, assetVersion string) {
 		Active:       name,
 		Nav:          navItems,
 	}
+	var buf bytes.Buffer
+	if err := t.ExecuteTemplate(&buf, "layout.html", data); err != nil {
+		log.Error("ui: render failed", "page", name, "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = t.ExecuteTemplate(w, "layout.html", data)
+	_, _ = buf.WriteTo(w)
 }

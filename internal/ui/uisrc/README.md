@@ -55,6 +55,31 @@ render (nav, cards, buttons).
 (`../assets/NotoSans.ttf`) and sets it as `body`'s font, following
 OpenBridge's own `--global-typography-font-family: "Noto Sans"` token.
 
+### The font URL's hand-pinned cache-buster
+
+Every `/ui/assets/` response is served with a one-year **immutable**
+Cache-Control, so every asset URL needs a `?v=` cache-buster to survive
+upgrades. `templates/layout.html`'s asset URLs get beacon's runtime build
+version templated in, but the `@font-face` src is baked into the compiled
+`app.css` at build time and can't carry a runtime value. `input.css`
+therefore hand-pins the **vendored `@oicl/openbridge-webcomponents`
+package version** (the package the font ships in — `1.0.1` as of this
+writing, see `../assets/README.md`) as the font URL's `?v=`, the same
+convention as `internal/api/docsui.go`'s `scalarVersion` constant.
+
+**When re-vendoring OpenBridge (which replaces `NotoSans.ttf`): bump the
+`?v=` in `input.css`'s `@font-face` and rerun `just ui-css`.**
+`ui_test.go`'s `TestAppCSSFontURLHasCacheBuster` fails if the compiled
+`app.css` ever loses the query parameter entirely (it cannot check the
+pinned value is *current* — keeping it current is on the upgrade procedure
+above).
+
+This was chosen over the two alternatives considered: a version-segmented
+asset route (e.g. `/ui/assets/fonts/{ver}/NotoSans.ttf`) adds routing
+machinery and an embed-path rename per upgrade for a single file, and
+exempting `*.ttf` from immutable caching gives the 610KB font weaker cache
+semantics than every sibling asset forever.
+
 ## Rebuilding app.css
 
 ```

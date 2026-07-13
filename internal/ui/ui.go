@@ -12,6 +12,7 @@ package ui
 import (
 	"embed"
 	"io/fs"
+	"log/slog"
 	"net/http"
 
 	"github.com/open-ships/beacon/internal/config"
@@ -41,15 +42,21 @@ var assetsFS embed.FS
 // every asset invalidates together on every release, with nothing to
 // remember to bump when re-vendoring.
 //
+// A nil log defaults to slog.Default(), the same convention as api.New and
+// config.NewService; render failures are logged through it (see render.go).
+//
 // The returned handler is a plain *http.ServeMux serving "GET /ui/<page>"
 // routes plus "GET /ui/assets/". It is mounted at internal/app/app.go as
 // mux.Handle("/ui/", handler); routes below are registered with the full
 // "/ui/..." path since the mux they're added to isn't stripped.
-func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, version string) http.Handler {
+func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, version string, log *slog.Logger) http.Handler {
+	if log == nil {
+		log = slog.Default()
+	}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /ui/dashboard", func(w http.ResponseWriter, r *http.Request) {
-		render(w, "dashboard", "Dashboard", version)
+		render(w, log, "dashboard", "Dashboard", version)
 	})
 
 	assets, err := fs.Sub(assetsFS, "assets")

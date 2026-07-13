@@ -43,7 +43,7 @@ func newAppMountedServer(t *testing.T) *httptest.Server {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	svc := config.NewService(st, fakeReconciler{}, nil)
-	handler := ui.Handler(svc, stats.NewRegistry(), fakeReconciler{}.Statuses, "test")
+	handler := ui.Handler(svc, stats.NewRegistry(), fakeReconciler{}.Statuses, "test", nil)
 
 	mux := http.NewServeMux()
 	mux.Handle("/ui/", handler)
@@ -186,6 +186,37 @@ func TestAssetsServed(t *testing.T) {
 				t.Fatalf("Cache-Control = %q, want a long max-age directive", cc)
 			}
 		})
+	}
+}
+
+// TestAppCSSFontURLHasCacheBuster guards the one asset URL that can't carry
+// layout.html's runtime "?v=" version: the @font-face src baked into the
+// compiled app.css. Assets are served immutable/max-age=1y, so a bare
+// /ui/assets/NotoSans.ttf reference would pin browsers to a stale font
+// forever across re-vendors; uisrc/input.css hand-pins the vendored
+// OpenBridge package version as the cache-buster instead (see its comment).
+// This test fails if a rebuild of app.css drops that query parameter.
+func TestAppCSSFontURLHasCacheBuster(t *testing.T) {
+	srv := newAppMountedServer(t)
+
+	resp, err := http.Get(srv.URL + "/ui/assets/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	mustStatus(t, resp, http.StatusOK)
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(body)
+	if !strings.Contains(css, "NotoSans.ttf") {
+		t.Fatal("app.css has no NotoSans.ttf @font-face reference")
+	}
+	if !strings.Contains(css, "NotoSans.ttf?v=") {
+		t.Fatal("app.css references NotoSans.ttf without a ?v= cache-buster; " +
+			"immutable-cached assets need one (see uisrc/input.css)")
 	}
 }
 

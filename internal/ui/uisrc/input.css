@@ -74,10 +74,21 @@
  * palette variables already reference "Noto Sans" as
  * --global-typography-font-family, so this @font-face just supplies the
  * actual font file beacon vendors instead of relying on the system to have
- * it installed. */
+ * it installed.
+ *
+ * The "?v=1.0.1" cache-buster is the vendored
+ * @oicl/openbridge-webcomponents version the font ships in (see
+ * ../assets/README.md): /ui/assets/ responses are served with a one-year
+ * immutable Cache-Control, and unlike layout.html's asset URLs this one is
+ * baked into the compiled app.css at build time, so it can't carry the
+ * binary's runtime "?v=" version. Hand-pinning the vendored package version
+ * here instead (the same convention as internal/api/docsui.go's
+ * scalarVersion) means a font upgrade busts browser caches as long as the
+ * upgrade procedure is followed: when re-vendoring OpenBridge, bump this
+ * version and rebuild app.css (`just ui-css`). */
 @font-face {
   font-family: "Noto Sans";
-  src: url("/ui/assets/NotoSans.ttf") format("truetype");
+  src: url("/ui/assets/NotoSans.ttf?v=1.0.1") format("truetype");
   font-display: swap;
 }
 
