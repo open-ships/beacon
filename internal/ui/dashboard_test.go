@@ -147,15 +147,42 @@ func TestDashboardFragRendersConnectorCard(t *testing.T) {
 	body := dashboardFrag(t, srv)
 	for _, want := range []string{
 		"Heading only", `href="/ui/connectors/heading"`,
-		"<code>src1</code>", "<code>sink1</code>",
 		"badge-success\">enabled</span>", "Queue depth", "Msg/s", "Bytes/s",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard fragment missing %q:\n%s", want, body)
 		}
 	}
+	// The card's route line shows the source/sink NAMES (seedSourceSink's
+	// "Source One"/"Sink One"), not their raw ids — asserted as one exact
+	// substring (rather than "Source One"/"Sink One" independently) because
+	// the components health strip elsewhere on the same page also renders
+	// each source/sink's plain Name, which would make a loose substring
+	// check pass even without this card's own route line using names. See
+	// TestDashboardFragConnectorCardNameFallsBackToIDWhenEmpty for the
+	// fallback-to-id case.
+	if !strings.Contains(body, ">Source One &rarr; Sink One<") {
+		t.Fatalf("dashboard connector card route line does not show source/sink names:\n%s", body)
+	}
 	if strings.Contains(body, "Add your first") {
 		t.Fatalf("dashboard fragment with a connector configured should not show the empty-state hero:\n%s", body)
+	}
+}
+
+// TestDashboardFragConnectorCardNameFallsBackToIDWhenEmpty is dashboard.go's
+// analogue of TestConnectorsPageNameFallsBackToIDWhenEmpty (forms_test.go):
+// a source/sink with no Name set renders its raw id on the connector card
+// instead of a blank route line.
+func TestDashboardFragConnectorCardNameFallsBackToIDWhenEmpty(t *testing.T) {
+	srv, svc, _, _ := newDashboardTestServer(t)
+	ctx := context.Background()
+	must(t, svc.PutSource(ctx, model.Source{ID: "src1", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0"}, true))
+	must(t, svc.PutSink(ctx, model.Sink{ID: "sink1", Type: model.SinkTCP, Enabled: true, Address: "127.0.0.1:9000"}, true))
+	must(t, svc.PutConnector(ctx, model.Connector{ID: "heading", Name: "Heading only", SourceID: "src1", SinkID: "sink1", Enabled: true}, true))
+
+	body := dashboardFrag(t, srv)
+	if !strings.Contains(body, "src1") || !strings.Contains(body, "sink1") {
+		t.Fatalf("dashboard connector card should fall back to the raw id when name is empty:\n%s", body)
 	}
 }
 

@@ -1,4 +1,4 @@
-package api
+package sysinfo
 
 import (
 	"os"
@@ -43,10 +43,10 @@ func TestDiscoverCANFiltersByType280(t *testing.T) {
 	writeIface(t, root, "eth0", "1")
 	withRoots(t, root, "", "linux")
 
-	got := discoverCAN()
+	got := DiscoverCAN()
 	want := []string{"can0", "vcan0"}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("discoverCAN() = %v, want %v", got, want)
+		t.Fatalf("DiscoverCAN() = %v, want %v", got, want)
 	}
 }
 
@@ -55,18 +55,18 @@ func TestDiscoverCANNonLinuxIsEmpty(t *testing.T) {
 	writeIface(t, root, "can0", "280")
 	withRoots(t, root, "", "darwin")
 
-	got := discoverCAN()
+	got := DiscoverCAN()
 	if len(got) != 0 {
-		t.Fatalf("discoverCAN() on non-linux = %v, want empty", got)
+		t.Fatalf("DiscoverCAN() on non-linux = %v, want empty", got)
 	}
 }
 
 func TestDiscoverCANMissingRoot(t *testing.T) {
 	withRoots(t, filepath.Join(t.TempDir(), "does-not-exist"), "", "linux")
 
-	got := discoverCAN()
+	got := DiscoverCAN()
 	if len(got) != 0 {
-		t.Fatalf("discoverCAN() with missing root = %v, want empty", got)
+		t.Fatalf("DiscoverCAN() with missing root = %v, want empty", got)
 	}
 }
 
@@ -79,7 +79,7 @@ func TestDiscoverSerialGlobsKnownPatterns(t *testing.T) {
 	}
 	withRoots(t, "", root, "")
 
-	got := discoverSerial()
+	got := DiscoverSerial()
 	want := []string{
 		filepath.Join(root, "tty.usbmodem14201"),
 		filepath.Join(root, "tty.usbserial-A1"),
@@ -87,11 +87,11 @@ func TestDiscoverSerialGlobsKnownPatterns(t *testing.T) {
 		filepath.Join(root, "ttyUSB0"),
 	}
 	if len(got) != len(want) {
-		t.Fatalf("discoverSerial() = %v, want %v", got, want)
+		t.Fatalf("DiscoverSerial() = %v, want %v", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Fatalf("discoverSerial() = %v, want %v", got, want)
+			t.Fatalf("DiscoverSerial() = %v, want %v", got, want)
 		}
 	}
 }
@@ -99,8 +99,8 @@ func TestDiscoverSerialGlobsKnownPatterns(t *testing.T) {
 func TestDiscoverSerialMissingRoot(t *testing.T) {
 	withRoots(t, "", filepath.Join(t.TempDir(), "does-not-exist"), "")
 
-	got := discoverSerial()
+	got := DiscoverSerial()
 	if len(got) != 0 {
-		t.Fatalf("discoverSerial() with missing root = %v, want empty", got)
+		t.Fatalf("DiscoverSerial() with missing root = %v, want empty", got)
 	}
 }

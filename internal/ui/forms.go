@@ -29,11 +29,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/open-ships/beacon/internal/api"
 	"github.com/open-ships/beacon/internal/config"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/supervisor"
+	"github.com/open-ships/beacon/internal/sysinfo"
 )
 
 // --- Shared helpers ---
@@ -128,6 +128,51 @@ func formatHeaders(h map[string]string) string {
 	return strings.Join(lines, "\n")
 }
 
+// sourceNames and sinkNames build id->Name lookup maps from a full source/
+// sink list, for rendering source/sink NAMES rather than raw ids in the
+// connectors table (connectorRows below) and the dashboard's connector
+// cards (dashboard.go's dashboardConnectorCards) — nameOrID does the actual
+// per-connector fallback-to-id lookup against the map these build.
+func sourceNames(sources []model.Source) map[string]string {
+	m := make(map[string]string, len(sources))
+	for _, s := range sources {
+		m[s.ID] = s.Name
+	}
+	return m
+}
+
+func sinkNames(sinks []model.Sink) map[string]string {
+	m := make(map[string]string, len(sinks))
+	for _, s := range sinks {
+		m[s.ID] = s.Name
+	}
+	return m
+}
+
+// nameOrID looks id up in names (built by sourceNames/sinkNames) and
+// returns its Name, falling back to id itself when the entity has no name
+// set (model.Source/Sink don't require one — see model/validate.go) or, in
+// principle, no longer exists at all (a connector referencing an id that
+// was since deleted out from under it shouldn't render a blank cell).
+func nameOrID(names map[string]string, id string) string {
+	if n, ok := names[id]; ok && n != "" {
+		return n
+	}
+	return id
+}
+
+// discoverHardware returns the same best-effort hardware inventory GET
+// /api/v1/system reports (internal/sysinfo) for populating the
+// interface/port <datalist> suggestions on the source/sink add/edit forms.
+// Calling internal/sysinfo directly (rather than going through
+// internal/api) keeps this package from depending on internal/api at all —
+// a same-binary, cross-package function call either way, not a network
+// call, so it stays synchronous and can't fail independently of the
+// process itself.
+func discoverHardware() (canIfaces, serialPorts []string) {
+	return sysinfo.DiscoverCAN(), sysinfo.DiscoverSerial()
+}
+
 // writeFragmentSuccess renders panelOOBName (a "*-panel-oob" fragment,
 // e.g. "source-panel-oob") from fragTemplates and appends an empty
 // <div id="formContainerID">. The form the request came from has
@@ -188,7 +233,7 @@ type sourcesPageData struct {
 // sourceTypeFieldsData is frag_source_type_fields.html's data: which type
 // is selected (decides which fields render), the current value of every
 // type-specific field, and the discovered hardware lists for the
-// socketcan/usbcan <datalist> suggestions (see api.DiscoverSystem).
+// socketcan/usbcan <datalist> suggestions (see discoverHardware).
 //
 // Every type's field is a struct member here, but only the selected
 // type's fields actually render as inputs — so only they survive the next
@@ -330,7 +375,7 @@ func handleSourcesPage(svc *config.Service, statuses func() []supervisor.Status,
 // mode) and GET /ui/frag/source-form?id=<id> (edit mode).
 func handleSourceFormFrag(svc *config.Service, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		can, serial := api.DiscoverSystem()
+		can, serial := discoverHardware()
 		id := r.URL.Query().Get("id")
 		if id == "" {
 			renderFragment(w, log, "source-form", blankSourceFormView(can, serial))
@@ -360,7 +405,7 @@ func handleSourceFormFrag(svc *config.Service, log *slog.Logger) http.HandlerFun
 // comment for why that's deliberate).
 func handleSourceTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		can, serial := api.DiscoverSystem()
+		can, serial := discoverHardware()
 		q := r.URL.Query()
 		data := sourceTypeFieldsData{
 			Type:          q.Get("type"),
@@ -397,7 +442,7 @@ func handleSourceUpdate(svc *config.Service, log *slog.Logger) http.HandlerFunc 
 // but trusting the URL path directly is simpler and can't be spoofed by
 // tampering with that hidden field.
 func writeSource(w http.ResponseWriter, r *http.Request, svc *config.Service, log *slog.Logger, isCreate bool, pathID string) {
-	can, serial := api.DiscoverSystem()
+	can, serial := discoverHardware()
 	if err := r.ParseForm(); err != nil {
 		// Malformed request body itself (not just a malformed field's
 		// value): never a bare 500 for a user input problem.
@@ -646,7 +691,7 @@ func handleSinksPage(svc *config.Service, statuses func() []supervisor.Status, v
 // and GET /ui/frag/sink-form?id=<id> (edit mode).
 func handleSinkFormFrag(svc *config.Service, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		can, serial := api.DiscoverSystem()
+		can, serial := discoverHardware()
 		id := r.URL.Query().Get("id")
 		if id == "" {
 			renderFragment(w, log, "sink-form", blankSinkFormView(can, serial))
@@ -671,7 +716,7 @@ func handleSinkFormFrag(svc *config.Service, log *slog.Logger) http.HandlerFunc 
 // selected type's field values are discarded on switch, not carried over.
 func handleSinkTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		can, serial := api.DiscoverSystem()
+		can, serial := discoverHardware()
 		q := r.URL.Query()
 		data := sinkTypeFieldsData{
 			Type:          q.Get("type"),
@@ -702,7 +747,7 @@ func handleSinkUpdate(svc *config.Service, log *slog.Logger) http.HandlerFunc {
 
 // writeSink mirrors writeSource; see its comments for rationale.
 func writeSink(w http.ResponseWriter, r *http.Request, svc *config.Service, log *slog.Logger, isCreate bool, pathID string) {
-	can, serial := api.DiscoverSystem()
+	can, serial := discoverHardware()
 	if err := r.ParseForm(); err != nil {
 		view := blankSinkFormView(can, serial)
 		view.IsEdit, view.ID = !isCreate, pathID
@@ -794,21 +839,36 @@ func handleSinkDelete(svc *config.Service, log *slog.Logger) http.HandlerFunc {
 
 // connectorRow is one row of the connectors table
 // (frag_connector_table.html): model.Connector plus its live stats
-// snapshot. reg.Snapshot returns a zero Snapshot for a connector it has
-// never recorded (not yet started, or started but idle since boot) — so a
-// row for a connector with no traffic yet renders zero queue depth/msg-per-
-// second rather than needing a presence check here, matching the behavior
-// contract's "zero row values when snapshot missing".
+// snapshot and its source/sink NAMES (nameOrID — falls back to the raw id
+// when the source/sink has no name set). reg.Snapshot returns a zero
+// Snapshot for a connector it has never recorded (not yet started, or
+// started but idle since boot) — so a row for a connector with no traffic
+// yet renders zero queue depth/msg-per-second rather than needing a
+// presence check here, matching the behavior contract's "zero row values
+// when snapshot missing".
 type connectorRow struct {
 	model.Connector
-	Snapshot stats.Snapshot
+	Snapshot   stats.Snapshot
+	SourceName string
+	SinkName   string
 }
 
-func connectorRows(connectors []model.Connector, reg *stats.Registry) []connectorRow {
+// connectorRows builds connectorTableData's rows. sourceNames/sinkNames are
+// id->Name lookup maps (see sourceNames/sinkNames above) built once by the
+// caller from the same source/sink lists every connector-table-rendering
+// handler already has to fetch for other reasons (the connector form's
+// <select> options, or — for handlers that don't otherwise need them —
+// fetched solely for this).
+func connectorRows(connectors []model.Connector, reg *stats.Registry, srcNames, sinkNamesByID map[string]string) []connectorRow {
 	rows := make([]connectorRow, len(connectors))
 	for i, c := range connectors {
 		snap, _ := reg.Snapshot(c.ID)
-		rows[i] = connectorRow{Connector: c, Snapshot: snap}
+		rows[i] = connectorRow{
+			Connector:  c,
+			Snapshot:   snap,
+			SourceName: nameOrID(srcNames, c.SourceID),
+			SinkName:   nameOrID(sinkNamesByID, c.SinkID),
+		}
 	}
 	return rows
 }
@@ -1033,7 +1093,9 @@ func listSourcesAndSinks(ctx context.Context, svc *config.Service) ([]model.Sour
 }
 
 // handleConnectorsPage serves GET /ui/connectors: the full page, table
-// populated from svc.ListConnectors + reg's live per-connector snapshots.
+// populated from svc.ListConnectors + reg's live per-connector snapshots,
+// with source/sink NAMES resolved through listSourcesAndSinks (see
+// connectorRows).
 func handleConnectorsPage(svc *config.Service, reg *stats.Registry, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		connectors, err := svc.ListConnectors(r.Context())
@@ -1042,9 +1104,15 @@ func handleConnectorsPage(svc *config.Service, reg *stats.Registry, version stri
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
+		sources, sinks, err := listSourcesAndSinks(r.Context(), svc)
+		if err != nil {
+			log.Error("ui: list sources/sinks failed", "err", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 		data := connectorsPageData{
 			pageData:           newPageData("Connectors", version, "connectors"),
-			connectorTableData: connectorTableData{Connectors: connectorRows(connectors, reg)},
+			connectorTableData: connectorTableData{Connectors: connectorRows(connectors, reg, sourceNames(sources), sinkNames(sinks))},
 		}
 		renderPage(w, log, "connectors", data)
 	}
@@ -1167,7 +1235,7 @@ func writeConnector(w http.ResponseWriter, r *http.Request, svc *config.Service,
 		return
 	}
 	data := connectorTableData{
-		Connectors: connectorRows(connectors, reg),
+		Connectors: connectorRows(connectors, reg, sourceNames(sources), sinkNames(sinks)),
 		Alert:      &alertData{Kind: "success", Message: fmt.Sprintf("connector %q saved", v.ID)},
 	}
 	writeFragmentSuccess(w, log, "connector-panel-oob", "connector-form-container", data)
@@ -1197,7 +1265,13 @@ func handleConnectorDelete(svc *config.Service, reg *stats.Registry, log *slog.L
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		data := connectorTableData{Connectors: connectorRows(connectors, reg), Alert: alert}
+		sources, sinks, err := listSourcesAndSinks(r.Context(), svc)
+		if err != nil {
+			log.Error("ui: list sources/sinks failed", "err", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		data := connectorTableData{Connectors: connectorRows(connectors, reg, sourceNames(sources), sinkNames(sinks)), Alert: alert}
 		renderFragment(w, log, "connector-panel", data)
 	}
 }
@@ -1243,28 +1317,41 @@ func handleConnectorDetailPage(svc *config.Service, version string, log *slog.Lo
 	}
 }
 
-// connectorStatsData is frag_connector_stats.html's data: a stats.Snapshot
-// plus its two byte-count fields pre-humanized in Go (see humanizeBytes) —
-// the same "format in Go, not in the template" choice connectorDetailData
-// makes for MaxAgeText, avoiding a template FuncMap entirely.
+// connectorStatsData is frag_connector_stats.html's "connector-stats" data:
+// a stats.Snapshot plus its two byte-count fields pre-humanized in Go (see
+// humanizeBytes) — the same "format in Go, not in the template" choice
+// connectorDetailData makes for MaxAgeText, avoiding a template FuncMap
+// entirely. ConnectorID re-supplies the polling target URL: the template
+// renders its own hx-get/hx-trigger wrapper (see its comment for why), so
+// it needs the id the request came in on.
 type connectorStatsData struct {
+	ConnectorID     string
 	Snapshot        stats.Snapshot
 	BytesPerSecText string
 	QueueBytesText  string
 }
 
 // handleConnectorStatsFrag serves GET /ui/frag/connectors/{id}/stats: the
-// detail page's hx-trigger="load, every 2s" polling target. 404s for an
-// unknown connector id, same as the page itself; a known connector reg has
-// never recorded (not yet started, or idle since boot) renders zero-valued
-// tiles rather than 404ing — reg.Snapshot's "ok" bool is deliberately
-// ignored here for the same reason connectorRows ignores it.
+// detail page's hx-trigger="load, every 2s" polling target (hx-swap=
+// "outerHTML" — see connector_detail.html/frag_connector_stats.html's
+// comments). A known connector reg has never recorded (not yet started, or
+// idle since boot) renders zero-valued tiles rather than a notice —
+// reg.Snapshot's "ok" bool is deliberately ignored here for the same reason
+// connectorRows ignores it.
+//
+// An unknown connector id (deleted from elsewhere while this detail page
+// is still open and polling) does NOT 404: since the polling attributes
+// live on the element this response replaces (outerHTML), a 404 htmx
+// simply wouldn't swap, and the poll would keep firing against a connector
+// that no longer exists. Instead this renders "connector-stats-deleted", a
+// 200 notice fragment with no hx-get/hx-trigger of its own — once swapped
+// in, the polling element is gone and the loop halts.
 func handleConnectorStatsFrag(svc *config.Service, reg *stats.Registry, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		if _, err := svc.GetConnector(r.Context(), id); err != nil {
 			if errors.Is(err, config.ErrNotFound) {
-				http.NotFound(w, r)
+				renderFragment(w, log, "connector-stats-deleted", nil)
 				return
 			}
 			log.Error("ui: get connector failed", "err", err)
@@ -1273,6 +1360,7 @@ func handleConnectorStatsFrag(svc *config.Service, reg *stats.Registry, log *slo
 		}
 		snap, _ := reg.Snapshot(id)
 		data := connectorStatsData{
+			ConnectorID:     id,
 			Snapshot:        snap,
 			BytesPerSecText: humanizeBytes(snap.BytesPerSec, "/s"),
 			QueueBytesText:  humanizeBytes(float64(snap.QueueBytes), ""),

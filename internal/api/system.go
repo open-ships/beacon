@@ -4,11 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
-	"runtime"
-	"sort"
-	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -16,6 +11,7 @@ import (
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/supervisor"
+	"github.com/open-ships/beacon/internal/sysinfo"
 )
 
 // --- Filter validation ---
@@ -54,16 +50,6 @@ func registerFilterRoutes(api huma.API, svc *config.Service, log *slog.Logger) {
 
 // --- System discovery ---
 
-// canRoot, serialRoot, and hostGOOS are package vars (rather than hard-coded
-// constants) so tests can point them at a fixture directory — and, for
-// canRoot, force the "linux" branch — to exercise the discovery logic
-// deterministically on any host, not just Linux CI.
-var (
-	canRoot    = "/sys/class/net"
-	serialRoot = "/dev"
-	hostGOOS   = runtime.GOOS
-)
-
 type systemOutput struct {
 	Body struct {
 		Version       string   `json:"version" doc:"beacon server version."`
@@ -73,9 +59,12 @@ type systemOutput struct {
 }
 
 // registerSystemInfoRoutes registers GET /api/v1/system: the server version
-// plus a best-effort hardware inventory, so the UI's "add source/sink" flow
-// can offer detected CAN interfaces and serial ports instead of a blank text
-// field.
+// plus a best-effort hardware inventory (internal/sysinfo), so the UI's "add
+// source/sink" flow can offer detected CAN interfaces and serial ports
+// instead of a blank text field. internal/ui calls internal/sysinfo
+// directly for that same inventory rather than going through this package —
+// see internal/sysinfo's package doc comment for why discovery lives in its
+// own leaf package instead of here.
 func registerSystemInfoRoutes(api huma.API, version string) {
 	huma.Register(api, huma.Operation{
 		OperationID: "get-system",
@@ -85,68 +74,10 @@ func registerSystemInfoRoutes(api huma.API, version string) {
 	}, func(ctx context.Context, _ *struct{}) (*systemOutput, error) {
 		out := &systemOutput{}
 		out.Body.Version = version
-		out.Body.CANInterfaces = discoverCAN()
-		out.Body.SerialPorts = discoverSerial()
+		out.Body.CANInterfaces = sysinfo.DiscoverCAN()
+		out.Body.SerialPorts = sysinfo.DiscoverSerial()
 		return out, nil
 	})
-}
-
-// DiscoverSystem exposes the same best-effort hardware inventory GET
-// /api/v1/system reports (see registerSystemInfoRoutes above) to other
-// in-process callers. internal/ui's source/sink add/edit forms call this
-// directly to populate interface/port <datalist> suggestions, rather than
-// beacon making an HTTP round trip to its own API from its own UI handler
-// — this is a same-binary, cross-package function call, not a network
-// call, so it stays synchronous and can't fail independently of the
-// process itself.
-func DiscoverSystem() (canIfaces, serialPorts []string) {
-	return discoverCAN(), discoverSerial()
-}
-
-// discoverCAN best-effort lists SocketCAN network interface names present on
-// this host: entries of canRoot (normally /sys/class/net) whose "type" file
-// reads "280" (ARPHRD_CAN, the CAN bus link-layer type in Linux's if_arp.h).
-// SocketCAN is Linux-only, so any other OS short-circuits to an empty list
-// without touching the filesystem at all; both a missing canRoot and a
-// per-interface read failure are treated as "no such interface" rather than
-// an error, matching this endpoint's best-effort contract.
-func discoverCAN() []string {
-	if hostGOOS != "linux" {
-		return []string{}
-	}
-	entries, err := os.ReadDir(canRoot)
-	if err != nil {
-		return []string{}
-	}
-	out := []string{}
-	for _, e := range entries {
-		typ, err := os.ReadFile(filepath.Join(canRoot, e.Name(), "type"))
-		if err != nil {
-			continue
-		}
-		if strings.TrimSpace(string(typ)) == "280" {
-			out = append(out, e.Name())
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-// discoverSerial best-effort lists likely USB-serial device paths under
-// serialRoot (normally /dev), matching the naming conventions Linux
-// (ttyUSB*, ttyACM*) and macOS (tty.usbserial*, tty.usbmodem*) use for USB
-// serial adapters — the typical connection for USB-CAN and NMEA 0183
-// hardware. Unlike discoverCAN this is not OS-gated: on a host with none of
-// these devices the glob patterns simply match nothing.
-func discoverSerial() []string {
-	patterns := []string{"ttyUSB*", "ttyACM*", "tty.usbserial*", "tty.usbmodem*"}
-	out := []string{}
-	for _, p := range patterns {
-		matches, _ := filepath.Glob(filepath.Join(serialRoot, p))
-		out = append(out, matches...)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // --- Live metrics ---

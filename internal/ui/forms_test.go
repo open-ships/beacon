@@ -378,6 +378,38 @@ func TestSourceCreateValidationErrorRendersFormNot500(t *testing.T) {
 	}
 }
 
+// TestSourceCreateParseFormErrorRendersAlertNot500 exercises writeSource's
+// r.ParseForm() error branch — previously untested. A malformed percent-
+// escape in the request's raw query string ("%zz") makes url.ParseQuery
+// fail, which r.ParseForm() surfaces as a non-nil error even though the
+// POST body itself is well-formed; this is a reliable, portable way to
+// trigger the branch without depending on multipart-parsing edge cases.
+// writeSink/writeConnector have the identical branch (see writeSource's
+// doc comment); this one test stands in for all three, same as the rest of
+// this file only exercising the sources-side variant of parallel source/
+// sink logic (see forms.go's package doc comment).
+func TestSourceCreateParseFormErrorRendersAlertNot500(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/ui/sources?%zz",
+		strings.NewReader(url.Values{"id": {"bad"}, "name": {"Bad"}, "type": {"socketcan"}}.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	if !strings.Contains(body, "alert-error") || !strings.Contains(body, "invalid form submission") {
+		t.Fatalf("expected an invalid-form-submission alert:\n%s", body)
+	}
+	if _, err := svc.GetSource(context.Background(), "bad"); err == nil {
+		t.Fatal("a request with a ParseForm error should not have persisted anything")
+	}
+}
+
 func TestSourceCreateMalformedHeadersRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	resp := postForm(t, srv, "/ui/sources", url.Values{
@@ -526,9 +558,12 @@ func TestConnectorsPageRendersConfiguredEntities(t *testing.T) {
 	}
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
+	// The route column shows the source/sink NAMES ("Source One"/"Sink
+	// One" — seedSourceSink's names), not their raw ids: see
+	// TestConnectorsPageNameFallsBackToIDWhenEmpty for the fallback case.
 	for _, want := range []string{
 		`href="/ui/connectors/conn1"`, "NMEA Bridge",
-		"<code>src1</code>", "<code>sink1</code>",
+		"Source One", "Sink One",
 		"badge-success",
 	} {
 		if !strings.Contains(body, want) {
@@ -540,6 +575,29 @@ func TestConnectorsPageRendersConfiguredEntities(t *testing.T) {
 	// depth/msg-per-second render as zero rather than being omitted.
 	if !strings.Contains(body, "<td>0</td>") || !strings.Contains(body, "<td>0.00</td>") {
 		t.Fatalf("connectors page did not render zero stats for a connector with no recorded traffic:\n%s", body)
+	}
+}
+
+// TestConnectorsPageNameFallsBackToIDWhenEmpty covers the other half of
+// "names not raw ids" (see TestConnectorsPageRendersConfiguredEntities): a
+// source/sink with no Name set (model.Source/Sink don't require one — see
+// model/validate.go) renders its raw id in the connectors table instead of
+// an empty cell.
+func TestConnectorsPageNameFallsBackToIDWhenEmpty(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	ctx := context.Background()
+	must(t, svc.PutSource(ctx, model.Source{ID: "src1", Type: model.SourceSocketCAN, Interface: "can0"}, true))
+	must(t, svc.PutSink(ctx, model.Sink{ID: "sink1", Type: model.SinkTCP, Address: "127.0.0.1:9000"}, true))
+	must(t, svc.PutConnector(ctx, model.Connector{ID: "conn1", Name: "Bridge", SourceID: "src1", SinkID: "sink1"}, true))
+
+	resp, err := http.Get(srv.URL + "/ui/connectors")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	if !strings.Contains(body, "src1") || !strings.Contains(body, "sink1") {
+		t.Fatalf("connectors page should fall back to the raw id when name is empty:\n%s", body)
 	}
 }
 
@@ -666,6 +724,41 @@ func TestConnectorMaxAgeParseErrorRendersFormNot500(t *testing.T) {
 	}
 }
 
+// TestConnectorMaxAgeParseErrorPreservesSelectionsAndFilters extends
+// TestConnectorMaxAgeParseErrorRendersFormNot500's coverage: previously
+// nothing asserted that the re-rendered form actually preserves the
+// operator's source/sink <select> choices and filters textarea content, as
+// opposed to merely showing an error and not persisting. See
+// connectorFormViewFromRequest (built from the raw POSTed values, not
+// toModel's parsed/reformatted round trip) and frag_connector_form.html's
+// "selected"/textarea rendering.
+func TestConnectorMaxAgeParseErrorPreservesSelectionsAndFilters(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	seedSourceSink(t, svc)
+
+	resp := postForm(t, srv, "/ui/connectors", url.Values{
+		"id": {"conn1"}, "name": {"Bad Connector"}, "source_id": {"src1"}, "sink_id": {"sink1"},
+		"filters": {"msg.pgn == 127250\nmsg.priority == 4"},
+		"max_age": {"notaduration"},
+	})
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	if !strings.Contains(body, "alert-error") {
+		t.Fatalf("expected a validation alert:\n%s", body)
+	}
+	for _, want := range []string{
+		`value="src1" selected`, `value="sink1" selected`,
+		"msg.pgn == 127250", "msg.priority == 4",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected the submitted source/sink selection and filters to survive re-render, missing %q:\n%s", want, body)
+		}
+	}
+	if _, err := svc.GetConnector(context.Background(), "conn1"); err == nil {
+		t.Fatal("connector with an unparseable max_age should not have been persisted")
+	}
+}
+
 func TestConnectorCreateValidationErrorRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	seedSourceSink(t, svc)
@@ -781,12 +874,42 @@ func TestConnectorStatsFragmentRendersSnapshotNumbers(t *testing.T) {
 			t.Fatalf("stats fragment missing %q:\n%s", want, body)
 		}
 	}
+	// The polling attributes live on the fragment's own wrapper element
+	// (swapped outerHTML into connector_detail.html's #connector-stats),
+	// not on a stable parent — see TestConnectorStatsFragmentUnknownID
+	// DeletedNoticeHaltsPolling for why that matters.
+	if !strings.Contains(body, `hx-get="/ui/frag/connectors/conn1/stats"`) || !strings.Contains(body, `hx-trigger="load, every 2s"`) {
+		t.Fatalf("stats fragment missing its own polling attributes:\n%s", body)
+	}
+}
 
-	resp2, err := http.Get(srv.URL + "/ui/frag/connectors/doesnotexist/stats")
+// TestConnectorStatsFragmentUnknownIDDeletedNoticeHaltsPolling covers the
+// "connector deleted while its detail page is still open" case: the
+// polling container's hx-trigger lives on the element the fragment
+// response itself replaces (hx-swap="outerHTML" — see connector_detail.html
+// and frag_connector_stats.html's comments), so a 404 response wouldn't
+// swap at all and the poll would fire forever against a connector that no
+// longer exists. Instead, an unknown id gets a 200 "no longer exists"
+// notice that omits every polling attribute: once htmx swaps it in, the
+// element that used to carry hx-trigger is gone, and nothing re-polls.
+func TestConnectorStatsFragmentUnknownIDDeletedNoticeHaltsPolling(t *testing.T) {
+	srv, _ := newUIServerWithService(t)
+
+	resp, err := http.Get(srv.URL + "/ui/frag/connectors/doesnotexist/stats")
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustStatus(t, resp2, http.StatusNotFound)
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	if !strings.Contains(strings.ToLower(body), "no longer exists") {
+		t.Fatalf("expected a deleted-connector notice:\n%s", body)
+	}
+	if strings.Contains(body, "hx-trigger") {
+		t.Fatalf("deleted-connector notice must carry no hx-trigger (it would keep polling):\n%s", body)
+	}
+	if strings.Contains(body, "hx-get") {
+		t.Fatalf("deleted-connector notice must carry no hx-get (it would keep polling):\n%s", body)
+	}
 }
 
 func TestConnectorDetailPageRendersConfigSummary(t *testing.T) {

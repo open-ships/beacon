@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/url"
 
 	"github.com/open-ships/beacon/internal/config"
 	"github.com/open-ships/beacon/internal/stats"
@@ -50,15 +51,36 @@ var assetsFS embed.FS
 // A nil log defaults to slog.Default(), the same convention as api.New and
 // config.NewService; render failures are logged through it (see render.go).
 //
-// The returned handler is a plain *http.ServeMux serving "GET /ui/<page>"
-// routes plus "GET /ui/assets/". It is mounted at internal/app/app.go as
-// mux.Handle("/ui/", handler); routes below are registered with the full
-// "/ui/..." path since the mux they're added to isn't stripped.
+// The returned handler is an *http.ServeMux serving "GET /ui/<page>" routes
+// plus "GET /ui/assets/", wrapped in sameOriginGuard (see its doc comment).
+// It is mounted at internal/app/app.go as mux.Handle("/ui/", handler) AND
+// mux.Handle("/ui", handler) — the second, exact-path mount is required
+// too: without it, a bare "GET /ui" request never reaches this handler's
+// own "GET /ui" redirect route below, because net/http.ServeMux intercepts
+// it first with its own 301-to-"/ui/" redirect (a subtree pattern's
+// implicit behavior for the path with the trailing slash removed) unless an
+// exact-path registration for "/ui" already exists at that outer mux.
+// Routes below are registered with the full "/ui/..." path since the mux
+// they're added to isn't stripped.
 func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, version string, log *slog.Logger) http.Handler {
 	if log == nil {
 		log = slog.Default()
 	}
 	mux := http.NewServeMux()
+
+	// GET /ui and GET /ui/ both land the operator on the dashboard. Both
+	// patterns are registered here (rather than relying on http.ServeMux's
+	// built-in "add the trailing slash" redirect for the bare "/ui") so
+	// each is a single-hop 302 straight to /ui/dashboard — see the
+	// package-level mounting note above: the parent mux this Handler is
+	// mounted under must forward exact "/ui" requests here unmodified (in
+	// addition to its "/ui/" subtree mount) for the "GET /ui" pattern below
+	// to ever be reached.
+	redirectToDashboard := func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ui/dashboard", http.StatusFound)
+	}
+	mux.HandleFunc("GET /ui", redirectToDashboard)
+	mux.HandleFunc("GET /ui/{$}", redirectToDashboard)
 
 	mux.HandleFunc("GET /ui/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		render(w, log, "dashboard", "Dashboard", version)
@@ -106,7 +128,57 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 	fileServer := http.StripPrefix("/ui/assets/", http.FileServer(http.FS(assets)))
 	mux.Handle("GET /ui/assets/", withImmutableCache(fileServer))
 
-	return mux
+	return sameOriginGuard(mux)
+}
+
+// sameOriginGuard wraps next so every POST request is checked against a
+// same-origin policy before reaching next — beacon's only defense against
+// cross-site form/fetch submissions forging a write through the UI's
+// state-changing endpoints (POST /ui/sources, /ui/sinks, /ui/connectors,
+// and their .../delete and /ui/frag/validate-filters counterparts). GET
+// requests (and every other method) pass through untouched: they're not
+// state-changing, so there's nothing here for a forged cross-site request
+// to gain by making one.
+//
+// Two signals are checked, in order, either sufficient on its own to allow
+// the request through:
+//
+//   - Origin, sent by every fetch/XHR/form POST a modern browser makes,
+//     same-origin or not. If present, its host must equal the request's own
+//     Host or the request is rejected — this is the primary signal, and the
+//     one every browser that matters sends.
+//   - Sec-Fetch-Site, checked only when Origin is absent (some same-origin
+//     requests omit Origin per the Fetch spec, and a handful of older
+//     browsers never send it at all): if present, it must read
+//     "same-origin" or "none" (a user-typed URL, bookmark, or browser
+//     extension — not a cross-site page) or the request is rejected.
+//
+// A request carrying NEITHER header — curl, most non-browser HTTP clients,
+// and any htmx request a stripping proxy scrubbed both headers from — is
+// allowed. beacon has no cookie or bearer-token auth on /ui/* for such a
+// client to have forged in the first place, so a headerless request is
+// exactly as trusted as one that proves same-origin.
+func sameOriginGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && !sameOrigin(r) {
+			http.Error(w, "cross-origin POST forbidden", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// sameOrigin implements sameOriginGuard's Origin/Sec-Fetch-Site check; see
+// its doc comment for the full rationale.
+func sameOrigin(r *http.Request) bool {
+	if origin := r.Header.Get("Origin"); origin != "" {
+		u, err := url.Parse(origin)
+		return err == nil && u.Host == r.Host
+	}
+	if sfs := r.Header.Get("Sec-Fetch-Site"); sfs != "" {
+		return sfs == "same-origin" || sfs == "none"
+	}
+	return true
 }
 
 // withImmutableCache marks every response next serves as safe for clients

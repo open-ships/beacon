@@ -43,7 +43,7 @@
               {{if eq .State "error"}}<span class="badge badge-error">error</span>{{end}}
             </div>
           </div>
-          <div class="text-sm opacity-70"><code>{{.SourceID}}</code> &rarr; <code>{{.SinkID}}</code></div>
+          <div class="text-sm opacity-70">{{.SourceName}} &rarr; {{.SinkName}}</div>
           <div class="stats stats-vertical sm:stats-horizontal bg-base-100 shadow">
             <div class="stat p-3">
               <div class="stat-title text-xs">Msg/s</div>

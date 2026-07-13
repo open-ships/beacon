@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -30,10 +31,11 @@ func (fakeReconciler) Statuses() []supervisor.Status       { return nil }
 
 // newAppMountedServer builds ui.Handler and serves it exactly as
 // internal/app mounts it in the real deployment: mux.Handle("/ui/",
-// handler) plus the "GET /{$}" -> /ui/dashboard redirect (see app.go's
-// Run). ui.go's routes are registered with full "/ui/..." paths on the
-// assumption they're reached this way, so tests exercise that exact shape
-// rather than serving the handler bare at "/" (same reasoning as
+// handler), mux.Handle("/ui", handler) (see ui.Handler's doc comment for
+// why both are needed), plus the "GET /{$}" -> /ui/dashboard redirect (see
+// app.go's Run). ui.go's routes are registered with full "/ui/..." paths on
+// the assumption they're reached this way, so tests exercise that exact
+// shape rather than serving the handler bare at "/" (same reasoning as
 // internal/api/docsui_test.go's newAppMountedServer).
 func newAppMountedServer(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -47,6 +49,7 @@ func newAppMountedServer(t *testing.T) *httptest.Server {
 
 	mux := http.NewServeMux()
 	mux.Handle("/ui/", handler)
+	mux.Handle("/ui", handler)
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ui/dashboard", http.StatusFound)
 	})
@@ -104,6 +107,127 @@ func TestRootRedirectsToDashboard(t *testing.T) {
 	if loc != "/ui/dashboard" {
 		t.Fatalf("Location = %q, want /ui/dashboard", loc)
 	}
+}
+
+// --- GET /ui and GET /ui/ -> 302 /ui/dashboard ---
+
+func TestUIRootPathsRedirectToDashboard(t *testing.T) {
+	srv := newAppMountedServer(t)
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	for _, path := range []string{"/ui", "/ui/"} {
+		t.Run(path, func(t *testing.T) {
+			resp, err := client.Get(srv.URL + path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			mustStatus(t, resp, http.StatusFound)
+			if loc := resp.Header.Get("Location"); loc != "/ui/dashboard" {
+				t.Fatalf("Location = %q, want /ui/dashboard", loc)
+			}
+		})
+	}
+}
+
+// --- Same-origin guard on POST /ui/* ---
+
+// samePOSTOriginTarget is a POST endpoint that never needs any prior setup
+// and, when the request reaches the handler (i.e. the guard let it
+// through), always answers 200 — deleting an unknown connector id renders a
+// "not found" alert rather than erroring. That makes it a good same-origin
+// guard test target: any status other than 200 or 403 would mean the test
+// itself is broken, not the guard.
+const samePOSTOriginTarget = "/ui/connectors/nope/delete"
+
+func TestSameOriginGuardBlocksCrossOriginPOST(t *testing.T) {
+	srv := newAppMountedServer(t)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+samePOSTOriginTarget, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "http://evil.example")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusForbidden)
+}
+
+func TestSameOriginGuardBlocksCrossSiteSecFetchSite(t *testing.T) {
+	srv := newAppMountedServer(t)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+samePOSTOriginTarget, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No Origin header (some same-origin requests omit it per the Fetch
+	// spec) but a Sec-Fetch-Site that names a cross-site request.
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusForbidden)
+}
+
+func TestSameOriginGuardAllowsSameOriginPOST(t *testing.T) {
+	srv := newAppMountedServer(t)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+samePOSTOriginTarget, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", u.Scheme+"://"+u.Host)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+}
+
+func TestSameOriginGuardAllowsSameOriginSecFetchSite(t *testing.T) {
+	srv := newAppMountedServer(t)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+samePOSTOriginTarget, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+}
+
+func TestSameOriginGuardAllowsHeaderlessPOST(t *testing.T) {
+	srv := newAppMountedServer(t)
+	// A plain http.Post, like curl or any non-browser client, sends neither
+	// Origin nor Sec-Fetch-Site.
+	resp, err := http.Post(srv.URL+samePOSTOriginTarget, "application/x-www-form-urlencoded", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+}
+
+func TestSameOriginGuardDoesNotApplyToGET(t *testing.T) {
+	srv := newAppMountedServer(t)
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/ui/dashboard", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "http://evil.example")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
 }
 
 func TestDashboardPageIsSelfContained(t *testing.T) {

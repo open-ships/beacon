@@ -4,7 +4,17 @@
      card ships empty and fetches "connector-stats"
      (frag_connector_stats.html) itself via hx-trigger="load, every 2s" —
      see the "connectors" pages map entry's doc comment in pages.go for
-     why. */}}
+     why.
+
+     hx-swap is "outerHTML", not "innerHTML": the polling attributes
+     (hx-get/hx-trigger) below are meant to travel WITH each response, not
+     stay pinned to this stable container — every normal ("connector-stats",
+     frag_connector_stats.html) response re-renders its own wrapper carrying
+     the same hx-get/hx-trigger so polling continues, but the "connector no
+     longer exists" notice (handleConnectorStatsFrag, unknown id) renders a
+     wrapper with NO polling attributes at all, so once htmx swaps it in the
+     poller is simply gone and the 2s loop halts. See
+     frag_connector_stats.html's comment for the other half of this. */}}
 {{define "content"}}
 <div class="flex flex-col gap-4">
   <div class="flex justify-between items-center">
@@ -48,6 +58,6 @@
     </div>
   </div>
   <div id="connector-stats" class="stats stats-vertical sm:stats-horizontal shadow bg-base-200"
-       hx-get="/ui/frag/connectors/{{.Connector.ID}}/stats" hx-trigger="load, every 2s" hx-swap="innerHTML"></div>
+       hx-get="/ui/frag/connectors/{{.Connector.ID}}/stats" hx-trigger="load, every 2s" hx-swap="outerHTML"></div>
 </div>
 {{end}}

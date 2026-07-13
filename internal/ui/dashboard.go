@@ -76,20 +76,26 @@ func healthChips(sources []model.Source, sinks []model.Sink, statuses []supervis
 // plus its live stats.Snapshot (reg.Snapshot — same zero-value-when-absent
 // contract connectorRow in forms.go relies on, so a just-created or idle
 // connector's card renders zero rate/queue tiles rather than needing a
-// presence check here) and its live supervisor state (stateFor — "unknown"
+// presence check here), its live supervisor state (stateFor — "unknown"
 // when statuses doesn't report one, e.g. disabled; the card only acts on
 // "error", rendering an extra error badge alongside the plain
-// enabled/disabled badge every other state leaves untouched).
+// enabled/disabled badge every other state leaves untouched), and its
+// source/sink NAMES (nameOrID — forms.go's connectorRow uses the exact
+// same helper for the connectors table's route column).
 type dashboardConnectorCard struct {
 	model.Connector
 	Snapshot        stats.Snapshot
 	State           string
 	BytesPerSecText string
+	SourceName      string
+	SinkName        string
 }
 
 // dashboardConnectorCards builds the connector-grid data in svc.ListConnectors
-// order.
-func dashboardConnectorCards(connectors []model.Connector, reg *stats.Registry, statuses []supervisor.Status) []dashboardConnectorCard {
+// order. srcNames/sinkNamesByID are id->Name lookup maps (forms.go's
+// sourceNames/sinkNames) built by the caller from the same source/sink
+// lists it already fetched for the components health strip (healthChips).
+func dashboardConnectorCards(connectors []model.Connector, reg *stats.Registry, statuses []supervisor.Status, srcNames, sinkNamesByID map[string]string) []dashboardConnectorCard {
 	cards := make([]dashboardConnectorCard, len(connectors))
 	for i, c := range connectors {
 		snap, _ := reg.Snapshot(c.ID)
@@ -98,6 +104,8 @@ func dashboardConnectorCards(connectors []model.Connector, reg *stats.Registry, 
 			Snapshot:        snap,
 			State:           stateFor(statuses, "connector", c.ID),
 			BytesPerSecText: humanizeBytes(snap.BytesPerSec, "/s"),
+			SourceName:      nameOrID(srcNames, c.SourceID),
+			SinkName:        nameOrID(sinkNamesByID, c.SinkID),
 		}
 	}
 	return cards
@@ -163,7 +171,7 @@ func handleDashboardFrag(svc *config.Service, reg *stats.Registry, statuses func
 		live := statuses()
 		data := dashboardData{
 			Health:     healthChips(sources, sinks, live),
-			Connectors: dashboardConnectorCards(connectors, reg, live),
+			Connectors: dashboardConnectorCards(connectors, reg, live, sourceNames(sources), sinkNames(sinks)),
 		}
 		if len(data.Connectors) == 0 {
 			data.EmptyTitle, data.EmptyMessage, data.EmptyCTA, data.EmptyHref = dashboardEmptyState(len(sources) > 0)

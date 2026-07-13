@@ -1,30 +1,54 @@
 {{/* Data: internal/ui/forms.go's connectorStatsData. Rendered at GET
-     /ui/frag/connectors/{id}/stats, hx-swap="innerHTML"'d into
-     connector_detail.html's #connector-stats container (which itself
-     carries the "stats stats-vertical sm:stats-horizontal" daisyUI classes
-     — see its comment) every 2s. This fragment renders only the ".stat"
-     tile children, not the wrapping ".stats" div: that div is the polling
-     container itself, so if this template also rendered it, the tiles
-     would end up double-wrapped after the first swap. */}}
+     /ui/frag/connectors/{id}/stats, hx-swap="outerHTML"'d in place of
+     connector_detail.html's #connector-stats container (or its own
+     previous response — see below) every 2s.
+
+     Unlike most fragments in this set, "connector-stats" renders its OWN
+     wrapping ".stats" div, carrying the same id/classes AND the same
+     hx-get/hx-trigger/hx-swap polling attributes connector_detail.html's
+     initial container does: an outerHTML swap replaces the polling element
+     itself, so each response has to re-supply those attributes for the 2s
+     loop to keep going. This is deliberate, not an oversight — it's what
+     makes the "connector-stats-deleted" template below (rendered instead
+     of this one when the connector no longer exists —
+     handleConnectorStatsFrag) able to halt the loop just by NOT including
+     them: once that response is swapped in, the element carrying
+     hx-trigger is gone, and nothing re-polls. See connector_detail.html's
+     comment for the other half of this. */}}
 {{define "connector-stats"}}
-<div class="stat">
-  <div class="stat-title">Total messages</div>
-  <div class="stat-value">{{.Snapshot.TotalMessages}}</div>
+<div id="connector-stats" class="stats stats-vertical sm:stats-horizontal shadow bg-base-200"
+     hx-get="/ui/frag/connectors/{{.ConnectorID}}/stats" hx-trigger="load, every 2s" hx-swap="outerHTML">
+  <div class="stat">
+    <div class="stat-title">Total messages</div>
+    <div class="stat-value">{{.Snapshot.TotalMessages}}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-title">Msg/s</div>
+    <div class="stat-value">{{printf "%.2f" .Snapshot.MsgPerSec}}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-title">Bytes/s</div>
+    <div class="stat-value">{{.BytesPerSecText}}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-title">Queue depth</div>
+    <div class="stat-value">{{.Snapshot.QueueDepth}}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-title">Queue bytes</div>
+    <div class="stat-value">{{.QueueBytesText}}</div>
+  </div>
 </div>
-<div class="stat">
-  <div class="stat-title">Msg/s</div>
-  <div class="stat-value">{{printf "%.2f" .Snapshot.MsgPerSec}}</div>
-</div>
-<div class="stat">
-  <div class="stat-title">Bytes/s</div>
-  <div class="stat-value">{{.BytesPerSecText}}</div>
-</div>
-<div class="stat">
-  <div class="stat-title">Queue depth</div>
-  <div class="stat-value">{{.Snapshot.QueueDepth}}</div>
-</div>
-<div class="stat">
-  <div class="stat-title">Queue bytes</div>
-  <div class="stat-value">{{.QueueBytesText}}</div>
+{{end}}
+
+{{/* connector-stats-deleted is rendered by handleConnectorStatsFrag
+     instead of "connector-stats" above when the connector id in the URL no
+     longer exists (deleted from another tab/window while this detail page
+     was still open polling it). Deliberately carries NO hx-get/hx-trigger/
+     hx-swap — see "connector-stats" above for why that's what stops the
+     polling loop rather than just showing a stale message forever. */}}
+{{define "connector-stats-deleted"}}
+<div id="connector-stats" class="alert alert-warning">
+  <span>This connector no longer exists.</span>
 </div>
 {{end}}

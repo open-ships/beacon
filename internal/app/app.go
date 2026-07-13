@@ -116,6 +116,10 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 	mux.HandleFunc("GET /health", a.handleHealth)
 	mux.Handle("/api/", apiHandler)
 	mux.Handle("/ui/", uiHandler)
+	// The exact-path "/ui" mount (alongside the "/ui/" subtree mount above)
+	// is required for GET /ui to reach uiHandler's own "GET /ui" redirect
+	// route at all — see ui.Handler's doc comment for why.
+	mux.Handle("/ui", uiHandler)
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ui/dashboard", http.StatusFound)
 	})
