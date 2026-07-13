@@ -1329,6 +1329,7 @@ type connectorStatsData struct {
 	Snapshot        stats.Snapshot
 	BytesPerSecText string
 	QueueBytesText  string
+	SparkPoints     string
 }
 
 // handleConnectorStatsFrag serves GET /ui/frag/connectors/{id}/stats: the
@@ -1364,6 +1365,7 @@ func handleConnectorStatsFrag(svc *config.Service, reg *stats.Registry, log *slo
 			Snapshot:        snap,
 			BytesPerSecText: humanizeBytes(snap.BytesPerSec, "/s"),
 			QueueBytesText:  humanizeBytes(float64(snap.QueueBytes), ""),
+			SparkPoints:     sparklinePoints(snap.DepthHistory),
 		}
 		renderFragment(w, log, "connector-stats", data)
 	}
@@ -1383,4 +1385,59 @@ func humanizeBytes(n float64, suffix string) string {
 	default:
 		return fmt.Sprintf("%.2f MB%s", n/(step*step), suffix)
 	}
+}
+
+// sparkWidth/sparkHeight are frag_connector_stats.html's sparkline
+// <svg viewBox="0 0 120 32">, shared here so sparklinePoints' scaling
+// always matches what the template declares.
+const (
+	sparkWidth  = 120.0
+	sparkHeight = 32.0
+)
+
+// sparklinePoints turns history (stats.Snapshot.DepthHistory, oldest to
+// newest) into the space-separated "x,y x,y ..." string
+// frag_connector_stats.html's <polyline points="..."> renders directly —
+// computed here rather than in the template so the template stays free of
+// arithmetic. X is spread evenly across [0, sparkWidth]; Y is scaled to
+// [0, sparkHeight] and flipped (SVG y grows downward, so a larger depth
+// maps to a SMALLER y) so the line rises for a growing queue the way a
+// normal chart would, not an inverted one.
+//
+// Two cases would otherwise divide by zero and are handled as a flat line
+// instead of an error: a single-sample history (no second x to spread
+// across) is rendered as a 2-point horizontal line at mid-height, and a
+// multi-sample history whose values are all equal — including all
+// zero — (max-min spread of 0) is rendered as a flat line across the full
+// width rather than computing 0/0. An empty history (connector never
+// SetQueue'd) returns "", which the template's <polyline> renders as an
+// empty, harmless line.
+func sparklinePoints(history []int64) string {
+	if len(history) == 0 {
+		return ""
+	}
+	if len(history) == 1 {
+		return fmt.Sprintf("0.00,%.2f %.2f,%.2f", sparkHeight/2, sparkWidth, sparkHeight/2)
+	}
+	lo, hi := history[0], history[0]
+	for _, v := range history[1:] {
+		if v < lo {
+			lo = v
+		}
+		if v > hi {
+			hi = v
+		}
+	}
+	spread := hi - lo
+	points := make([]string, len(history))
+	for i, v := range history {
+		x := sparkWidth * float64(i) / float64(len(history)-1)
+		y := sparkHeight / 2
+		if spread != 0 {
+			frac := float64(v-lo) / float64(spread)
+			y = sparkHeight - frac*sparkHeight
+		}
+		points[i] = fmt.Sprintf("%.2f,%.2f", x, y)
+	}
+	return strings.Join(points, " ")
 }

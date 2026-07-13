@@ -38,6 +38,18 @@
     <div class="stat-title">Queue bytes</div>
     <div class="stat-value">{{.QueueBytesText}}</div>
   </div>
+  {{/* Queue-depth sparkline: points is precomputed in Go (forms.go's
+       sparklinePoints) from Snapshot.DepthHistory, already scaled to this
+       viewBox and y-flipped — the template just drops it into the
+       polyline, no arithmetic here. preserveAspectRatio="none" lets the
+       120x32 viewBox stretch to fill the tile's actual box (w-full h-8)
+       instead of letterboxing to the viewBox's own aspect ratio. */}}
+  <div class="stat">
+    <div class="stat-title">Queue depth (5m)</div>
+    <svg viewBox="0 0 120 32" preserveAspectRatio="none" class="stroke-primary fill-none w-full h-8">
+      <polyline points="{{.SparkPoints}}" />
+    </svg>
+  </div>
 </div>
 {{end}}
 

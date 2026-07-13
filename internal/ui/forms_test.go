@@ -883,6 +883,38 @@ func TestConnectorStatsFragmentRendersSnapshotNumbers(t *testing.T) {
 	}
 }
 
+// TestConnectorStatsFragmentRendersSparkline covers the queue-depth
+// sparkline (spec §6, closed out in Phase 4): after two SetQueue calls with
+// different depths, DepthHistory has 2 samples, so the fragment's inline
+// SVG <polyline> must carry at least 2 "x,y" point pairs.
+func TestConnectorStatsFragmentRendersSparkline(t *testing.T) {
+	srv, svc, reg := newUIServerWithServiceAndRegistry(t)
+	seedSourceSink(t, svc)
+	must(t, svc.PutConnector(context.Background(), model.Connector{ID: "conn1", Name: "Conn One", SourceID: "src1", SinkID: "sink1"}, true))
+
+	reg.SetQueue("conn1", 2, 200)
+	reg.SetQueue("conn1", 9, 900)
+
+	resp, err := http.Get(srv.URL + "/ui/frag/connectors/conn1/stats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	if !strings.Contains(body, "<polyline") {
+		t.Fatalf("stats fragment missing sparkline <polyline>:\n%s", body)
+	}
+	i := strings.Index(body, `points="`)
+	if i == -1 {
+		t.Fatalf("stats fragment <polyline> missing points attribute:\n%s", body)
+	}
+	rest := body[i+len(`points="`):]
+	points := rest[:strings.Index(rest, `"`)]
+	if n := len(strings.Fields(points)); n < 2 {
+		t.Fatalf("sparkline points = %q, want >= 2 point pairs, got %d", points, n)
+	}
+}
+
 // TestConnectorStatsFragmentUnknownIDDeletedNoticeHaltsPolling covers the
 // "connector deleted while its detail page is still open" case: the
 // polling container's hx-trigger lives on the element the fragment

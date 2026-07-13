@@ -119,6 +119,17 @@ func TestConnectorMetrics(t *testing.T) {
 	if snap.TotalMessages != 5 || snap.TotalBytes != 500 {
 		t.Fatalf("snapshot = %+v, want TotalMessages=5 TotalBytes=500", snap)
 	}
+
+	// depth_history (queue-depth sparkline, spec §6): additive JSON field,
+	// present once SetQueue has been called.
+	reg.SetQueue("c1", 3, 300)
+	reg.SetQueue("c1", 8, 800)
+	resp = doJSON(t, http.MethodGet, srv.URL+"/api/v1/connectors/c1/metrics", nil)
+	mustStatus(t, resp, http.StatusOK)
+	decodeInto(t, resp, &snap)
+	if want := []int64{3, 8}; len(snap.DepthHistory) != len(want) || snap.DepthHistory[0] != want[0] || snap.DepthHistory[1] != want[1] {
+		t.Fatalf("DepthHistory = %v, want %v", snap.DepthHistory, want)
+	}
 }
 
 func TestConnectorMetricsUnknown(t *testing.T) {
@@ -132,6 +143,7 @@ func TestListMetrics(t *testing.T) {
 	srv, _, reg := newStatsServer(t)
 	reg.Record("c1", 3, 300)
 	reg.Record("c2", 7, 700)
+	reg.SetQueue("c1", 4, 400)
 
 	resp := doJSON(t, http.MethodGet, srv.URL+"/api/v1/metrics", nil)
 	mustStatus(t, resp, http.StatusOK)
@@ -147,6 +159,14 @@ func TestListMetrics(t *testing.T) {
 	}
 	if body.Connectors["c2"].TotalBytes != 700 {
 		t.Fatalf("c2 TotalBytes = %d, want 700", body.Connectors["c2"].TotalBytes)
+	}
+	// depth_history (queue-depth sparkline, spec §6): present for c1 (had a
+	// SetQueue call), absent for c2 (Record-only, never SetQueue'd).
+	if want := []int64{4}; len(body.Connectors["c1"].DepthHistory) != 1 || body.Connectors["c1"].DepthHistory[0] != want[0] {
+		t.Fatalf("c1 DepthHistory = %v, want %v", body.Connectors["c1"].DepthHistory, want)
+	}
+	if body.Connectors["c2"].DepthHistory != nil {
+		t.Fatalf("c2 DepthHistory = %v, want nil (never SetQueue'd)", body.Connectors["c2"].DepthHistory)
 	}
 }
 
