@@ -6,10 +6,20 @@
      internal/ui/forms.go's sourceTableData. */}}
 {{define "source-panel-inner"}}
 {{if .Alert}}
-<div class="alert {{if eq .Alert.Kind "success"}}alert-success{{else}}alert-error{{end}}" role="alert">
+{{if eq .Alert.Kind "success"}}
+{{/* data-autodismiss marks this alert for the wrapper div's hx-on::load
+     auto-dismiss timer (see the wrapper templates below). Error alerts
+     don't carry it: they stay until manually dismissed. */}}
+<div class="alert alert-success" role="alert" data-autodismiss>
   <span>{{.Alert.Message}}</span>
   <button type="button" class="btn btn-sm btn-ghost" onclick="this.closest('.alert').remove()">Dismiss</button>
 </div>
+{{else}}
+<div class="alert alert-error" role="alert">
+  <span>{{.Alert.Message}}</span>
+  <button type="button" class="btn btn-sm btn-ghost" onclick="this.closest('.alert').remove()">Dismiss</button>
+</div>
+{{end}}
 {{end}}
 <div class="overflow-x-auto">
   <table class="table">
@@ -59,7 +69,20 @@
 </div>
 {{end}}
 
-{{define "source-panel"}}<div id="source-panel" class="flex flex-col gap-4">{{template "source-panel-inner" .}}</div>{{end}}
+{{/* The hx-on::load timer on both wrappers below auto-dismisses a success
+     alert 4s after the panel is swapped in, per the plan's "success toast
+     (daisyUI alert, auto-dismiss)". It lives on the wrapper, NOT on the
+     alert itself, because htmx (2.0.10, verified in the vendored
+     assets/htmx.min.js) triggers htmx:load only on the TOP-LEVEL nodes a
+     swap inserts — regular and OOB swaps both route through the same
+     insertNodesBefore, whose per-node load task runs processNode (which
+     attaches hx-on listeners) and then fires htmx:load on that node only,
+     never on its descendants. The wrapper is always the top-level inserted
+     node here (outerHTML delete swaps and hx-swap-oob create/update swaps
+     alike), so its listener fires reliably; an hx-on::load on the
+     descendant alert would never fire at all. hx-on::load is htmx's
+     documented shorthand for hx-on:htmx:load. */}}
+{{define "source-panel"}}<div id="source-panel" class="flex flex-col gap-4" hx-on::load="var a=this.querySelector('[data-autodismiss]');if(a)setTimeout(function(){a.remove()},4000)">{{template "source-panel-inner" .}}</div>{{end}}
 
 {{/* source-panel-oob is identical to source-panel except for
      hx-swap-oob="true": htmx swaps any element carrying that attribute
@@ -67,4 +90,4 @@
      independent of whatever hx-target the triggering request declared. See
      writeFragmentSuccess in forms.go for why create/update responses need
      this instead of plain source-panel. */}}
-{{define "source-panel-oob"}}<div id="source-panel" hx-swap-oob="true" class="flex flex-col gap-4">{{template "source-panel-inner" .}}</div>{{end}}
+{{define "source-panel-oob"}}<div id="source-panel" hx-swap-oob="true" class="flex flex-col gap-4" hx-on::load="var a=this.querySelector('[data-autodismiss]');if(a)setTimeout(function(){a.remove()},4000)">{{template "source-panel-inner" .}}</div>{{end}}

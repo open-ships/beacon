@@ -179,10 +179,17 @@ type sourcesPageData struct {
 
 // sourceTypeFieldsData is frag_source_type_fields.html's data: which type
 // is selected (decides which fields render), the current value of every
-// type-specific field (all are carried through regardless of Type so
-// switching the type select and back doesn't lose what was typed into the
-// other type's fields), and the discovered hardware lists for the
+// type-specific field, and the discovered hardware lists for the
 // socketcan/usbcan <datalist> suggestions (see api.DiscoverSystem).
+//
+// Every type's field is a struct member here, but only the selected
+// type's fields actually render as inputs — so only they survive the next
+// hx-include="closest form" round trip. Switching the type select from A
+// to B discards whatever was typed into A's fields (they leave the DOM,
+// so nothing resends them; switching back to A renders them blank), and
+// nothing persists server-side until Save. That's deliberate: carrying
+// unselected types' values through hidden inputs isn't worth the
+// complexity for a form this small.
 type sourceTypeFieldsData struct {
 	Type          string
 	Interface     string
@@ -336,9 +343,13 @@ func handleSourceFormFrag(svc *config.Service, log *slog.Logger) http.HandlerFun
 }
 
 // handleSourceTypeFieldsFrag serves GET /ui/frag/source-type-fields: the
-// type select's hx-get target (hx-include="closest form" resends every
-// current form field as a query parameter, so switching the type and back
-// preserves whatever was typed into the other type's fields).
+// type select's hx-get target. hx-include="closest form" resends every
+// field currently in the form as a query parameter, so the newly selected
+// type's own field keeps its value if it happens to still be in the DOM —
+// but a previously selected type's fields are NOT preserved across an
+// A→B→A switch: B's render removed A's inputs from the DOM, so nothing
+// resends them and A comes back blank (see sourceTypeFieldsData's doc
+// comment for why that's deliberate).
 func handleSourceTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		can, serial := api.DiscoverSystem()
@@ -646,7 +657,9 @@ func handleSinkFormFrag(svc *config.Service, log *slog.Logger) http.HandlerFunc 
 	}
 }
 
-// handleSinkTypeFieldsFrag serves GET /ui/frag/sink-type-fields.
+// handleSinkTypeFieldsFrag serves GET /ui/frag/sink-type-fields. The same
+// type-switch caveat as handleSourceTypeFieldsFrag applies: a previously
+// selected type's field values are discarded on switch, not carried over.
 func handleSinkTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		can, serial := api.DiscoverSystem()

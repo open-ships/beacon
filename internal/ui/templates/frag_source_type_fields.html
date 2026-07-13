@@ -1,6 +1,11 @@
 {{/* Data: internal/ui/forms.go's sourceTypeFieldsData. Rendered both
      standalone (GET /ui/frag/source-type-fields, the type select's hx-get
-     target) and inline inside frag_source_form.html's "source-form". */}}
+     target) and inline inside frag_source_form.html's "source-form".
+     Only the selected type's fields render as inputs, so values typed
+     into another type's fields are discarded when the type select changes
+     (they leave the DOM and nothing resends them; nothing persists until
+     Save) — see sourceTypeFieldsData's doc comment for why that's
+     deliberate. */}}
 {{define "source-type-fields"}}
 {{if eq .Type "socketcan"}}
 <fieldset class="fieldset">

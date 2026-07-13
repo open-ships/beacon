@@ -137,8 +137,12 @@ func TestSourceTypeFieldsFragmentPerType(t *testing.T) {
 		})
 	}
 
-	// Values from the query string (hx-include="closest form" resends the
-	// whole form) are preserved into the rendered field.
+	// A query-string value for the SELECTED type's own field is rendered
+	// back into that field (hx-include="closest form" resends whatever
+	// inputs are currently in the DOM). This holds only for the selected
+	// type: another type's fields aren't in the DOM to be resent, so their
+	// values do NOT survive an A→B→A type switch — deliberate, see
+	// sourceTypeFieldsData's doc comment in forms.go.
 	resp, err := http.Get(srv.URL + "/ui/frag/source-type-fields?type=socketcan&interface=can5")
 	if err != nil {
 		t.Fatal(err)
@@ -221,6 +225,12 @@ func TestSourceCreateRoundTrip(t *testing.T) {
 	if !strings.Contains(body, "Engine CAN") || !strings.Contains(body, "alert-success") {
 		t.Fatalf("create response missing success alert/table row:\n%s", body)
 	}
+	// The success alert must auto-dismiss (plan: "success toast ...
+	// auto-dismiss"): the alert carries the data-autodismiss marker and the
+	// swapped-in panel carries the hx-on::load timer that removes it.
+	if !strings.Contains(body, `role="alert" data-autodismiss`) || !strings.Contains(body, "hx-on::load") {
+		t.Fatalf("create response missing auto-dismiss mechanism (data-autodismiss + hx-on::load):\n%s", body)
+	}
 
 	got, err := svc.GetSource(context.Background(), "can0")
 	if err != nil {
@@ -300,6 +310,9 @@ func TestSinkCreateRoundTrip(t *testing.T) {
 	body := mustBody(t, resp)
 	if !strings.Contains(body, "hx-swap-oob") || !strings.Contains(body, "alert-success") {
 		t.Fatalf("create response missing oob swap/success alert:\n%s", body)
+	}
+	if !strings.Contains(body, `role="alert" data-autodismiss`) || !strings.Contains(body, "hx-on::load") {
+		t.Fatalf("create response missing auto-dismiss mechanism (data-autodismiss + hx-on::load):\n%s", body)
 	}
 
 	got, err := svc.GetSink(context.Background(), "out1")
@@ -401,6 +414,11 @@ func TestSourceDeleteAndDeleteInUse(t *testing.T) {
 	if !strings.Contains(body, "conn1") || !strings.Contains(body, "alert-error") {
 		t.Fatalf("expected an in-use alert naming conn1:\n%s", body)
 	}
+	// Error alerts must NOT auto-dismiss — only success alerts carry the
+	// data-autodismiss marker the panel's hx-on::load timer looks for.
+	if strings.Contains(body, `role="alert" data-autodismiss`) {
+		t.Fatalf("error alert must not carry the auto-dismiss marker:\n%s", body)
+	}
 	if _, err := svc.GetSource(ctx, "src1"); err != nil {
 		t.Fatalf("source should still exist after a failed (in-use) delete: %v", err)
 	}
@@ -411,6 +429,9 @@ func TestSourceDeleteAndDeleteInUse(t *testing.T) {
 	body2 := mustBody(t, resp2)
 	if !strings.Contains(body2, "alert-success") {
 		t.Fatalf("expected a success alert:\n%s", body2)
+	}
+	if !strings.Contains(body2, `role="alert" data-autodismiss`) {
+		t.Fatalf("delete success alert missing the auto-dismiss marker:\n%s", body2)
 	}
 	if strings.Contains(body2, "<code>src1</code>") {
 		t.Fatalf("source row should be gone after delete:\n%s", body2)
