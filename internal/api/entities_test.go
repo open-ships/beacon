@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -54,7 +56,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *fakeReconciler) {
 	t.Cleanup(func() { _ = st.Close() })
 	rec := &fakeReconciler{}
 	svc := config.NewService(st, rec, nil)
-	handler, _ := api.New(svc, stats.NewRegistry(), "test")
+	handler, _ := api.New(svc, stats.NewRegistry(), "test", nil)
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	return srv, rec
@@ -351,7 +353,7 @@ func TestOpenAPI(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	svc := config.NewService(st, &fakeReconciler{}, nil)
-	handler, humaAPI := api.New(svc, stats.NewRegistry(), "1.2.3")
+	handler, humaAPI := api.New(svc, stats.NewRegistry(), "1.2.3", nil)
 
 	spec := humaAPI.OpenAPI()
 	if _, ok := spec.Paths["/api/v1/sources"]; !ok {
@@ -386,4 +388,100 @@ func keysOf[V any](m map[string]V) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// --- Real mount shape: /api/ on a stdlib mux, no prefix stripping ---
+
+// TestSchemaLinksUnderAppMount reproduces internal/app's exact mount shape
+// (mux.Handle("/api/", handler) with no StripPrefix) and asserts that the
+// $schema URL huma stamps into a real response body actually resolves to a
+// 200 through that mux — i.e. every URL the API hands out is reachable in
+// the real deployment, not just when the handler is served at "/".
+func TestSchemaLinksUnderAppMount(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := config.NewService(st, &fakeReconciler{}, nil)
+	handler, _ := api.New(svc, stats.NewRegistry(), "test", nil)
+
+	mux := http.NewServeMux()
+	mux.Handle("/api/", handler) // exactly how app.go mounts it
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	src := model.Source{ID: "s1", Name: "S1", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0"}
+	resp := doJSON(t, http.MethodPut, srv.URL+"/api/v1/sources/s1", src)
+	mustStatus(t, resp, http.StatusOK)
+	var body struct {
+		Schema string `json:"$schema"`
+	}
+	decodeInto(t, resp, &body)
+	if body.Schema == "" {
+		t.Fatal("response body carries no $schema link")
+	}
+
+	schemaResp, err := http.Get(body.Schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, schemaResp, http.StatusOK)
+	var schema map[string]any
+	decodeInto(t, schemaResp, &schema)
+	if _, ok := schema["properties"]; !ok {
+		t.Fatalf("schema at %s does not look like a JSON schema: %v", body.Schema, keysOf(schema))
+	}
+
+	// The OpenAPI document must be reachable through the same mux too.
+	resp = doJSON(t, http.MethodGet, srv.URL+"/api/openapi.json", nil)
+	mustStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+}
+
+// --- 500 bodies must not leak internal error text ---
+
+// TestInternalErrorSanitized forces a store failure (closed DB) and asserts
+// the resulting 500 problem body says only "internal error" — the real
+// error text (driver internals, file paths) must go to the log, not the
+// client.
+func TestInternalErrorSanitized(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := config.NewService(st, &fakeReconciler{}, nil)
+
+	var logBuf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logBuf, nil))
+	handler, _ := api.New(svc, stats.NewRegistry(), "test", log)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	_ = st.Close() // every store call from here on fails with a driver error
+
+	resp := doJSON(t, http.MethodGet, srv.URL+"/api/v1/sources", nil)
+	mustStatus(t, resp, http.StatusInternalServerError)
+	raw, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var problem struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(raw, &problem); err != nil {
+		t.Fatalf("decode problem body: %v", err)
+	}
+	if problem.Detail != "internal error" {
+		t.Fatalf("500 detail = %q, want the sanitized \"internal error\"", problem.Detail)
+	}
+	for _, leak := range []string{"sql", "sqlite", "database", ".db"} {
+		if bytes.Contains(bytes.ToLower(raw), []byte(leak)) {
+			t.Fatalf("500 body leaks internal detail %q: %s", leak, raw)
+		}
+	}
+	if logBuf.Len() == 0 {
+		t.Fatal("underlying error was not logged")
+	}
 }

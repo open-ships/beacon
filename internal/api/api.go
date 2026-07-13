@@ -9,6 +9,7 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -31,8 +32,15 @@ import (
 // task adds.
 //
 // version is embedded as the OpenAPI document's info.version.
-func New(svc *config.Service, reg *stats.Registry, version string) (http.Handler, huma.API) {
+//
+// log receives the underlying error whenever a handler is about to answer
+// 500 (the client only ever sees a sanitized "internal error" body); nil
+// defaults to slog.Default(), the same convention as config.NewService.
+func New(svc *config.Service, reg *stats.Registry, version string, log *slog.Logger) (http.Handler, huma.API) {
 	_ = reg // wired into a stats endpoint by a later task
+	if log == nil {
+		log = slog.Default()
+	}
 
 	router := chi.NewRouter()
 
@@ -43,12 +51,20 @@ func New(svc *config.Service, reg *stats.Registry, version string) (http.Handler
 	// which beacon (an offline gateway appliance) cannot rely on. A later
 	// task serves a self-contained docs page instead.
 	humaConfig.DocsPath = ""
+	// Like OpenAPIPath, the schema route must carry the /api prefix itself:
+	// app mounts this handler un-stripped, so huma's default "/schemas"
+	// would 404 in the real deployment — and the SchemaLinkTransformer
+	// stamps this path into every response's $schema field and Link header,
+	// so those URLs must actually resolve. (DefaultConfig's create hook
+	// reads SchemasPath at NewAPI time, so setting it here re-points both
+	// the route and the stamped links.)
+	humaConfig.SchemasPath = "/api/schemas"
 
 	humaAPI := humachi.New(router, humaConfig)
 
-	registerSourceRoutes(humaAPI, svc)
-	registerSinkRoutes(humaAPI, svc)
-	registerConnectorRoutes(humaAPI, svc)
+	registerSourceRoutes(humaAPI, svc, log)
+	registerSinkRoutes(humaAPI, svc, log)
+	registerConnectorRoutes(humaAPI, svc, log)
 
 	return router, humaAPI
 }

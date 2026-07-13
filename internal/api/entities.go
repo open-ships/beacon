@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -58,9 +59,13 @@ func filterStatuses(all []supervisor.Status, id string) []supervisor.Status {
 // decides isCreate from a Get immediately beforehand — see putXxx below),
 // but stays mapped here in case a racing writer creates the entity between
 // that Get and this PUT's Service call; the client sees a 409 it can retry
-// rather than a mysterious 500. Any other error (store/IO failure) is
-// returned as-is, which huma reports as a 500.
-func mapServiceErr(err error) error {
+// rather than a mysterious 500.
+//
+// Any other error (store/IO failure) becomes a sanitized 500: the real
+// error text is logged, never sent to the client — huma would otherwise
+// echo err.Error() into the problem body's errors list, leaking driver
+// internals (sqlite messages, file paths).
+func mapServiceErr(log *slog.Logger, err error) error {
 	var ve *config.ValidationError
 	switch {
 	case errors.As(err, &ve):
@@ -72,7 +77,8 @@ func mapServiceErr(err error) error {
 	case errors.Is(err, config.ErrInUse):
 		return huma.Error409Conflict(err.Error())
 	default:
-		return err
+		log.Error("config API internal error", "err", err)
+		return huma.Error500InternalServerError("internal error")
 	}
 }
 
@@ -93,7 +99,7 @@ type putSourceInput struct {
 	Body model.Source `doc:"Source definition; body id must equal the path id."`
 }
 
-func registerSourceRoutes(api huma.API, svc *config.Service) {
+func registerSourceRoutes(api huma.API, svc *config.Service, log *slog.Logger) {
 	huma.Register(api, huma.Operation{
 		OperationID: "list-sources",
 		Method:      http.MethodGet,
@@ -102,7 +108,7 @@ func registerSourceRoutes(api huma.API, svc *config.Service) {
 	}, func(ctx context.Context, _ *struct{}) (*listSourcesOutput, error) {
 		sources, err := svc.ListSources(ctx)
 		if err != nil {
-			return nil, mapServiceErr(err)
+			return nil, mapServiceErr(log, err)
 		}
 		out := &listSourcesOutput{}
 		out.Body.Sources = sources
@@ -118,7 +124,7 @@ func registerSourceRoutes(api huma.API, svc *config.Service) {
 	}, func(ctx context.Context, in *idInput) (*getSourceOutput, error) {
 		source, err := svc.GetSource(ctx, in.ID)
 		if err != nil {
-			return nil, mapServiceErr(err)
+			return nil, mapServiceErr(log, err)
 		}
 		return &getSourceOutput{Body: source}, nil
 	})
@@ -136,10 +142,10 @@ func registerSourceRoutes(api huma.API, svc *config.Service) {
 		}
 		isCreate, err := isCreateSource(ctx, svc, in.ID)
 		if err != nil {
-			return nil, mapServiceErr(err)
+			return nil, mapServiceErr(log, err)
 		}
 		if err := svc.PutSource(ctx, in.Body, isCreate); err != nil {
-			return nil, mapServiceErr(err)
+			return nil, mapServiceErr(log, err)
 		}
 		return writeStatus(svc, in.ID), nil
 	})
@@ -152,7 +158,7 @@ func registerSourceRoutes(api huma.API, svc *config.Service) {
 		Errors:      []int{http.StatusNotFound, http.StatusConflict},
 	}, func(ctx context.Context, in *idInput) (*writeOutput, error) {
 		if err := svc.DeleteSource(ctx, in.ID); err != nil {
-			return nil, mapServiceErr(err)
+			return nil, mapServiceErr(log, err)
 		}
 		return writeStatus(svc, in.ID), nil
 	})
@@ -202,7 +208,7 @@ type putSinkInput struct {
 	Body model.Sink `doc:"Sink definition; body id must equal the path id."`
 }
 
-func registerSinkRoutes(api huma.API, svc *config.Service) {
+func registerSinkRoutes(api huma.API, svc *config.Service, log *slog.Logger) {
 	huma.Register(api, huma.Operation{
 		OperationID: "list-sinks",
 		Method:      http.MethodGet,
@@ -211,7 +217,7 @@ func registerSinkRoutes(api huma.API, svc *config.Service) {
 	}, func(ctx context.Context, _ *struct{}) (*listSinksOutput, error) {
 		sinks, err := svc.ListSinks(ctx)
 		if err != nil {
-			return nil, mapServiceErr(err)
+			return nil, mapServiceErr(log, err)
 		}
 		out := &listSinksOutput{}
 		out.Body.Sinks = sinks
@@ -227,7 +233,7 @@ func registerSinkRoutes(api huma.API, svc *config.Service) {
 	}, func(ctx context.Context, in *idInput) (*getSinkOutput, error) {
 		sink, err := svc.GetSink(ctx, in.ID)
 		if err != nil {
-			return nil, mapServiceErr(err)
+			return nil, mapServiceErr(log, err)
 		}
 		return &getSinkOutput{Body: sink}, nil
 	})
@@ -245,10 +251,10 @@ func registerSinkRoutes(api huma.API, svc *config.Service) {
 		}
 		isCreate, err := isCreateSink(ctx, svc, in.ID)
 		if err != nil {
-			return nil, mapServiceErr(err)
+			return nil, mapServiceErr(log, err)
 		}
 		if err := svc.PutSink(ctx, in.Body, isCreate); err != nil {
-			return nil, mapServiceErr(err)
+			return nil, mapServiceErr(log, err)
 		}
 		return writeStatus(svc, in.ID), nil
 	})
@@ -261,7 +267,7 @@ func registerSinkRoutes(api huma.API, svc *config.Service) {
 		Errors:      []int{http.StatusNotFound, http.StatusConflict},
 	}, func(ctx context.Context, in *idInput) (*writeOutput, error) {
 		if err := svc.DeleteSink(ctx, in.ID); err != nil {
-			return nil, mapServiceErr(err)
+			return nil, mapServiceErr(log, err)
 		}
 		return writeStatus(svc, in.ID), nil
 	})
@@ -298,7 +304,7 @@ type putConnectorInput struct {
 	Body model.Connector `doc:"Connector definition; body id must equal the path id."`
 }
 
-func registerConnectorRoutes(api huma.API, svc *config.Service) {
+func registerConnectorRoutes(api huma.API, svc *config.Service, log *slog.Logger) {
 	huma.Register(api, huma.Operation{
 		OperationID: "list-connectors",
 		Method:      http.MethodGet,
@@ -307,7 +313,7 @@ func registerConnectorRoutes(api huma.API, svc *config.Service) {
 	}, func(ctx context.Context, _ *struct{}) (*listConnectorsOutput, error) {
 		connectors, err := svc.ListConnectors(ctx)
 		if err != nil {
-			return nil, mapServiceErr(err)
+			return nil, mapServiceErr(log, err)
 		}
 		out := &listConnectorsOutput{}
 		out.Body.Connectors = connectors
@@ -323,7 +329,7 @@ func registerConnectorRoutes(api huma.API, svc *config.Service) {
 	}, func(ctx context.Context, in *idInput) (*getConnectorOutput, error) {
 		connector, err := svc.GetConnector(ctx, in.ID)
 		if err != nil {
-			return nil, mapServiceErr(err)
+			return nil, mapServiceErr(log, err)
 		}
 		return &getConnectorOutput{Body: connector}, nil
 	})
@@ -341,10 +347,10 @@ func registerConnectorRoutes(api huma.API, svc *config.Service) {
 		}
 		isCreate, err := isCreateConnector(ctx, svc, in.ID)
 		if err != nil {
-			return nil, mapServiceErr(err)
+			return nil, mapServiceErr(log, err)
 		}
 		if err := svc.PutConnector(ctx, in.Body, isCreate); err != nil {
-			return nil, mapServiceErr(err)
+			return nil, mapServiceErr(log, err)
 		}
 		return writeStatus(svc, in.ID), nil
 	})
@@ -357,7 +363,7 @@ func registerConnectorRoutes(api huma.API, svc *config.Service) {
 		Errors:      []int{http.StatusNotFound},
 	}, func(ctx context.Context, in *idInput) (*writeOutput, error) {
 		if err := svc.DeleteConnector(ctx, in.ID); err != nil {
-			return nil, mapServiceErr(err)
+			return nil, mapServiceErr(log, err)
 		}
 		return writeStatus(svc, in.ID), nil
 	})

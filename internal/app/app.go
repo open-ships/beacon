@@ -107,7 +107,7 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 
 	a := &App{log: log, st: st, ds: ds, sup: sup, reg: reg, cfgSvc: cfgSvc}
 
-	apiHandler, _ := api.New(cfgSvc, reg, version)
+	apiHandler, _ := api.New(cfgSvc, reg, version, log)
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", promHandler)
