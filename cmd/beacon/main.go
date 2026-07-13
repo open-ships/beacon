@@ -46,7 +46,7 @@ func run(cmd *cobra.Command, _ []string) error {
 
 	a, err := app.Run(ctx, app.Options{
 		DBPath: dbPath, DataAddr: dataAddr, AdminAddr: adminAddr,
-		SeedPath: seedPath, Log: log,
+		SeedPath: seedPath, Version: version, Log: log,
 	})
 	if err != nil {
 		return err

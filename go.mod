@@ -5,6 +5,8 @@ go 1.25.2
 require (
 	github.com/brutella/can v0.0.2
 	github.com/coder/websocket v1.8.15
+	github.com/danielgtaylor/huma/v2 v2.38.0
+	github.com/go-chi/chi/v5 v5.3.1
 	github.com/google/cel-go v0.29.2
 	github.com/open-ships/n2k v0.0.0-20260708200005-f053587126b6
 	github.com/prometheus/client_golang v1.23.2
@@ -27,7 +29,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-isatty v0.0.21 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect

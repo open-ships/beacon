@@ -14,6 +14,7 @@ import (
 
 	n2k "github.com/open-ships/n2k"
 
+	"github.com/open-ships/beacon/internal/api"
 	"github.com/open-ships/beacon/internal/bus"
 	"github.com/open-ships/beacon/internal/config"
 	"github.com/open-ships/beacon/internal/filter"
@@ -26,13 +27,14 @@ import (
 )
 
 // Options configures a Run. DBPath, DataAddr, and AdminAddr are required;
-// SeedPath and ExtraN2KOpts (test injection: fake bus, claim timeout) are
-// optional.
+// SeedPath, Version, and ExtraN2KOpts (test injection: fake bus, claim
+// timeout) are optional.
 type Options struct {
 	DBPath       string
 	DataAddr     string
 	AdminAddr    string
 	SeedPath     string
+	Version      string // embedded in the config API's OpenAPI document; defaults to "dev"
 	Log          *slog.Logger
 	ExtraN2KOpts []n2k.Option
 }
@@ -53,8 +55,8 @@ type App struct {
 
 // Run opens the store, seeds it if requested, starts the bus manager and
 // data server, performs an initial supervisor reconcile, and starts the
-// admin HTTP server (/health, /metrics). It returns once everything is
-// listening.
+// admin HTTP server (/health, /metrics, /api/). It returns once everything
+// is listening.
 //
 // Components started by the supervisor's reconcile run on the supervisor's
 // own background context, not ctx: ctx only bounds the Run call itself (the
@@ -64,6 +66,10 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 	log := opts.Log
 	if log == nil {
 		log = slog.Default()
+	}
+	version := opts.Version
+	if version == "" {
+		version = "dev"
 	}
 	st, err := store.Open(opts.DBPath)
 	if err != nil {
@@ -101,9 +107,12 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 
 	a := &App{log: log, st: st, ds: ds, sup: sup, reg: reg, cfgSvc: cfgSvc}
 
+	apiHandler, _ := api.New(cfgSvc, reg, version)
+
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", promHandler)
 	mux.HandleFunc("GET /health", a.handleHealth)
+	mux.Handle("/api/", apiHandler)
 	a.adminSrv = &http.Server{Handler: mux}
 	ln, err := net.Listen("tcp", opts.AdminAddr)
 	if err != nil {
@@ -178,7 +187,8 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 // DataAddr returns the bound address of the data server (sink endpoints).
 func (a *App) DataAddr() string { return a.ds.Addr() }
 
-// AdminAddr returns the bound address of the admin server (/health, /metrics).
+// AdminAddr returns the bound address of the admin server (/health,
+// /metrics, /api/).
 func (a *App) AdminAddr() string {
 	if a.adminLn == nil {
 		return ""

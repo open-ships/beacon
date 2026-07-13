@@ -1,0 +1,54 @@
+// Package api implements beacon's REST configuration API: a huma-on-chi
+// HTTP interface for CRUD over sources, sinks, and connectors. internal/app
+// mounts the handler this package returns under the admin server's /api/
+// prefix. Every write goes through internal/config.Service, so the same
+// structural + CEL validation and hot-apply reconcile that already governs
+// the CLI (Phase 4) and internal/config's own tests governs the HTTP
+// surface too — this package is a thin, typed HTTP skin over Service, not
+// a second place business rules live.
+package api
+
+import (
+	"net/http"
+
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humachi"
+	"github.com/go-chi/chi/v5"
+
+	"github.com/open-ships/beacon/internal/config"
+	"github.com/open-ships/beacon/internal/stats"
+)
+
+// New builds beacon's config REST API: a chi router with huma registered
+// on it. Every operation is registered with its full "/api/v1/..." path
+// (rather than relying on router-mount prefix stripping), so the returned
+// handler can be mounted directly on a stdlib http.ServeMux via
+// mux.Handle("/api/", handler) and still see the paths it registered.
+//
+// reg is threaded through now (rather than added to this function's
+// signature later) because a follow-up task wires live per-connector stats
+// into a read endpoint here; it is unused by the entity CRUD endpoints this
+// task adds.
+//
+// version is embedded as the OpenAPI document's info.version.
+func New(svc *config.Service, reg *stats.Registry, version string) (http.Handler, huma.API) {
+	_ = reg // wired into a stats endpoint by a later task
+
+	router := chi.NewRouter()
+
+	humaConfig := huma.DefaultConfig("beacon config API", version)
+	// Served at /api/openapi.json (and .yaml); huma appends the extension.
+	humaConfig.OpenAPIPath = "/api/openapi"
+	// Disable huma's built-in docs UI: it pulls its renderer from a CDN,
+	// which beacon (an offline gateway appliance) cannot rely on. A later
+	// task serves a self-contained docs page instead.
+	humaConfig.DocsPath = ""
+
+	humaAPI := humachi.New(router, humaConfig)
+
+	registerSourceRoutes(humaAPI, svc)
+	registerSinkRoutes(humaAPI, svc)
+	registerConnectorRoutes(humaAPI, svc)
+
+	return router, humaAPI
+}
