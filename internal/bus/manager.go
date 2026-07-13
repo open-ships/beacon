@@ -18,6 +18,13 @@ import (
 	"github.com/open-ships/beacon/internal/msg"
 )
 
+// ErrNotEncodable marks an envelope that cannot be re-encoded onto a CAN
+// bus — most commonly a PGN with no cataloged decoder (an UnknownPGN
+// envelope, which beacon always produces since sources run with
+// n2k.IncludeUnknown()). Callers (see sink.canSink.Push) treat this as
+// skippable rather than a transient write failure worth retrying forever.
+var ErrNotEncodable = errors.New("envelope cannot be encoded for CAN transmission")
+
 type Endpoint struct {
 	Kind string // "socketcan" | "usbcan"
 	Name string // interface name or serial port path
@@ -160,7 +167,7 @@ func (bc *busClient) run(ctx context.Context) {
 				bc.mgr.log.Debug("envelope conversion error", "err", err)
 				continue
 			}
-			bc.broadcast(e)
+			bc.broadcast(ctx, e)
 		}
 		// Receive ended: client dead or ctx cancelled.
 		_ = client.Close()
@@ -185,14 +192,19 @@ func (bc *busClient) run(ctx context.Context) {
 	}
 }
 
-func (bc *busClient) broadcast(e *msg.Envelope) {
+func (bc *busClient) broadcast(ctx context.Context, e *msg.Envelope) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
+	var dropped int64
 	for _, ch := range bc.subs {
 		select {
 		case ch <- e:
 		default: // slow subscriber: drop rather than block the bus
+			dropped++
 		}
+	}
+	if dropped > 0 {
+		bc.mgr.met.SourceDrops(ctx, "bus:"+bc.ep.Kind+":"+bc.ep.Name, dropped)
 	}
 }
 
@@ -253,7 +265,7 @@ func (h *Handle) Write(ctx context.Context, e *msg.Envelope) error {
 	}
 	m, err := pgn.DecodeMessage(e.Info(), e.Raw)
 	if err != nil {
-		return fmt.Errorf("decode envelope for CAN write: %w", err)
+		return fmt.Errorf("decode envelope for CAN write: pgn %d: %w: %w", e.PGN, ErrNotEncodable, err)
 	}
 
 	// client may be concurrently Closed by run()'s reconnect path after we

@@ -80,13 +80,19 @@ func newCANSink(ctx context.Context, cfg model.Sink, mgr *bus.Manager) (Runtime,
 
 func (s *canSink) ID() string { return s.id }
 
-// Push writes one envelope onto the bus; envelopes without raw bytes are
-// skipped (ErrSkip) since they cannot be encoded.
+// Push writes one envelope onto the bus; envelopes without raw bytes, or
+// whose raw bytes cannot be re-decoded for CAN transmission (e.g. an
+// UnknownPGN with no cataloged decoder — see bus.ErrNotEncodable), are
+// skipped (ErrSkip) rather than retried forever.
 func (s *canSink) Push(ctx context.Context, e *msg.Envelope) error {
 	if len(e.Raw) == 0 {
 		return ErrSkip
 	}
-	return s.handle.Write(ctx, e)
+	err := s.handle.Write(ctx, e)
+	if errors.Is(err, bus.ErrNotEncodable) {
+		return ErrSkip
+	}
+	return err
 }
 
 func (s *canSink) State() (string, error) { return s.handle.State() }

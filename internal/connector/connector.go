@@ -43,13 +43,20 @@ type Connector struct {
 	notify chan struct{}
 	wg     sync.WaitGroup
 
+	// lastWarnSeq de-dupes pushAll's retry-failure logging: only the first
+	// failure of a given entry's retry sequence logs at Warn, subsequent
+	// retries of the same entry stay at Debug. Touched only from the single
+	// deliver goroutine, so it needs no synchronization.
+	lastWarnSeq int64
+
 	stopOnce sync.Once
 }
 
 func New(cfg model.Connector, src source.Runtime, snk sink.Runtime, q queue.Queue,
 	chain *filter.Chain, log *slog.Logger, met *metrics.Set, st *stats.Registry) *Connector {
 	return &Connector{cfg: cfg, src: src, snk: snk, q: q, chain: chain,
-		log: log.With("connector", cfg.ID), met: met, st: st, notify: make(chan struct{}, 1)}
+		log: log.With("connector", cfg.ID), met: met, st: st, notify: make(chan struct{}, 1),
+		lastWarnSeq: -1}
 }
 
 func (c *Connector) ID() string { return c.cfg.ID }
@@ -264,15 +271,26 @@ func (c *Connector) pushAll(ctx context.Context, p sink.Pusher, entries []queue.
 			if err == nil || errors.Is(err, sink.ErrSkip) {
 				if errors.Is(err, sink.ErrSkip) {
 					c.log.Debug("sink skipped message", "pgn", e.Env.PGN)
+					c.met.ConnectorMessages(ctx, c.cfg.ID, "skipped", 1)
+				} else {
+					c.met.ConnectorMessages(ctx, c.cfg.ID, "delivered", 1)
 				}
-				c.met.ConnectorMessages(ctx, c.cfg.ID, "delivered", 1)
 				c.met.ConnectorBytes(ctx, c.cfg.ID, int64(e.Env.SizeBytes()))
 				c.st.Record(c.cfg.ID, 1, int64(e.Env.SizeBytes()))
 				*cursor = e.Seq
 				*dirty = true
 				break
 			}
-			c.log.Debug("push failed; retrying", "err", err, "backoff", backoff)
+			// Log the first failure of a retry sequence at Warn (an operator
+			// watching logs should see a wedged sink), then drop to Debug for
+			// the rest of that entry's retries so a persistently stuck sink
+			// doesn't spam the log at Warn every backoff cycle.
+			if c.lastWarnSeq != e.Seq {
+				c.log.Warn("push failed; retrying", "err", err, "backoff", backoff, "pgn", e.Env.PGN)
+				c.lastWarnSeq = e.Seq
+			} else {
+				c.log.Debug("push failed; retrying", "err", err, "backoff", backoff)
+			}
 			select {
 			case <-ctx.Done():
 				return false

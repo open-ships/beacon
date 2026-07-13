@@ -33,6 +33,16 @@ field `queue_depth`) or the `beacon_connector_queue_depth` gauge in
 attention (bus down, adapter unplugged, wrong interface), not the source
 side.
 
+This retry-forever behavior only applies to messages the sink can actually
+write. A message beacon cannot re-encode for CAN transmission — most
+commonly an unrecognized PGN with no cataloged decoder — is **skipped**
+instead: the connector counts it under the `skipped` message stage
+(`beacon_connector_messages_total{connector="...",stage="skipped"}` in
+`/metrics`) and moves on rather than retrying forever. A connector logs
+each new stuck-entry retry sequence at `warn` (`push failed; retrying`,
+then drops to `debug` for that same entry's subsequent retries) — check
+its logs if `queue_depth` is climbing but nothing looks skipped.
+
 ## Queue growth
 
 Every connector's buffer is bounded by its own `max_messages` / `max_age`

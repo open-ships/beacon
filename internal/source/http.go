@@ -35,7 +35,7 @@ type dialerSource struct {
 
 func newDialerSource(ctx context.Context, cfg model.Source, log *slog.Logger, met *metrics.Set, run runFunc) (Runtime, error) {
 	runCtx, cancel := context.WithCancel(ctx)
-	s := &dialerSource{id: cfg.ID, hub: newHub(), cancel: cancel, state: "degraded"}
+	s := &dialerSource{id: cfg.ID, hub: newHub(met, cfg.ID), cancel: cancel, state: "degraded"}
 	publish := func(e *msg.Envelope) {
 		e.Seq, e.ConnectorID = 0, "" // upstream identifiers do not survive re-ingest
 		met.SourceMessages(runCtx, cfg.ID, 1)

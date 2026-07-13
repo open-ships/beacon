@@ -172,6 +172,34 @@ func TestWriteRejectsEmptyRaw(t *testing.T) {
 	}
 }
 
+// TestWriteUncatalogedPGNReturnsErrNotEncodable is the regression for the
+// CAN-sink poison-message wedge: an UnknownPGN envelope (beacon always runs
+// n2k.IncludeUnknown(), so every uncataloged PGN produces one, see
+// msg.FromPGN) carries non-empty Raw bytes but has no registered PGN struct
+// to decode back into for re-encoding. Write must surface a distinguishable
+// error (ErrNotEncodable) rather than a generic one, so sink.canSink.Push
+// can map it to sink.ErrSkip instead of retrying forever.
+func TestWriteUncatalogedPGNReturnsErrNotEncodable(t *testing.T) {
+	fake := busfake.New()
+	m := testManager(t, fake)
+	ctx := context.Background()
+
+	h, err := m.Acquire(ctx, Endpoint{Kind: "socketcan", Name: "can0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Release()
+	waitUp(t, h)
+
+	e := &msg.Envelope{
+		PGN: 130999, Source: 12, Dest: 255, Priority: 6,
+		Timestamp: time.Now(), Raw: []byte{1, 2, 3},
+	}
+	if err := h.Write(ctx, e); !errors.Is(err, ErrNotEncodable) {
+		t.Fatalf("Write err = %v, want error matching ErrNotEncodable", err)
+	}
+}
+
 // TestWriteToConcurrentlyClosedClient closes the shared client out from
 // under a handle and asserts Write surfaces an error rather than panicking.
 // (The exact n2k panic window — Close landing between client.Write's closed

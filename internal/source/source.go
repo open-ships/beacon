@@ -42,9 +42,14 @@ type hub struct {
 	mu   sync.Mutex
 	subs map[int64]chan *msg.Envelope
 	next int64
+
+	met *metrics.Set // may be nil; met's own methods no-op on a nil receiver
+	id  string       // source id, used as the drop counter's component label
 }
 
-func newHub() *hub { return &hub{subs: map[int64]chan *msg.Envelope{}} }
+func newHub(met *metrics.Set, id string) *hub {
+	return &hub{subs: map[int64]chan *msg.Envelope{}, met: met, id: id}
+}
 
 func (h *hub) subscribe(buf int) (<-chan *msg.Envelope, func()) {
 	h.mu.Lock()
@@ -66,11 +71,16 @@ func (h *hub) subscribe(buf int) (<-chan *msg.Envelope, func()) {
 func (h *hub) publish(e *msg.Envelope) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	var dropped int64
 	for _, ch := range h.subs {
 		select {
 		case ch <- e:
 		default:
+			dropped++
 		}
+	}
+	if dropped > 0 {
+		h.met.SourceDrops(context.Background(), h.id, dropped)
 	}
 }
 
@@ -101,7 +111,7 @@ func newCANSource(ctx context.Context, cfg model.Source, mgr *bus.Manager, log *
 		return nil, err
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	s := &canSource{id: cfg.ID, handle: handle, hub: newHub(), cancel: cancel}
+	s := &canSource{id: cfg.ID, handle: handle, hub: newHub(met, cfg.ID), cancel: cancel}
 	ch, unsub := handle.Subscribe(256)
 	go func() {
 		defer unsub()

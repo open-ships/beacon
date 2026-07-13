@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/open-ships/beacon/internal/filter"
+	"github.com/open-ships/beacon/internal/metrics"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/msg"
 	"github.com/open-ships/beacon/internal/queue"
@@ -43,10 +47,13 @@ func (f *fakeSource) emit(e *msg.Envelope) {
 	}
 }
 
-// pushSink records pushes; can fail N times first.
+// pushSink records pushes; can fail N times first. Envelopes whose PGN
+// equals skipPGN return sink.ErrSkip instead of being recorded, simulating
+// a CAN sink skipping an undecodable envelope.
 type pushSink struct {
 	mu       sync.Mutex
 	failures int
+	skipPGN  uint32
 	got      []*msg.Envelope
 }
 
@@ -56,6 +63,9 @@ func (p *pushSink) State() (string, error) { return "up", nil }
 func (p *pushSink) Push(_ context.Context, e *msg.Envelope) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.skipPGN != 0 && e.PGN == p.skipPGN {
+		return sink.ErrSkip
+	}
 	if p.failures > 0 {
 		p.failures--
 		return errors.New("bus down")
@@ -191,6 +201,79 @@ func TestPushRetriesUntilSinkRecovers(t *testing.T) {
 
 	src.emit(env(127250))
 	waitFor(t, 10*time.Second, func() bool { return snk.count() == 1 }, "delivery after retries")
+}
+
+// Regression: a Pusher returning ErrSkip (e.g. a CAN sink skipping an
+// undecodable envelope, see sink.canSink.Push) must still advance the
+// cursor — otherwise the connector would retry the unskippable envelope
+// forever — and must be counted under a "skipped" metrics stage, not
+// double-counted as "delivered".
+func TestPushSkipAdvancesCursorAndCountsSkipped(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "skip.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	q := queue.NewSQLite(st, "conn1", model.BufferLimits{MaxMessages: 1000})
+	chain, _ := filter.Compile(nil)
+
+	met, handler, err := metrics.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	src := &fakeSource{}
+	snk := &pushSink{skipPGN: 130999}
+	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true,
+		Buffer: model.BufferLimits{MaxMessages: 1000}},
+		src, snk, q, chain, slog.Default(), met, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+
+	src.emit(env(130999)) // skipped by the sink
+	src.emit(env(1))      // delivered normally
+
+	waitFor(t, 3*time.Second, func() bool { return snk.count() == 1 }, "the deliverable entry")
+	// Stop forces the final ack (ack(true) bypasses the ackInterval gate —
+	// see deliver's defer) so the checkpoint reflects both entries, exactly
+	// like the checkpoint assertions in TestResumeFromCheckpointAfterRestart
+	// and TestStopMidRetryCheckpointsPartialProgress above.
+	c.Stop()
+
+	entries, err := q.Read(context.Background(), 0, 10)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("queue entries = %d, err=%v; want 2", len(entries), err)
+	}
+	cur, err := q.Cursor(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur != entries[1].Seq {
+		t.Fatalf("checkpoint = %d, want seq of last entry %d (skip must still advance the cursor)", cur, entries[1].Seq)
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body, _ := io.ReadAll(rec.Body)
+	var sawSkipped, sawDelivered bool
+	for _, line := range strings.Split(string(body), "\n") {
+		if !strings.HasPrefix(line, "beacon_connector_messages_total{") || !strings.Contains(line, `connector="conn1"`) {
+			continue
+		}
+		switch {
+		case strings.Contains(line, `stage="skipped"`) && strings.HasSuffix(line, " 1"):
+			sawSkipped = true
+		case strings.Contains(line, `stage="delivered"`) && strings.HasSuffix(line, " 1"):
+			sawDelivered = true
+		}
+	}
+	if !sawSkipped {
+		t.Fatalf("beacon_connector_messages_total{connector=\"conn1\",stage=\"skipped\"} != 1:\n%s", body)
+	}
+	if !sawDelivered {
+		t.Fatalf("beacon_connector_messages_total{connector=\"conn1\",stage=\"delivered\"} != 1 (skip must not be double-counted as delivered):\n%s", body)
+	}
 }
 
 func TestResumeFromCheckpointAfterRestart(t *testing.T) {

@@ -32,7 +32,7 @@ object with this shape:
 | `priority` | integer | always | 0 (highest) to 7 (lowest) |
 | `timestamp` | string | always | RFC 3339 timestamp |
 | `payload` | object or `null` | always | the decoded PGN fields, one JSON key per field, `null` for a PGN beacon doesn't know how to decode |
-| `raw` | string (base64) | usually | the CAN payload bytes: for an undecodable PGN, the original bytes as received; for a decoded PGN, the canonical re-encoding (omitted in the rare case re-encoding fails) |
+| `raw` | string (base64) | usually | the CAN payload bytes: for an undecodable PGN, the original bytes as received; for a decoded PGN, the canonical re-encoding (omitted in the rare case re-encoding fails). Undecodable PGNs still carry these bytes here, but a CAN sink cannot write them back out (see Delivery guarantees below) — they're skipped by `socketcan`/`usbcan` sinks and delivered as-is to HTTP/TCP sinks |
 
 `id` and `connector` are only populated once a message has passed through a
 connector's buffer — a freshly-decoded message from a source doesn't have
@@ -86,13 +86,21 @@ holds, ask for everything after sequence zero: `?after=<connector>:0`.
 
 Delivery guarantees differ by sink kind:
 
-- **CAN sinks** (`socketcan`, `usbcan`) confirm each message: a push failure
-  is retried with exponential backoff (starting at 250ms, doubling up to a
-  5 second cap) until it succeeds or the connector stops — the connector's
-  buffer absorbs the backlog meanwhile rather than dropping anything. This
-  is at-least-once delivery: a message can be redelivered after a restart
-  landed between a push succeeding and its checkpoint being durably saved,
-  but it is never silently skipped while the sink is reachable.
+- **CAN sinks** (`socketcan`, `usbcan`) confirm each message that can be
+  re-encoded onto the bus: a push failure is retried with exponential
+  backoff (starting at 250ms, doubling up to a 5 second cap) until it
+  succeeds or the connector stops — the connector's buffer absorbs the
+  backlog meanwhile rather than dropping anything. This is at-least-once
+  delivery for encodable messages: a message can be redelivered after a
+  restart landed between a push succeeding and its checkpoint being
+  durably saved, but it is never silently dropped while the sink is
+  reachable and the message is encodable. An envelope beacon cannot
+  re-encode for CAN transmission (most commonly a PGN with no cataloged
+  decoder) is the one exception: it's **skipped**, not retried — counted
+  under the connector's `skipped` message stage, with the cursor advancing
+  past it exactly like a successful delivery, so one unrecognized PGN
+  can't wedge the connector. HTTP/TCP sinks still deliver these messages —
+  see the `raw` field note above.
 - **HTTP/TCP sinks** (`http_sse`, `http_ws`, `tcp`) broadcast to whichever
   clients happen to be connected at the moment, with no per-message
   confirmation. SSE/WS clients can recover anything they missed via replay

@@ -21,6 +21,7 @@ type Set struct {
 	connectorMessages api.Int64Counter
 	connectorBytes    api.Int64Counter
 	sourceMessages    api.Int64Counter
+	subscriberDrops   api.Int64Counter
 	queueDepth        api.Int64ObservableGauge
 	queueBytes        api.Int64ObservableGauge
 	componentState    api.Int64ObservableGauge
@@ -44,6 +45,7 @@ func New() (*Set, http.Handler, error) {
 	s.connectorMessages, _ = meter.Int64Counter("beacon.connector.messages")
 	s.connectorBytes, _ = meter.Int64Counter("beacon.connector.bytes")
 	s.sourceMessages, _ = meter.Int64Counter("beacon.source.messages")
+	s.subscriberDrops, _ = meter.Int64Counter("beacon.subscriber.dropped")
 	s.sinkClients, _ = meter.Int64UpDownCounter("beacon.sink.clients")
 	s.queueDepth, _ = meter.Int64ObservableGauge("beacon.connector.queue.depth")
 	s.queueBytes, _ = meter.Int64ObservableGauge("beacon.connector.queue.bytes")
@@ -87,6 +89,18 @@ func (s *Set) SourceMessages(ctx context.Context, source string, n int64) {
 		return
 	}
 	s.sourceMessages.Add(ctx, n, api.WithAttributes(attribute.String("source", source)))
+}
+
+// SourceDrops records envelopes dropped by a full subscriber channel on a
+// non-blocking broadcast (hub.publish for HTTP/CAN sources, busClient's
+// internal broadcast for bus subscribers). component is the source id for
+// hub drops, or "bus:<kind>:<name>" for a shared CAN client's internal
+// broadcast.
+func (s *Set) SourceDrops(ctx context.Context, component string, n int64) {
+	if s == nil {
+		return
+	}
+	s.subscriberDrops.Add(ctx, n, api.WithAttributes(attribute.String("component", component)))
 }
 
 func (s *Set) SinkClients(sink string, delta int64) {
