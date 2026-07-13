@@ -1,0 +1,70 @@
+{{/* source-panel-inner is the alert + table markup shared by the plain
+     ("source-panel", used for the initial page load and for delete
+     responses that swap the whole panel in place) and out-of-band
+     ("source-panel-oob", used by create/update success responses — see
+     writeFragmentSuccess in forms.go) wrapper templates below. Data:
+     internal/ui/forms.go's sourceTableData. */}}
+{{define "source-panel-inner"}}
+{{if .Alert}}
+<div class="alert {{if eq .Alert.Kind "success"}}alert-success{{else}}alert-error{{end}}" role="alert">
+  <span>{{.Alert.Message}}</span>
+  <button type="button" class="btn btn-sm btn-ghost" onclick="this.closest('.alert').remove()">Dismiss</button>
+</div>
+{{end}}
+<div class="overflow-x-auto">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>ID</th>
+        <th>Type</th>
+        <th>Enabled</th>
+        <th>State</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Sources}}
+      <tr>
+        <td>{{.Name}}</td>
+        <td><code>{{.ID}}</code></td>
+        <td>{{.Type}}</td>
+        <td>
+          {{if .Enabled}}<span class="badge badge-success">enabled</span>
+          {{else}}<span class="badge badge-ghost">disabled</span>{{end}}
+        </td>
+        <td>
+          {{if eq .State "up"}}<span class="badge badge-success">up</span>
+          {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
+          {{else if eq .State "error"}}<span class="badge badge-error">error</span>
+          {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
+        </td>
+        <td class="flex gap-2 justify-end">
+          <button type="button" class="btn btn-sm"
+                  hx-get="/ui/frag/source-form?id={{.ID}}" hx-target="#source-form-container" hx-swap="innerHTML">
+            Edit
+          </button>
+          <button type="button" class="btn btn-sm btn-error"
+                  hx-post="/ui/sources/{{.ID}}/delete" hx-target="#source-panel" hx-swap="outerHTML"
+                  hx-confirm="Delete source &quot;{{.ID}}&quot;? Connectors using it must be removed or repointed first.">
+            Delete
+          </button>
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="6" class="text-center opacity-70">No sources configured.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{define "source-panel"}}<div id="source-panel" class="flex flex-col gap-4">{{template "source-panel-inner" .}}</div>{{end}}
+
+{{/* source-panel-oob is identical to source-panel except for
+     hx-swap-oob="true": htmx swaps any element carrying that attribute
+     into the matching id wherever it currently lives in the DOM,
+     independent of whatever hx-target the triggering request declared. See
+     writeFragmentSuccess in forms.go for why create/update responses need
+     this instead of plain source-panel. */}}
+{{define "source-panel-oob"}}<div id="source-panel" hx-swap-oob="true" class="flex flex-col gap-4">{{template "source-panel-inner" .}}</div>{{end}}

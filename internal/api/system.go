@@ -91,6 +91,18 @@ func registerSystemInfoRoutes(api huma.API, version string) {
 	})
 }
 
+// DiscoverSystem exposes the same best-effort hardware inventory GET
+// /api/v1/system reports (see registerSystemInfoRoutes above) to other
+// in-process callers. internal/ui's source/sink add/edit forms call this
+// directly to populate interface/port <datalist> suggestions, rather than
+// beacon making an HTTP round trip to its own API from its own UI handler
+// — this is a same-binary, cross-package function call, not a network
+// call, so it stays synchronous and can't fail independently of the
+// process itself.
+func DiscoverSystem() (canIfaces, serialPorts []string) {
+	return discoverCAN(), discoverSerial()
+}
+
 // discoverCAN best-effort lists SocketCAN network interface names present on
 // this host: entries of canRoot (normally /sys/class/net) whose "type" file
 // reads "280" (ARPHRD_CAN, the CAN bus link-layer type in Linux's if_arp.h).

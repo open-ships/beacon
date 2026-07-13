@@ -27,10 +27,11 @@ import (
 var assetsFS embed.FS
 
 // Handler returns beacon's web UI. svc, reg, and statuses are threaded
-// through for the pages later tasks build (Task 5's live dashboard reads
-// reg and statuses; Tasks 3-4's source/sink/connector pages read and write
-// through svc); this task's dashboard is a shell that doesn't call any of
-// them yet.
+// through for the pages that use them: the Sources and Sinks pages below
+// read and write through svc and read live component state through
+// statuses; reg and the rest of statuses are for Task 5's live dashboard
+// and Task 4's connectors page, which don't exist yet — the dashboard
+// below is still a shell.
 //
 // version is beacon's own build version (see internal/app.Options.Version).
 // It doubles as every vendored asset URL's "?v=" cache-busting query
@@ -58,6 +59,25 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 	mux.HandleFunc("GET /ui/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		render(w, log, "dashboard", "Dashboard", version)
 	})
+
+	// Sources: full page, its "add/edit" form + type-fields fragments, and
+	// its create/update/delete write endpoints. See forms.go for every
+	// handler constructor below and the behavior contract in its package
+	// doc comment.
+	mux.HandleFunc("GET /ui/sources", handleSourcesPage(svc, statuses, version, log))
+	mux.HandleFunc("GET /ui/frag/source-form", handleSourceFormFrag(svc, log))
+	mux.HandleFunc("GET /ui/frag/source-type-fields", handleSourceTypeFieldsFrag(log))
+	mux.HandleFunc("POST /ui/sources", handleSourceCreate(svc, log))
+	mux.HandleFunc("POST /ui/sources/{id}", handleSourceUpdate(svc, log))
+	mux.HandleFunc("POST /ui/sources/{id}/delete", handleSourceDelete(svc, log))
+
+	// Sinks: exactly parallel to sources above.
+	mux.HandleFunc("GET /ui/sinks", handleSinksPage(svc, statuses, version, log))
+	mux.HandleFunc("GET /ui/frag/sink-form", handleSinkFormFrag(svc, log))
+	mux.HandleFunc("GET /ui/frag/sink-type-fields", handleSinkTypeFieldsFrag(log))
+	mux.HandleFunc("POST /ui/sinks", handleSinkCreate(svc, log))
+	mux.HandleFunc("POST /ui/sinks/{id}", handleSinkUpdate(svc, log))
+	mux.HandleFunc("POST /ui/sinks/{id}/delete", handleSinkDelete(svc, log))
 
 	assets, err := fs.Sub(assetsFS, "assets")
 	if err != nil {

@@ -2,73 +2,24 @@ package ui
 
 import (
 	"bytes"
-	"embed"
-	"html/template"
 	"log/slog"
 	"net/http"
 )
 
-//go:embed templates/*.html
-var templatesFS embed.FS
-
-// baseLayout is templates/layout.html parsed alone. Each page clones it and
-// parses its own content file into the clone (see mustPage) rather than
-// parsing every template file into one shared *template.Template: html/
-// template silently lets a later {{define "content"}} overwrite an earlier
-// one within a single template set, so without cloning, two pages sharing
-// this file (e.g. dashboard.html and a future sources.html, both defining
-// "content") would collide and the last one parsed would win for every
-// page.
-var baseLayout = template.Must(template.ParseFS(templatesFS, "templates/layout.html"))
-
-// mustPage clones baseLayout and parses templates/<file> (which must define
-// a "content" template) into the clone, producing a self-contained
-// *template.Template for one page. Panics on error: template files are
-// embedded at build time, so a parse failure here is a programming error,
-// not a runtime condition.
-func mustPage(file string) *template.Template {
-	t := template.Must(baseLayout.Clone())
-	return template.Must(t.ParseFS(templatesFS, "templates/"+file))
+// render executes the page registered under name (a pages key) with the
+// bare pageData a title/nav-only page needs (currently just the
+// dashboard), wrapping it in layout.html, and writes it to w. For pages
+// that need more than that (sources/sinks — see forms.go's
+// sourcesPageData/sinksPageData), handlers call renderPage directly with
+// their own data value instead.
+func render(w http.ResponseWriter, log *slog.Logger, name, title, assetVersion string) {
+	renderPage(w, log, name, newPageData(title, assetVersion, name))
 }
 
-// pages maps a page's nav key to its pre-parsed, self-contained template.
-// Add an entry here for each new page as it's built (Tasks 3-5 add
-// sources.html, sinks.html, connectors.html).
-var pages = map[string]*template.Template{
-	"dashboard": mustPage("dashboard.html"),
-}
-
-// navItem is one entry in the sidebar nav rendered by layout.html.
-type navItem struct {
-	Key   string // matches pageData.Active to highlight the current page
-	Label string
-	Href  string
-}
-
-// navItems is the fixed sidebar nav. Sources/Sinks/Connectors 404 until
-// Tasks 3-4 build their handlers; the nav still links to them so the shell
-// reflects beacon's final navigation shape.
-var navItems = []navItem{
-	{Key: "dashboard", Label: "Dashboard", Href: "/ui/dashboard"},
-	{Key: "sources", Label: "Sources", Href: "/ui/sources"},
-	{Key: "sinks", Label: "Sinks", Href: "/ui/sinks"},
-	{Key: "connectors", Label: "Connectors", Href: "/ui/connectors"},
-}
-
-// pageData is layout.html's template data; every page's own data (once
-// pages carry real content, from Task 5 onward) should embed this.
-type pageData struct {
-	Title        string
-	AssetVersion string
-	Active       string
-	Nav          []navItem
-}
-
-// render executes the page registered under name (a pages key), wrapping it
-// in layout.html, and writes it to w. assetVersion is the cache-busting
-// query parameter layout.html appends to every vendored asset URL — see
-// Handler's doc comment for why it's tied to beacon's own binary version
-// rather than a hand-maintained constant.
+// renderPage executes the page registered under name against data (which
+// must supply every field templates/layout.html and that page's own
+// content template reference — see pageData and e.g. sourcesPageData),
+// and writes it to w.
 //
 // The page is executed into a buffer first, and only a fully successful
 // render is written to w: streaming the template straight into w would mean
@@ -77,10 +28,10 @@ type pageData struct {
 // missing from pages, or ExecuteTemplate erroring — is logged and answered
 // with a clean 500 instead of a silently broken page. (Both failures
 // indicate bugs — pages/routes drift, or a template referencing data the
-// page doesn't provide — that ui_test.go should catch first, but Tasks 3-5
-// put live, request-dependent data through these templates, so surfacing
-// them loudly beats rendering garbage.)
-func render(w http.ResponseWriter, log *slog.Logger, name, title, assetVersion string) {
+// page doesn't provide — that ui_test.go/forms_test.go should catch first,
+// but sources/sinks put live, request-dependent data through these
+// templates, so surfacing them loudly beats rendering garbage.)
+func renderPage(w http.ResponseWriter, log *slog.Logger, name string, data any) {
 	t, ok := pages[name]
 	if !ok {
 		// Unreachable from HTTP: callers only pass names they've registered
@@ -91,15 +42,27 @@ func render(w http.ResponseWriter, log *slog.Logger, name, title, assetVersion s
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	data := pageData{
-		Title:        title,
-		AssetVersion: assetVersion,
-		Active:       name,
-		Nav:          navItems,
-	}
 	var buf bytes.Buffer
 	if err := t.ExecuteTemplate(&buf, "layout.html", data); err != nil {
 		log.Error("ui: render failed", "page", name, "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = buf.WriteTo(w)
+}
+
+// renderFragment executes the named template out of fragTemplates (an
+// htmx response fragment — no layout.html wrapper) and writes it to w.
+// Used by every /ui/frag/* handler and by every source/sink write/delete
+// handler in forms.go to re-render the table or form fragment. Buffered
+// for the same reason renderPage is: a partial write on a mid-render
+// failure would leave htmx swapping in truncated HTML with no clean way to
+// signal the failure instead.
+func renderFragment(w http.ResponseWriter, log *slog.Logger, name string, data any) {
+	var buf bytes.Buffer
+	if err := fragTemplates.ExecuteTemplate(&buf, name, data); err != nil {
+		log.Error("ui: fragment render failed", "fragment", name, "err", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
