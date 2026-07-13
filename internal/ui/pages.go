@@ -50,6 +50,7 @@ var pages = map[string]*template.Template{
 	"sinks":            mustPage("sinks.html", "frag_sink_table.html"),
 	"connectors":       mustPage("connectors.html", "frag_connector_table.html"),
 	"connector-detail": mustPage("connector_detail.html"),
+	"docs":             mustPage("docs.html"),
 }
 
 // fragTemplates holds every frag_*.html file parsed into ONE shared
@@ -77,6 +78,7 @@ var navItems = []navItem{
 	{Key: "sources", Label: "Sources", Href: "/ui/sources"},
 	{Key: "sinks", Label: "Sinks", Href: "/ui/sinks"},
 	{Key: "connectors", Label: "Connectors", Href: "/ui/connectors"},
+	{Key: "docs", Label: "Docs", Href: "/ui/docs"},
 }
 
 // pageData is layout.html's template data; every page's own data embeds

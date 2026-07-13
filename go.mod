@@ -11,6 +11,7 @@ require (
 	github.com/open-ships/n2k v0.0.0-20260708200005-f053587126b6
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/cobra v1.10.2
+	github.com/yuin/goldmark v1.8.4
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/prometheus v0.66.0
 	go.opentelemetry.io/otel/metric v1.44.0

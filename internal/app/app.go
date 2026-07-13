@@ -120,6 +120,16 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 	// is required for GET /ui to reach uiHandler's own "GET /ui" redirect
 	// route at all — see ui.Handler's doc comment for why.
 	mux.Handle("/ui", uiHandler)
+	// "/docs" and "/docs/{slug}" (spec §5) are permanent redirects to their
+	// /ui/docs equivalents (internal/ui/docspages.go), not a second copy of
+	// the manual — "/docs" is one of model.ReservedPathPrefixes, so no HTTP
+	// sink config can ever collide with either pattern.
+	mux.HandleFunc("GET /docs", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ui/docs", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("GET /docs/{slug}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ui/docs/"+r.PathValue("slug"), http.StatusMovedPermanently)
+	})
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ui/dashboard", http.StatusFound)
 	})

@@ -119,6 +119,14 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 	mux.HandleFunc("POST /ui/connectors/{id}", handleConnectorUpdate(svc, reg, log))
 	mux.HandleFunc("POST /ui/connectors/{id}/delete", handleConnectorDelete(svc, reg, log))
 
+	// Docs: the onboard operator manual — see docspages.go. /ui/docs 302s to
+	// the first page; /ui/docs/{slug} serves one page or 404s for an unknown
+	// slug. internal/app additionally 301-redirects the bare "/docs" and
+	// "/docs/{slug}" paths (mounted on the admin mux, not this one) to these
+	// two routes.
+	mux.HandleFunc("GET /ui/docs", handleDocsIndex())
+	mux.HandleFunc("GET /ui/docs/{slug}", handleDocPage(version, log))
+
 	assets, err := fs.Sub(assetsFS, "assets")
 	if err != nil {
 		// Unreachable: "assets" is a literal path component of the go:embed

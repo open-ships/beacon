@@ -379,3 +379,197 @@ func TestNoInlineStylingInTemplates(t *testing.T) {
 		}
 	}
 }
+
+// --- Docs manual (internal/ui/docspages.go) ---
+
+// wantDocPages is every page internal/ui/docs/*.md ships — slug plus title
+// (the file's first "# " heading) — in sidebar order. Hand-maintained
+// rather than derived from the filesystem so a content-file typo and a
+// test typo can't quietly agree with each other;
+// TestDocsSidebarListsAllPages fails loud on drift in either direction.
+var wantDocPages = []struct{ slug, title string }{
+	{"getting-started", "Getting started"},
+	{"can-setup", "CAN setup"},
+	{"concepts", "Concepts"},
+	{"filters", "Filters"},
+	{"api", "API (for agents and scripts)"},
+	{"troubleshooting", "Troubleshooting"},
+}
+
+func TestDocsIndexRedirectsToFirstPage(t *testing.T) {
+	srv := newAppMountedServer(t)
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Get(srv.URL + "/ui/docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	mustStatus(t, resp, http.StatusFound)
+	want := "/ui/docs/" + wantDocPages[0].slug
+	if loc := resp.Header.Get("Location"); loc != want {
+		t.Fatalf("Location = %q, want %q", loc, want)
+	}
+}
+
+func TestDocPageServesKnownSlug(t *testing.T) {
+	srv := newAppMountedServer(t)
+	resp, err := http.Get(srv.URL + "/ui/docs/getting-started")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	mustStatus(t, resp, http.StatusOK)
+
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html", ct)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	if !strings.Contains(html, "Getting started") {
+		t.Fatalf("getting-started page does not contain its own heading:\n%s", html)
+	}
+	// The rendered <article> body, not just the sidebar link text.
+	if !strings.Contains(html, "<article") {
+		t.Fatalf("docs page has no <article> body:\n%s", html)
+	}
+}
+
+func TestDocPageUnknownSlugIs404(t *testing.T) {
+	srv := newAppMountedServer(t)
+	resp, err := http.Get(srv.URL + "/ui/docs/does-not-exist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	mustStatus(t, resp, http.StatusNotFound)
+}
+
+// TestDocsSidebarListsAllPages checks every shipped page's sidebar entry —
+// href AND title, as one `<a href="/ui/docs/{slug}"...>{title}</a>` anchor,
+// so a page whose title went blank or got swapped fails here even though
+// its slug link would still be present — appears on a single rendered docs
+// page (the sidebar is identical across every page; see docs.html), and
+// that wantDocPages above names exactly the six pages actually shipped
+// (neither list a stray extra nor missing one).
+func TestDocsSidebarListsAllPages(t *testing.T) {
+	srv := newAppMountedServer(t)
+	resp, err := http.Get(srv.URL + "/ui/docs/getting-started")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	mustStatus(t, resp, http.StatusOK)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+
+	if got := strings.Count(html, `href="/ui/docs/`); got != len(wantDocPages) {
+		t.Fatalf("sidebar has %d /ui/docs/ links, want %d (%v)", got, len(wantDocPages), wantDocPages)
+	}
+	// One regexp per page: its anchor must carry the right href AND close
+	// with the right link text (docs.html renders the active page's anchor
+	// with an extra class attribute between href and >, hence the [^>]*).
+	for _, p := range wantDocPages {
+		anchor := regexp.MustCompile(`<a href="/ui/docs/` + regexp.QuoteMeta(p.slug) + `"[^>]*>` + regexp.QuoteMeta(p.title) + `</a>`)
+		if !anchor.MatchString(html) {
+			t.Fatalf("sidebar missing anchor for slug %q with title %q:\n%s", p.slug, p.title, html)
+		}
+	}
+}
+
+// TestDocsPagesAreSelfContained extends TestDashboardPageIsSelfContained's
+// offline check to every manual page: none may reference an absolute
+// http(s) URL via src=/href=, since that would require network access
+// beyond beacon itself to render (see docsMarkdown's doc comment — content
+// cites URLs as inline code, never as markdown/HTML links, specifically to
+// keep this passing).
+func TestDocsPagesAreSelfContained(t *testing.T) {
+	srv := newAppMountedServer(t)
+	for _, p := range wantDocPages {
+		t.Run(p.slug, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/ui/docs/" + p.slug)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			mustStatus(t, resp, http.StatusOK)
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			html := string(body)
+			if ext := externalURLs(html); len(ext) > 0 {
+				t.Fatalf("docs page %q references external URL(s), violating the offline constraint: %v", p.slug, ext)
+			}
+		})
+	}
+}
+
+// TestDocsPagesContainNoInlineStyling extends TestNoInlineStylingInTemplates
+// (which only scans the static templates/*.html files on disk, so it
+// trivially passes for docs.html's own markup) to each manual page's actual
+// rendered HTTP response: goldmark's raw-HTML-off configuration (see
+// docsMarkdown's doc comment) should make it impossible for markdown
+// content to ever inject a style= attribute or <style> block, but this
+// exercises that guarantee against the real rendered output rather than
+// just trusting the configuration.
+func TestDocsPagesContainNoInlineStyling(t *testing.T) {
+	srv := newAppMountedServer(t)
+	styleAttr := regexp.MustCompile(`(?i)\sstyle\s*=`)
+	styleTag := regexp.MustCompile(`(?i)<style[\s>]`)
+	for _, p := range wantDocPages {
+		t.Run(p.slug, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/ui/docs/" + p.slug)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			html := string(body)
+			if styleAttr.MatchString(html) {
+				t.Errorf("docs page %q contains a style= attribute; the no-inline-CSS rule forbids it", p.slug)
+			}
+			if styleTag.MatchString(html) {
+				t.Errorf("docs page %q contains a <style> block; the no-inline-CSS rule forbids it", p.slug)
+			}
+		})
+	}
+}
+
+// TestDocsNavItemPresent checks layout.html's main sidebar nav (shared by
+// every full page, not just docs) gained the "Docs" entry pointing at
+// /ui/docs, alongside the pre-existing Dashboard/Sources/Sinks/Connectors
+// items TestDashboardPageIsSelfContained already checks for on the
+// dashboard page.
+func TestDocsNavItemPresent(t *testing.T) {
+	srv := newAppMountedServer(t)
+	resp, err := http.Get(srv.URL + "/ui/dashboard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	if !strings.Contains(html, `href="/ui/docs"`) {
+		t.Fatalf("main nav does not link to /ui/docs:\n%s", html)
+	}
+	if !strings.Contains(html, ">Docs<") {
+		t.Fatalf("main nav does not label the docs link \"Docs\":\n%s", html)
+	}
+}
