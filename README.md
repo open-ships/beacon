@@ -98,7 +98,7 @@ never risks the surface you use to fix it:
 
 | Surface | Where | Notes |
 |---|---|---|
-| Web UI | admin address, `/ui` (`/` redirects there) | dashboard, sources/sinks/connectors CRUD, live stats |
+| Web UI | admin address, `/ui` (`/` and `/ui` both redirect to `/ui/dashboard`) | dashboard, sources/sinks/connectors CRUD, live stats |
 | Manual | admin address, `/ui/docs` (`/docs` 301s there) | getting started, CAN setup, concepts, filters, API, troubleshooting |
 | Config API | admin address, `/api/v1/...` | REST CRUD, filter validation, export/import, live metrics, health, system info |
 | API reference | admin address, `/api/docs` (interactive, offline) and `/api/openapi.json` (OpenAPI 3.1) | self-describing — start here for scripting/agents |
