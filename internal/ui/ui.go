@@ -170,6 +170,11 @@ func sameOriginGuard(next http.Handler) http.Handler {
 
 // sameOrigin implements sameOriginGuard's Origin/Sec-Fetch-Site check; see
 // its doc comment for the full rationale.
+//
+// The Origin comparison is host:port only, deliberately ignoring scheme:
+// beacon serves plain HTTP and has no view of any TLS-terminating proxy in
+// front of it, so requiring a scheme match would break legitimate setups
+// without blocking anything a host mismatch doesn't already block.
 func sameOrigin(r *http.Request) bool {
 	if origin := r.Header.Get("Origin"); origin != "" {
 		u, err := url.Parse(origin)
