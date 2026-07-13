@@ -9,6 +9,7 @@ func TestNilRegistrySafe(t *testing.T) {
 	var r *Registry
 	r.Record("c", 1, 10)
 	r.SetQueue("c", 1, 10)
+	r.Touch("c")
 	r.Remove("c")
 	if _, ok := r.Snapshot("c"); ok {
 		t.Fatal("nil registry returned a snapshot")
@@ -116,5 +117,54 @@ func TestRemoveDropsDepthHistory(t *testing.T) {
 	s, _ := r.Snapshot("nav")
 	if s.DepthHistory != nil {
 		t.Fatalf("DepthHistory = %v, want nil after Remove", s.DepthHistory)
+	}
+}
+
+// TestTouchDoesNotNotchDepthHistory pins the hot-apply-restart regression:
+// a connector's registry entry survives a config-edit restart (Remove only
+// fires on delete), so Connector.Start's presence registration must not
+// append to the depth ring — a Start-time SetQueue(id, 0, 0) would draw a
+// fake dip-to-zero notch mid-sparkline. Touch zeroes the gauges and leaves
+// the history exactly as it was.
+func TestTouchDoesNotNotchDepthHistory(t *testing.T) {
+	r := NewRegistry()
+	r.SetQueue("nav", 5, 500)
+	r.SetQueue("nav", 7, 700)
+
+	r.Touch("nav") // hot-apply restart: Start re-registers the surviving entry
+
+	s, ok := r.Snapshot("nav")
+	if !ok {
+		t.Fatal("no snapshot after Touch")
+	}
+	want := []int64{5, 7}
+	if len(s.DepthHistory) != len(want) || s.DepthHistory[0] != want[0] || s.DepthHistory[1] != want[1] {
+		t.Fatalf("DepthHistory = %v, want %v (Touch must not append)", s.DepthHistory, want)
+	}
+	if s.QueueDepth != 0 || s.QueueBytes != 0 {
+		t.Fatalf("gauges = depth %d bytes %d, want both zeroed by Touch", s.QueueDepth, s.QueueBytes)
+	}
+}
+
+// TestTouchRegistersPresence covers Touch's other job: a fresh (never
+// Record/SetQueue'd) connector must show up in All()/Snapshot immediately
+// after Touch, with zero gauges and no depth history.
+func TestTouchRegistersPresence(t *testing.T) {
+	r := NewRegistry()
+	r.Touch("nav")
+
+	all := r.All()
+	s, ok := all["nav"]
+	if !ok {
+		t.Fatalf("All() = %v, want a nav entry after Touch", all)
+	}
+	if s.QueueDepth != 0 || s.QueueBytes != 0 || s.TotalMessages != 0 {
+		t.Fatalf("fresh Touch snapshot = %+v, want all-zero", s)
+	}
+	if s.DepthHistory != nil {
+		t.Fatalf("DepthHistory = %v, want nil (Touch must not seed history)", s.DepthHistory)
+	}
+	if _, ok := r.Snapshot("nav"); !ok {
+		t.Fatal("Snapshot ok = false after Touch, want true")
 	}
 }

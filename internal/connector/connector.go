@@ -72,7 +72,14 @@ func (c *Connector) Start(ctx context.Context) {
 	// immediately on entry (before its first tick), so a restarted
 	// connector's true backlog appears within milliseconds, asynchronously,
 	// outside the lock.
-	c.st.SetQueue(c.cfg.ID, 0, 0)
+	//
+	// Touch, not SetQueue: SetQueue appends every call to the depth-history
+	// ring behind the UI sparkline, and on a hot-apply restart the registry
+	// entry survives (Remove only fires on delete) — a Start-time
+	// SetQueue(id, 0, 0) would notch a fake dip-to-zero into mid-history.
+	// Touch registers presence and zeroes the gauges without adding a
+	// history sample; only prune's periodic measurements feed the sparkline.
+	c.st.Touch(c.cfg.ID)
 
 	// Subscribe synchronously so no envelopes published right after Start
 	// returns can race the intake goroutine's startup and be dropped.

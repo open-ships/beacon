@@ -166,6 +166,16 @@ func (c *counters) setQueue(depth, bytes int64) {
 	c.mu.Unlock()
 }
 
+// zeroQueue resets the depth/bytes gauges without touching the depth ring —
+// setQueue minus the history side effect. See Registry.Touch for why the
+// two exist separately.
+func (c *counters) zeroQueue() {
+	c.mu.Lock()
+	c.queueDepth = 0
+	c.queueBytes = 0
+	c.mu.Unlock()
+}
+
 // depthHistoryLocked returns the ring's samples oldest-first. Callers must
 // hold mu. Returns nil (not an empty non-nil slice) when no sample has ever
 // been recorded, so Snapshot's DepthHistory naturally omits the field via
@@ -184,7 +194,7 @@ func (c *counters) depthHistoryLocked() []int64 {
 
 // Registry tracks live per-connector counters and rolling rates for the
 // API and UI. It is independent of OTel (which serves Prometheus). A nil
-// *Registry no-ops Record/SetQueue/Remove and returns empty from
+// *Registry no-ops Record/SetQueue/Touch/Remove and returns empty from
 // Snapshot/All, the same nil-safe convention as metrics.Set, so callers
 // never need a nil check around instrumentation.
 type Registry struct {
@@ -226,12 +236,32 @@ func (r *Registry) Record(connector string, msgs, bytes int64) {
 
 // SetQueue records current queue depth/bytes (from the prune loop) and
 // appends depth to the connector's depth-history ring (see depthRingSize),
-// which Snapshot surfaces as DepthHistory for the UI sparkline.
+// which Snapshot surfaces as DepthHistory for the UI sparkline. Because
+// every call appends a history sample, SetQueue is for genuine periodic
+// measurements only — presence registration belongs to Touch.
 func (r *Registry) SetQueue(connector string, depth, bytes int64) {
 	if r == nil {
 		return
 	}
 	r.get(connector).setQueue(depth, bytes)
+}
+
+// Touch ensures a connector's entry exists (so it shows up in All()/
+// Snapshot immediately) and zeroes its depth/bytes gauges, WITHOUT
+// appending to the depth-history ring. It exists for Connector.Start's
+// synchronous presence registration: on a hot-apply restart (config edit →
+// supervisor Stop + new Start) the registry entry survives — Remove only
+// fires on delete — so Start seeding via SetQueue(id, 0, 0) would append a
+// genuine 0 mid-history, drawing a dip-to-zero notch in the sparkline that
+// looks like the queue drained and refilled when it did no such thing.
+// History samples must only come from the prune loop's real periodic
+// measurements (SetQueue); Touch covers the "make the connector visible
+// now, real numbers follow within milliseconds" path.
+func (r *Registry) Touch(connector string) {
+	if r == nil {
+		return
+	}
+	r.get(connector).zeroQueue()
 }
 
 // Remove drops a connector's stats (deleted connectors), including its
