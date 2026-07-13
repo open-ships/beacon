@@ -361,7 +361,7 @@ func (s *Service) Import(ctx context.Context, cfg model.Config, replace bool) er
 		if err != nil {
 			return err
 		}
-		result = mergeConfig(current, cfg)
+		result = MergeConfig(current, cfg)
 	}
 	if err := ValidateConfig(result); err != nil {
 		return err
@@ -373,9 +373,12 @@ func (s *Service) Import(ctx context.Context, cfg model.Config, replace bool) er
 	return nil
 }
 
-// mergeConfig upserts incoming's entities by id onto base, leaving any
-// base entity not mentioned in incoming untouched.
-func mergeConfig(base, incoming model.Config) model.Config {
+// MergeConfig upserts incoming's entities by id onto base, leaving any
+// base entity not mentioned in incoming untouched. It is exported standalone
+// (like ValidateConfig) so the CLI's import --merge command (Phase 4) can
+// build the same merged result Service.Import would, before validating and
+// writing it directly to the store.
+func MergeConfig(base, incoming model.Config) model.Config {
 	return model.Config{
 		Sources:    upsert(base.Sources, incoming.Sources, func(v model.Source) string { return v.ID }),
 		Sinks:      upsert(base.Sinks, incoming.Sinks, func(v model.Sink) string { return v.ID }),

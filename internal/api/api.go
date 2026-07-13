@@ -26,18 +26,16 @@ import (
 // handler can be mounted directly on a stdlib http.ServeMux via
 // mux.Handle("/api/", handler) and still see the paths it registered.
 //
-// reg is threaded through now (rather than added to this function's
-// signature later) because a follow-up task wires live per-connector stats
-// into a read endpoint here; it is unused by the entity CRUD endpoints this
-// task adds.
+// reg backs the live-metrics endpoints (get-connector-metrics,
+// list-metrics); it is unused by the entity CRUD endpoints.
 //
-// version is embedded as the OpenAPI document's info.version.
+// version is embedded as the OpenAPI document's info.version and returned
+// verbatim by GET /api/v1/system.
 //
 // log receives the underlying error whenever a handler is about to answer
 // 500 (the client only ever sees a sanitized "internal error" body); nil
 // defaults to slog.Default(), the same convention as config.NewService.
 func New(svc *config.Service, reg *stats.Registry, version string, log *slog.Logger) (http.Handler, huma.API) {
-	_ = reg // wired into a stats endpoint by a later task
 	if log == nil {
 		log = slog.Default()
 	}
@@ -65,6 +63,11 @@ func New(svc *config.Service, reg *stats.Registry, version string, log *slog.Log
 	registerSourceRoutes(humaAPI, svc, log)
 	registerSinkRoutes(humaAPI, svc, log)
 	registerConnectorRoutes(humaAPI, svc, log)
+	registerFilterRoutes(humaAPI, svc, log)
+	registerSystemInfoRoutes(humaAPI, version)
+	registerMetricsRoutes(humaAPI, svc, reg, log)
+	registerConfigIORoutes(humaAPI, svc, log)
+	registerHealthRoutes(humaAPI, svc)
 
 	return router, humaAPI
 }
