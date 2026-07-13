@@ -31,6 +31,14 @@ var assetsFS embed.FS
 // in the configuration because Scalar's default theme otherwise fetches
 // webfonts from fonts.scalar.com at render time — harmless if a browser
 // happens to have internet access, but not "offline" if it doesn't.
+//
+// The bundle URL carries a ?v= cache-buster tied to the vendored Scalar
+// version: assets are served with a one-year immutable Cache-Control, so
+// without it a binary upgrade that re-vendors the bundle would keep
+// serving browsers the stale cached copy. Bump scalarVersion when
+// re-vendoring (see assets/README.md).
+const scalarVersion = "1.62.5"
+
 const docsPage = `<!doctype html>
 <html lang="en">
 <head>
@@ -44,7 +52,7 @@ const docsPage = `<!doctype html>
   data-url="/api/openapi.json"
   data-configuration='{"withDefaultFonts":false}'
 ></script>
-<script src="/api/assets/scalar.min.js"></script>
+<script src="/api/assets/scalar.min.js?v=` + scalarVersion + `"></script>
 </body>
 </html>
 `
