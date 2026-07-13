@@ -30,10 +30,12 @@ var assetsFS embed.FS
 // through for the pages that use them: the Sources and Sinks pages read and
 // write through svc and read live component state through statuses; the
 // Connectors pages read and write through svc and read live per-connector
-// counters/rates through reg (see forms.go's "--- Connectors ---" section).
-// reg and the rest of statuses beyond what's used above are for Task 5's
-// live dashboard, which doesn't exist yet — the dashboard below is still a
-// shell.
+// counters/rates through reg (see forms.go's "--- Connectors ---" section);
+// the dashboard (see dashboard.go) reads through svc, reg, AND statuses
+// together — its connector cards use reg for rates/queue depth the same way
+// the Connectors page does, its components health strip uses statuses the
+// same way Sources/Sinks do, and a connector card's error badge uses
+// statuses too (a connector has no reg-based error signal of its own).
 //
 // version is beacon's own build version (see internal/app.Options.Version).
 // It doubles as every vendored asset URL's "?v=" cache-busting query
@@ -61,6 +63,7 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 	mux.HandleFunc("GET /ui/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		render(w, log, "dashboard", "Dashboard", version)
 	})
+	mux.HandleFunc("GET /ui/frag/dashboard", handleDashboardFrag(svc, reg, statuses, log))
 
 	// Sources: full page, its "add/edit" form + type-fields fragments, and
 	// its create/update/delete write endpoints. See forms.go for every

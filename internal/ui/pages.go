@@ -38,11 +38,12 @@ func mustPage(files ...string) *template.Template {
 // template so "content" can render the same "source-panel"/"sink-panel"/
 // "connector-panel" markup that POST handlers also re-render standalone via
 // fragTemplates below — keeping the initial page load and every htmx-driven
-// update using identical markup. connector-detail needs no such fragment:
-// its live stats block is never part of the initial server render — the
-// page ships an empty container with hx-trigger="load, every 2s" that
-// fetches "connector-stats" (frag_connector_stats.html, part of
-// fragTemplates) client-side immediately after load.
+// update using identical markup. connector-detail and dashboard need no such
+// fragment: their live blocks are never part of the initial server render —
+// each page ships an empty container with hx-trigger="load, every 2s" that
+// fetches "connector-stats" (frag_connector_stats.html) or "dashboard-content"
+// (frag_dashboard.html), both part of fragTemplates, client-side immediately
+// after load.
 var pages = map[string]*template.Template{
 	"dashboard":        mustPage("dashboard.html"),
 	"sources":          mustPage("sources.html", "frag_source_table.html"),
@@ -57,10 +58,10 @@ var pages = map[string]*template.Template{
 // only because every {{define}} name across every frag_*.html file is
 // unique within the set (source-panel/source-panel-oob/source-form/
 // source-type-fields and their sink-*/connector-* counterparts, plus
-// filter-validate and connector-stats) — html/template panics at parse time
-// on a duplicate define name in one set, so a future frag_*.html file must
-// pick names that don't collide with these. renderFragment (render.go)
-// executes a template from this set by name.
+// filter-validate, connector-stats, and dashboard-content) — html/template
+// panics at parse time on a duplicate define name in one set, so a future
+// frag_*.html file must pick names that don't collide with these.
+// renderFragment (render.go) executes a template from this set by name.
 var fragTemplates = template.Must(template.ParseFS(templatesFS, "templates/frag_*.html"))
 
 // navItem is one entry in the sidebar nav rendered by layout.html.
