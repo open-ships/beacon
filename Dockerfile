@@ -15,7 +15,7 @@ COPY . .
 ARG VERSION=dev
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
-RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags "-X main.version=${VERSION}" \
     -o beacon ./cmd/beacon
 

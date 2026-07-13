@@ -7,7 +7,9 @@
 .claude
 
 # Build artifacts
-n2kbridge
+beacon
+beacon-arm64
+beacon-amd64
 *.db
 data/
 

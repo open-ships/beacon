@@ -1,0 +1,35 @@
+{
+  "sources": [
+    {
+      "id": "can0",
+      "name": "CAN bus",
+      "type": "socketcan",
+      "enabled": true,
+      "interface": "can0"
+    }
+  ],
+  "sinks": [
+    {
+      "id": "sse",
+      "name": "Navigation feed",
+      "type": "http_sse",
+      "enabled": true,
+      "path": "/nav"
+    }
+  ],
+  "connectors": [
+    {
+      "id": "nav",
+      "name": "Navigation PGNs only",
+      "source_id": "can0",
+      "sink_id": "sse",
+      "enabled": true,
+      "filters": [
+        "msg.pgn in [127250, 129025, 129026, 129029]"
+      ],
+      "buffer": {
+        "max_messages": 5000
+      }
+    }
+  ]
+}

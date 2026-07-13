@@ -3,257 +3,139 @@
 [![Tests](https://github.com/open-ships/beacon/actions/workflows/test.yml/badge.svg)](https://github.com/open-ships/beacon/actions/workflows/test.yml)
 [![Go version](https://img.shields.io/github/go-mod/go-version/open-ships/beacon)](go.mod)
 
-Bridge NMEA 2000 CAN bus data to TCP and SSE consumers.
+An offline NMEA 2000 gateway: read CAN/USB-CAN/HTTP sources, filter with CEL
+expressions, deliver to CAN/HTTP/TCP sinks — all configured through one REST
+API and web UI, with durable buffering and replay for reconnecting clients.
 
-## TL;DR
+## How it fits together
 
-beacon reads raw frames from a SocketCAN interface, decodes them into structured NMEA 2000 messages, buffers them in SQLite, and streams them to any number of TCP or HTTP/SSE clients — with per-client replay, CEL-based filtering, and Prometheus metrics. Run it on a Raspberry Pi (or any Linux box with a USB-CAN adapter) and your boat's instrument data becomes a live JSON feed.
-
----
-
-## Features
-
-- **Two output formats** — raw TCP NDJSON for backend consumers; HTTP Server-Sent Events for browsers and dashboards
-- **Per-client replay** — clients reconnecting with `Last-Event-ID` receive missed messages from the SQLite ring buffer
-- **CEL filter expressions** — filter by PGN, source, priority, or any decoded payload field with Google's Common Expression Language
-- **Zero CGO** — pure Go binary, no C toolchain required; cross-compiles cleanly for `linux/amd64` and `linux/arm64`
-- **Tiny footprint** — single static binary, minimal runtime dependency (`ca-certificates`)
-- **Prometheus metrics** — frame counts, sink lag, client counts, filter error rates, buffer utilization
-- **Graceful shutdown** — SIGTERM/SIGINT flushes all checkpoints before exit; at-least-once delivery semantics
-- **TOML config with env overrides** — every option overridable via `BEACON_*` environment variables
-
----
-
-## Getting started
-
-### Docker (fastest)
-
-```bash
-docker run --rm \
-  --network host \
-  -v $(pwd)/config.toml:/app/config.toml \
-  -v beacon-data:/data \
-  ghcr.io/open-ships/beacon:latest
 ```
+source --> [connector: CEL filters + durable buffer] --> sink
+```
+
+- **Sources** decode NMEA 2000 messages onto beacon: a SocketCAN interface
+  (`socketcan`), a USB-CAN adapter (`usbcan`), or an HTTP stream from
+  somewhere else (`http_sse` / `http_ws` — including another beacon's own
+  sink, for chaining gateways).
+- **Sinks** deliver messages somewhere: back onto a CAN bus (`socketcan` /
+  `usbcan`, push-confirmed with retry), or out over HTTP (`http_sse` /
+  `http_ws`, with replay for reconnecting clients) or a plain `tcp` NDJSON
+  feed (live-only).
+- **Connectors** are the only thing that moves data — each names exactly
+  one source and one sink, an optional list of CEL filter expressions, and
+  its own durable SQLite-backed buffer that absorbs a slow or disconnected
+  sink without blocking the source. A source or sink with no connector
+  naming it does nothing.
+
+Every configuration write (via the API or the UI) applies immediately —
+validated, persisted, and reconciled against the running system in one
+step. There's no separate config file and no restart.
+
+## Quick start
 
 ### Binary
 
-Download the latest release for your architecture from the [releases page](https://github.com/open-ships/beacon/releases):
+```bash
+go build ./cmd/beacon
+./beacon --db beacon.db --seed examples/vcan-dev.json
+```
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--db` | `beacon.db` | SQLite database path — configuration and every connector's message buffer live here |
+| `--data-address` | `0.0.0.0:8080` | Bind address for sink endpoints (SSE/WS/TCP) |
+| `--admin-address` | `0.0.0.0:2112` | Bind address for the web UI, config API, `/health`, and `/metrics` |
+| `--seed` | (none) | JSON config to load into an empty database on first boot; ignored once the database already holds a configuration |
+| `--log-level` | `info` | `debug`, `info`, `warn`, or `error` |
+
+`beacon` also has two offline CLI subcommands, `export` and `import`, for
+reading/writing a database file directly without a running process — see
+[`examples/README.md`](examples/README.md) and `/ui/docs/api` for usage
+and the offline caveat (never run them against a database a live beacon
+process has open).
+
+### Docker
 
 ```bash
-chmod +x beacon-linux-arm64
-./beacon-linux-arm64 --config config.toml
+docker compose up
 ```
 
-### Minimal config
-
-Bring your SocketCAN interface up before starting beacon, then save this as `config.toml` and set `interface` to match your adapter:
+`docker-compose.yml` builds from the repo `Dockerfile`, mounts `./data`
+onto `/data` for the SQLite file, and runs with `network_mode: host` —
+required so the container can see a CAN interface that already exists on
+the host. Or run the published image directly:
 
 ```bash
-sudo ip link set can0 up type can bitrate 250000
+docker run --rm --network host \
+  -v $(pwd)/data:/data \
+  ghcr.io/open-ships/beacon:latest --db /data/beacon.db
 ```
 
-```toml
-[app]
-log_level = "info"
+### First pipeline
 
-[can]
-interface = "can0"
-
-[buffer]
-path     = "beacon.db"
-max_rows = 100000
-
-[admin]
-address = "0.0.0.0:2112"
-
-[sinks.sse]
-enabled = true
-address = "0.0.0.0:8080"
-path    = "/events"
-
-[sinks.tcp]
-enabled = true
-address = "0.0.0.0:9090"
-```
-
-Once running:
+No CAN hardware needed to try it — bring up a virtual interface and seed
+[`examples/vcan-dev.json`](examples/vcan-dev.json):
 
 ```bash
-curl -N http://localhost:8080/events   # SSE stream
-nc localhost 9090                      # TCP NDJSON stream
-curl http://localhost:2112/health     # health check
-curl http://localhost:2112/metrics     # Prometheus metrics
+sudo modprobe vcan
+sudo ip link add dev vcan0 type vcan
+sudo ip link set vcan0 up
+
+./beacon --db beacon.db --seed examples/vcan-dev.json &
+cansend vcan0 18FF0001#0102030405060708   # from can-utils
+curl -N http://localhost:8080/events      # watch it arrive as SSE
 ```
 
-See [`examples/`](examples/) for annotated configs covering navigation filtering, engine monitoring, high-volume tuning, and virtual CAN development.
+See [`examples/`](examples/) for more starter configs (navigation PGN
+filtering, engine-room fan-out to SSE + TCP, chaining two beacons), and the
+onboard manual (`/ui/docs`, or [`internal/ui/docs/`](internal/ui/docs/) in
+source form) for everything else, including real CAN interface bring-up.
 
----
+## Surfaces
 
-## Configuration reference
+Two HTTP servers run side by side, kept apart so a sink misconfiguration
+never risks the surface you use to fix it:
 
-### `[app]`
+| Surface | Where | Notes |
+|---|---|---|
+| Web UI | admin address, `/ui` (`/` redirects there) | dashboard, sources/sinks/connectors CRUD, live stats |
+| Manual | admin address, `/ui/docs` (`/docs` 301s there) | getting started, CAN setup, concepts, filters, API, troubleshooting |
+| Config API | admin address, `/api/v1/...` | REST CRUD, filter validation, export/import, live metrics, health, system info |
+| API reference | admin address, `/api/docs` (interactive, offline) and `/api/openapi.json` (OpenAPI 3.1) | self-describing — start here for scripting/agents |
+| Health | admin address, `/health` (mirrored at `/api/v1/health`) | JSON status, rolled up from every component |
+| Metrics | admin address, `/metrics` | Prometheus exposition |
+| Sink endpoints (SSE/WS) | data address, at each sink's configured `path` | e.g. `/events`; supports replay via `Last-Event-ID` / `?after=` |
+| Sink endpoints (TCP) | each `tcp` sink's own configured `address` | its own listener, independent of the admin/data servers; live-only, no replay |
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `log_level` | `"info"` | `"debug"`, `"info"`, `"warn"`, or `"error"` |
+Admin address defaults to `0.0.0.0:2112`, data address to `0.0.0.0:8080`.
 
-### `[can]`
+## Configuration
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `interface` | — | SocketCAN interface name (e.g. `"can0"`, `"vcan0"`) |
-| `restart_ms` | `100` | Delay in ms before reconnecting after a socket error |
-
-### `[buffer]`
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `path` | `"/data/beacon.db"` | SQLite database path |
-| `max_rows` | `100000` | Ring buffer capacity; oldest rows pruned when exceeded |
-| `checkpoint_ms` | `500` | How often (ms) to flush per-sink delivery checkpoints to disk |
-
-### `[sinks.sse]` and `[sinks.tcp]`
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `enabled` | `false` | Enable this sink |
-| `address` | `"0.0.0.0:8080"` / `"0.0.0.0:9090"` | Bind address |
-| `path` | `"/events"` | HTTP path (SSE only) |
-| `filters` | `[]` | CEL filter expressions (AND semantics — all must match) |
-
-### `[admin]`
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `address` | `"0.0.0.0:2112"` | Bind address for `/health` and `/metrics` |
-
-### Environment variable overrides
-
-Every config key is accessible as `BEACON_<SECTION>_<KEY>`:
-
-```bash
-BEACON_CAN_INTERFACE=can0
-BEACON_APP_LOG_LEVEL=debug
-BEACON_BUFFER_MAX_ROWS=500000
-```
-
----
-
-## Filters
-
-Filters use [CEL (Common Expression Language)](https://cel.dev). All expressions in the array must pass (AND). Use `||` within a single expression for OR logic. Empty `filters = []` passes everything.
-
-### Message fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `msg.pgn` | `int` | NMEA 2000 PGN number |
-| `msg.source` | `int` | Source device address (0–253) |
-| `msg.dest` | `int` | Destination address (255 = broadcast) |
-| `msg.priority` | `int` | Priority (0 = highest, 7 = lowest) |
-| `msg.timestamp` | `string` | RFC3339 timestamp |
-| `msg.payload` | `map` | Decoded PGN fields |
-
-### Examples
-
-```toml
-# Single PGN
-filters = ["msg.pgn == 127250"]
-
-# Allow-list of PGNs
-filters = ["msg.pgn in [127250, 128259, 129026]"]
-
-# High-priority navigation messages only
-filters = [
-  "msg.pgn in [129025, 129026, 129029]",
-  "msg.priority <= 3",
-]
-
-# Payload field threshold
-filters = ["double(msg.payload.speed) > 2.0"]
-
-# Exclude a noisy device
-filters = ["msg.source != 42"]
-
-# OR across PGNs
-filters = ["msg.pgn == 127250 || msg.pgn == 128259"]
-
-# Only accept specific PGNs from a trusted GPS source (source 7)
-filters = ["msg.source != 7 || msg.pgn in [129025, 129026, 129029]"]
-
-# Per-source PGN allowlist: engine data from source 3, GPS from source 7, anything from source 1
-filters = [
-  "msg.source == 1 || (msg.source == 3 && msg.pgn in [127488, 127489, 127493]) || (msg.source == 7 && msg.pgn in [129025, 129026, 129029])",
-]
-
-# Reject all messages from untrusted sources except heading (e.g. a backup compass on source 12)
-filters = [
-  "msg.source in [1, 3, 7] || (msg.source == 12 && msg.pgn == 127250)",
-]
-
-# Combine source allowlist with priority gating: only low-latency nav PGNs from known sources
-filters = [
-  "msg.source in [1, 3, 7]",
-  "msg.pgn in [129025, 129026, 127250, 128259]",
-  "msg.priority <= 3",
-]
-```
-
----
-
-## Endpoints
-
-| Endpoint | Default port | Description |
-|----------|-------------|-------------|
-| `GET /events` | `8080` | SSE stream of decoded N2K messages |
-| TCP | `9090` | NDJSON stream of decoded N2K messages |
-| `GET /health` | `2112` | JSON health status of all subsystems |
-| `GET /metrics` | `2112` | Prometheus-format metrics |
-| `GET /config` | `2112` | JSON dump of the active configuration |
-
-### SSE reconnect
-
-Each SSE event carries an `id:` field. Clients reconnecting with the `Last-Event-ID` header receive missed messages from the buffer (up to the buffer's retention limit), enabling seamless recovery from network interruptions.
-
-### Docker compose
-
-```yaml
-services:
-  beacon:
-    image: ghcr.io/open-ships/beacon:latest
-    network_mode: host
-    volumes:
-      - ./config.toml:/app/config.toml:ro
-      - beacon-data:/data
-    restart: unless-stopped
-
-volumes:
-  beacon-data:
-```
-
-`network_mode: host` gives the container access to the host's CAN interfaces.
-
----
+The whole configuration is one JSON document — `{"sources": [...], "sinks":
+[...], "connectors": [...]}` (`internal/model/model.go`) — read/written
+wholesale via `GET`/`POST /api/v1/config/{export,import}` (or the offline
+`beacon export`/`import` CLI verbs), or entity-by-entity via
+`PUT`/`DELETE /api/v1/{sources,sinks,connectors}/{id}`. A connector's
+`filters` is a list of [CEL](https://cel.dev) expressions (AND semantics;
+`||` within one expression for OR), validated with the rest of the config
+on every write. For the full field reference, the envelope shape, buffering
+and replay semantics, and a CEL cookbook, see `/ui/docs` (or
+[`internal/ui/docs/`](internal/ui/docs/)) and `/api/docs`; for ready-to-use
+starting points, see [`examples/`](examples/).
 
 ## Development
-
-### Prerequisites
-
-- Go 1.24+
-- Linux (for live CAN testing; a virtual interface works on any Linux machine)
-
-### Build and test
 
 Common tasks are managed with [just](https://just.systems):
 
 ```bash
-just build        # compile binary locally
+just build        # compile binary locally (CGO_ENABLED=0)
 just test         # run all tests
-just test-race    # run tests with race detector
+just test-race    # race detector, for the packages not blocked by an upstream n2k/pgn compiler bug
 just run          # go run (pass args after --)
+just ui-css       # rebuild internal/ui/assets/app.css from internal/ui/uisrc/input.css
 just fmt          # gofmt
 just vet          # go vet
+just lint         # golangci-lint
 just clean        # remove build artifacts
 just build-arm64  # cross-compile for Raspberry Pi (linux/arm64)
 just build-amd64  # cross-compile for linux/amd64
@@ -272,11 +154,12 @@ go build ./cmd/beacon
 go test ./...
 ```
 
-Cross-compile for Raspberry Pi:
-
-```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./cmd/beacon
-```
+`just test-race` (and the CI `race` job) runs only
+`internal/bus/busfake`, `internal/metrics`, `internal/model`,
+`internal/stats`, `internal/store`, and `internal/sysinfo`: every other
+package pulls in `n2k/pgn` transitively, which ICEs the Go compiler under
+`-race` (an upstream bug, not beacon's). Those packages are still covered
+by the regular (non-race) test suite.
 
 ### Virtual CAN (no hardware needed)
 
@@ -286,7 +169,8 @@ sudo ip link add dev vcan0 type vcan
 sudo ip link set vcan0 up
 ```
 
-Use `examples/vcan-dev.toml` as your config, then inject test frames:
+Use [`examples/vcan-dev.json`](examples/vcan-dev.json) as a starting
+config (via `--seed` or `beacon import`), then inject test frames:
 
 ```bash
 cansend vcan0 18FF0001#0102030405060708
@@ -295,23 +179,35 @@ cansend vcan0 18FF0001#0102030405060708
 ### Project layout
 
 ```
-cmd/beacon/      main entrypoint
+cmd/beacon/     CLI entrypoint: serve, export, import
 internal/
-  can/              SocketCAN reader (linux) + no-op stub (other platforms)
-  n2k/              NMEA 2000 parser (wraps boatkit-io/n2k)
-  buffer/           SQLite ring buffer + checkpoint flusher
-  filter/           CEL filter chain
-  sink/
-    sse/            HTTP Server-Sent Events sink
-    tcp/            TCP NDJSON sink
-  config/           TOML config loading
-  admin/            /health, /metrics, OTel setup
-examples/           Annotated configs for common use cases
+  model/        config entities (sources, sinks, connectors) + structural validation
+  store/        SQLite: schema, config CRUD, connection shared with queue
+  queue/        durable per-connector buffer (SQLite-backed)
+  filter/       CEL compile + evaluate against message envelopes
+  msg/          canonical message envelope shape
+  bus/          one n2k.Client per physical CAN endpoint, refcounted
+  source/       runs configured sources, fans envelopes out to connectors
+  connector/    per-connector pipeline: subscribe -> filter -> queue -> deliver
+  sink/         runs configured sinks (CAN push-confirm; HTTP/TCP broadcast, replay for SSE/WS only)
+  supervisor/   reconciles desired config against running components
+  config/       validate + persist + reconcile choke point (API and UI both sit on this)
+  api/          REST config API (huma-on-chi) + offline API reference UI
+  ui/           offline server-rendered web UI (htmx + OpenBridge + daisyUI) + onboard docs manual
+  app/          composition root: store, bus manager, data server, supervisor, admin HTTP server
+  stats/        live per-connector counters for the API/UI
+  metrics/      OTel instrument set (Prometheus exposition)
+  sysinfo/      best-effort CAN/USB-serial hardware discovery
+examples/       importable starter configs
 ```
 
 ### Release
 
-Merging to `main` automatically:
-1. Tags the commit `YYYY.MM.DD` (incrementing to `YYYY.MM.DD-2` etc. if multiple merges happen the same day)
-2. Creates a GitHub Release with pre-built `linux/amd64` and `linux/arm64` binaries
+The `Release` workflow runs after `Test` succeeds on `main` (i.e. on every
+merge) and:
+
+1. Tags the commit `YYYY.MM.DD` (incrementing to `YYYY.MM.DD-2` etc. if
+   multiple merges land the same day)
+2. Creates a GitHub Release with pre-built `linux/amd64` and `linux/arm64`
+   binaries (`CGO_ENABLED=0`, version-stamped via `-ldflags`)
 3. Publishes `ghcr.io/open-ships/beacon:<tag>` and `:latest`

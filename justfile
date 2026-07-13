@@ -9,19 +9,29 @@ default:
 
 # build the binary locally
 build:
-    go build -ldflags "-X main.version={{version}}" -o {{binary}} {{cmd}}
+    CGO_ENABLED=0 go build -ldflags "-X main.version={{version}}" -o {{binary}} {{cmd}}
 
 # run all tests
 test:
-    go test $(go list ./... | grep -v '^github.com/open-ships/beacon/cmd/')
+    go test ./...
 
 # run tests with verbose output
 test-v:
     go test -v ./...
 
-# run tests with race detector
+# run tests with the race detector, restricted to the packages that don't
+# transitively import n2k/pgn: that package ICEs the Go compiler under -race
+# (upstream bug, not beacon's — see internal/msg for the import boundary that
+# contains it). `go list -deps -test` confirms this exact set; re-verify it
+# whenever a package's imports change.
 test-race:
-    go test -race ./...
+    go test -race \
+        ./internal/bus/busfake \
+        ./internal/metrics \
+        ./internal/model \
+        ./internal/stats \
+        ./internal/store \
+        ./internal/sysinfo
 
 # run the binary (pass args after --)
 run *args:
@@ -54,11 +64,11 @@ clean:
 
 # cross-compile for Linux arm64 (Raspberry Pi)
 build-arm64:
-    GOOS=linux GOARCH=arm64 go build -ldflags "-X main.version={{version}}" -o {{binary}}-arm64 {{cmd}}
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "-X main.version={{version}}" -o {{binary}}-arm64 {{cmd}}
 
 # cross-compile for Linux amd64
 build-amd64:
-    GOOS=linux GOARCH=amd64 go build -ldflags "-X main.version={{version}}" -o {{binary}}-amd64 {{cmd}}
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-X main.version={{version}}" -o {{binary}}-amd64 {{cmd}}
 
 # build Docker image
 docker-build:

@@ -1,0 +1,33 @@
+{
+  "sources": [
+    {
+      "id": "upstream",
+      "name": "Remote beacon (SSE)",
+      "type": "http_sse",
+      "enabled": true,
+      "url": "http://upstream-beacon.local:8080/events"
+    }
+  ],
+  "sinks": [
+    {
+      "id": "local-can",
+      "name": "Local CAN bus",
+      "type": "socketcan",
+      "enabled": true,
+      "interface": "can0"
+    }
+  ],
+  "connectors": [
+    {
+      "id": "chain",
+      "name": "Mirror upstream beacon onto local bus",
+      "source_id": "upstream",
+      "sink_id": "local-can",
+      "enabled": true,
+      "filters": [],
+      "buffer": {
+        "max_messages": 50000
+      }
+    }
+  ]
+}

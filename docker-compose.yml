@@ -14,3 +14,7 @@ services:
     #   - --db=/data/beacon.db
     #   - --seed=/data/seed.json
     #   - --log-level=info
+    # `docker compose ps` / `docker inspect` report health from the
+    # Dockerfile's own HEALTHCHECK instruction (busybox wget against the
+    # admin server's /health, bundled in the alpine base image) — no
+    # separate healthcheck: block needed here.
