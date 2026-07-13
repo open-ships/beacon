@@ -1,0 +1,30 @@
+{{/* Data: internal/ui/forms.go's connectorStatsData. Rendered at GET
+     /ui/frag/connectors/{id}/stats, hx-swap="innerHTML"'d into
+     connector_detail.html's #connector-stats container (which itself
+     carries the "stats stats-vertical sm:stats-horizontal" daisyUI classes
+     — see its comment) every 2s. This fragment renders only the ".stat"
+     tile children, not the wrapping ".stats" div: that div is the polling
+     container itself, so if this template also rendered it, the tiles
+     would end up double-wrapped after the first swap. */}}
+{{define "connector-stats"}}
+<div class="stat">
+  <div class="stat-title">Total messages</div>
+  <div class="stat-value">{{.Snapshot.TotalMessages}}</div>
+</div>
+<div class="stat">
+  <div class="stat-title">Msg/s</div>
+  <div class="stat-value">{{printf "%.2f" .Snapshot.MsgPerSec}}</div>
+</div>
+<div class="stat">
+  <div class="stat-title">Bytes/s</div>
+  <div class="stat-value">{{.BytesPerSecText}}</div>
+</div>
+<div class="stat">
+  <div class="stat-title">Queue depth</div>
+  <div class="stat-value">{{.Snapshot.QueueDepth}}</div>
+</div>
+<div class="stat">
+  <div class="stat-title">Queue bytes</div>
+  <div class="stat-value">{{.QueueBytesText}}</div>
+</div>
+{{end}}

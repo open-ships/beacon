@@ -1,0 +1,13 @@
+{{define "content"}}
+<div class="flex flex-col gap-4">
+  <div class="flex justify-between items-center">
+    <h1 class="text-2xl font-semibold">Connectors</h1>
+    <button type="button" class="btn btn-primary"
+            hx-get="/ui/frag/connector-form" hx-target="#connector-form-container" hx-swap="innerHTML">
+      Add connector
+    </button>
+  </div>
+  <div id="connector-form-container"></div>
+  {{template "connector-panel" .}}
+</div>
+{{end}}

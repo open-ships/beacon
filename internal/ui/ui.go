@@ -27,11 +27,13 @@ import (
 var assetsFS embed.FS
 
 // Handler returns beacon's web UI. svc, reg, and statuses are threaded
-// through for the pages that use them: the Sources and Sinks pages below
-// read and write through svc and read live component state through
-// statuses; reg and the rest of statuses are for Task 5's live dashboard
-// and Task 4's connectors page, which don't exist yet — the dashboard
-// below is still a shell.
+// through for the pages that use them: the Sources and Sinks pages read and
+// write through svc and read live component state through statuses; the
+// Connectors pages read and write through svc and read live per-connector
+// counters/rates through reg (see forms.go's "--- Connectors ---" section).
+// reg and the rest of statuses beyond what's used above are for Task 5's
+// live dashboard, which doesn't exist yet — the dashboard below is still a
+// shell.
 //
 // version is beacon's own build version (see internal/app.Options.Version).
 // It doubles as every vendored asset URL's "?v=" cache-busting query
@@ -78,6 +80,19 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 	mux.HandleFunc("POST /ui/sinks", handleSinkCreate(svc, log))
 	mux.HandleFunc("POST /ui/sinks/{id}", handleSinkUpdate(svc, log))
 	mux.HandleFunc("POST /ui/sinks/{id}/delete", handleSinkDelete(svc, log))
+
+	// Connectors: the list/add/edit/delete pages parallel sources/sinks
+	// above, plus a per-connector detail page with live stats (reg) and a
+	// CEL validate-on-blur fragment. See forms.go's "--- Connectors ---"
+	// section for the behavior contract.
+	mux.HandleFunc("GET /ui/connectors", handleConnectorsPage(svc, reg, version, log))
+	mux.HandleFunc("GET /ui/connectors/{id}", handleConnectorDetailPage(svc, version, log))
+	mux.HandleFunc("GET /ui/frag/connector-form", handleConnectorFormFrag(svc, log))
+	mux.HandleFunc("POST /ui/frag/validate-filters", handleValidateFiltersFrag(svc, log))
+	mux.HandleFunc("GET /ui/frag/connectors/{id}/stats", handleConnectorStatsFrag(svc, reg, log))
+	mux.HandleFunc("POST /ui/connectors", handleConnectorCreate(svc, reg, log))
+	mux.HandleFunc("POST /ui/connectors/{id}", handleConnectorUpdate(svc, reg, log))
+	mux.HandleFunc("POST /ui/connectors/{id}/delete", handleConnectorDelete(svc, reg, log))
 
 	assets, err := fs.Sub(assetsFS, "assets")
 	if err != nil {

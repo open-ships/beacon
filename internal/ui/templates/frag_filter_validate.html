@@ -1,0 +1,13 @@
+{{/* Data: internal/ui/forms.go's filterValidateData. Rendered at POST
+     /ui/frag/validate-filters, the connector form's filters textarea
+     hx-post="blur changed" target (see frag_connector_form.html). Advisory
+     only — a "filters OK" here does not mean Save will succeed (e.g. an id
+     conflict can still fail it), and an error here does not block typing
+     or Save; svc.PutConnector re-validates authoritatively either way. */}}
+{{define "filter-validate"}}
+{{if .OK}}
+<div class="text-success text-sm">filters OK</div>
+{{else}}
+<div class="alert alert-error" role="alert"><span>{{.Err}}</span></div>
+{{end}}
+{{end}}

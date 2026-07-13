@@ -34,15 +34,21 @@ func mustPage(files ...string) *template.Template {
 }
 
 // pages maps a page's nav key to its pre-parsed, self-contained template.
-// Sources/sinks pages additionally parse in their table fragment template
-// so "content" can render the same "source-panel"/"sink-panel" markup that
-// POST handlers also re-render standalone via fragTemplates below —
-// keeping the initial page load and every htmx-driven update using
-// identical markup.
+// Sources/sinks/connectors pages additionally parse in their table fragment
+// template so "content" can render the same "source-panel"/"sink-panel"/
+// "connector-panel" markup that POST handlers also re-render standalone via
+// fragTemplates below — keeping the initial page load and every htmx-driven
+// update using identical markup. connector-detail needs no such fragment:
+// its live stats block is never part of the initial server render — the
+// page ships an empty container with hx-trigger="load, every 2s" that
+// fetches "connector-stats" (frag_connector_stats.html, part of
+// fragTemplates) client-side immediately after load.
 var pages = map[string]*template.Template{
-	"dashboard": mustPage("dashboard.html"),
-	"sources":   mustPage("sources.html", "frag_source_table.html"),
-	"sinks":     mustPage("sinks.html", "frag_sink_table.html"),
+	"dashboard":        mustPage("dashboard.html"),
+	"sources":          mustPage("sources.html", "frag_source_table.html"),
+	"sinks":            mustPage("sinks.html", "frag_sink_table.html"),
+	"connectors":       mustPage("connectors.html", "frag_connector_table.html"),
+	"connector-detail": mustPage("connector_detail.html"),
 }
 
 // fragTemplates holds every frag_*.html file parsed into ONE shared
@@ -50,10 +56,11 @@ var pages = map[string]*template.Template{
 // baseLayout — a fragment is never wrapped in layout.html). This is safe
 // only because every {{define}} name across every frag_*.html file is
 // unique within the set (source-panel/source-panel-oob/source-form/
-// source-type-fields and their sink-* counterparts) — html/template panics
-// at parse time on a duplicate define name in one set, so a future
-// frag_*.html file must pick names that don't collide with these.
-// renderFragment (render.go) executes a template from this set by name.
+// source-type-fields and their sink-*/connector-* counterparts, plus
+// filter-validate and connector-stats) — html/template panics at parse time
+// on a duplicate define name in one set, so a future frag_*.html file must
+// pick names that don't collide with these. renderFragment (render.go)
+// executes a template from this set by name.
 var fragTemplates = template.Must(template.ParseFS(templatesFS, "templates/frag_*.html"))
 
 // navItem is one entry in the sidebar nav rendered by layout.html.
