@@ -1,0 +1,85 @@
+{{/* Data: internal/ui/forms.go's connectorFormViewData. Rendered at GET
+     /ui/frag/connector-form (blank or ?id=... for edit) and re-rendered by
+     POST /ui/connectors[/{id}] on a validation failure (see
+     writeConnector). Mirrors frag_source_form.html's id-immutable-on-edit
+     and Enabled-checkbox shape; see its comments for rationale not
+     repeated here. Unlike sources/sinks there is no type switch — source_id
+     and sink_id are plain <select>s populated from .Sources/.Sinks, not a
+     type-driven fieldset. */}}
+{{define "connector-form"}}
+<form class="card bg-base-200 border border-base-300"
+      hx-post="{{if .IsEdit}}/ui/connectors/{{.ID}}{{else}}/ui/connectors{{end}}"
+      hx-target="#connector-form-container" hx-swap="innerHTML">
+  <div class="card-body gap-3">
+    <h2 class="card-title">{{if .IsEdit}}Edit connector {{.ID}}{{else}}Add connector{{end}}</h2>
+    {{if .Alert}}
+    <div class="alert alert-error" role="alert"><span>{{.Alert.Message}}</span></div>
+    {{end}}
+    {{if .IsEdit}}
+    <input type="hidden" name="id" value="{{.ID}}">
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">ID</legend>
+      <input type="text" id="conn-id" value="{{.ID}}" class="input w-full" disabled>
+    </fieldset>
+    {{else}}
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">ID</legend>
+      <input type="text" id="conn-id" name="id" value="{{.ID}}" class="input w-full" required>
+    </fieldset>
+    {{end}}
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">Name</legend>
+      <input type="text" id="conn-name" name="name" value="{{.Name}}" class="input w-full" required>
+    </fieldset>
+    <label class="label cursor-pointer justify-start gap-2">
+      <input type="checkbox" name="enabled" value="1" class="checkbox" {{if .Enabled}}checked{{end}}>
+      Enabled
+    </label>
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">Source</legend>
+      <select id="conn-source" name="source_id" class="select w-full" required>
+        <option value="" {{if eq .SourceID ""}}selected{{end}} disabled>Select a source&hellip;</option>
+        {{$sourceID := .SourceID}}
+        {{range .Sources}}
+        <option value="{{.ID}}" {{if eq $sourceID .ID}}selected{{end}}>{{.Name}} ({{.ID}})</option>
+        {{end}}
+      </select>
+    </fieldset>
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">Sink</legend>
+      <select id="conn-sink" name="sink_id" class="select w-full" required>
+        <option value="" {{if eq .SinkID ""}}selected{{end}} disabled>Select a sink&hellip;</option>
+        {{$sinkID := .SinkID}}
+        {{range .Sinks}}
+        <option value="{{.ID}}" {{if eq $sinkID .ID}}selected{{end}}>{{.Name}} ({{.ID}})</option>
+        {{end}}
+      </select>
+    </fieldset>
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">Filters (one CEL expression per line)</legend>
+      <textarea id="conn-filters" name="filters" class="textarea w-full" rows="4"
+                hx-post="/ui/frag/validate-filters" hx-trigger="blur changed"
+                hx-target="#filter-feedback" hx-include="closest form">{{.FiltersText}}</textarea>
+      <div id="filter-feedback"></div>
+    </fieldset>
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">Max messages</legend>
+      <input type="number" id="conn-max-messages" name="max_messages" value="{{.MaxMessages}}" class="input w-full" min="0">
+    </fieldset>
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">Max age</legend>
+      <input type="text" id="conn-max-age" name="max_age" value="{{.MaxAge}}" placeholder="e.g. 24h" class="input w-full">
+    </fieldset>
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">Max bytes</legend>
+      <input type="number" id="conn-max-bytes" name="max_bytes" value="{{.MaxBytes}}" class="input w-full" min="0">
+    </fieldset>
+    <div class="card-actions justify-end">
+      <button type="button" class="btn" onclick="document.getElementById('connector-form-container').innerHTML=''">
+        Cancel
+      </button>
+      <button type="submit" class="btn btn-primary">Save</button>
+    </div>
+  </div>
+</form>
+{{end}}

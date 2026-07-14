@@ -1,0 +1,604 @@
+package ui_test
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/open-ships/beacon/internal/config"
+	"github.com/open-ships/beacon/internal/stats"
+	"github.com/open-ships/beacon/internal/store"
+	"github.com/open-ships/beacon/internal/supervisor"
+	"github.com/open-ships/beacon/internal/ui"
+)
+
+// fakeReconciler is a test double for config.Reconciler; beacon's web UI
+// this task doesn't reconcile through it (the dashboard is a shell), but
+// config.NewService requires one. Mirrors internal/api/entities_test.go's
+// fakeReconciler.
+type fakeReconciler struct{}
+
+func (fakeReconciler) Reconcile(ctx context.Context) error { return nil }
+func (fakeReconciler) Statuses() []supervisor.Status       { return nil }
+
+// newAppMountedServer builds ui.Handler and serves it exactly as
+// internal/app mounts it in the real deployment: mux.Handle("/ui/",
+// handler), mux.Handle("/ui", handler) (see ui.Handler's doc comment for
+// why both are needed), plus the "GET /{$}" -> /ui/dashboard redirect (see
+// app.go's Run). ui.go's routes are registered with full "/ui/..." paths on
+// the assumption they're reached this way, so tests exercise that exact
+// shape rather than serving the handler bare at "/" (same reasoning as
+// internal/api/docsui_test.go's newAppMountedServer).
+func newAppMountedServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := config.NewService(st, fakeReconciler{}, nil)
+	handler := ui.Handler(svc, stats.NewRegistry(), fakeReconciler{}.Statuses, "test", nil)
+
+	mux := http.NewServeMux()
+	mux.Handle("/ui/", handler)
+	mux.Handle("/ui", handler)
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ui/dashboard", http.StatusFound)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func mustStatus(t *testing.T, resp *http.Response, want int) {
+	t.Helper()
+	if resp.StatusCode != want {
+		defer func() { _ = resp.Body.Close() }()
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(resp.Body)
+		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, want, buf.String())
+	}
+}
+
+// externalRefPattern matches src="..." / href="..." attribute values (in
+// either quote style) so a test can assert none of them point off-origin.
+// Mirrors internal/api/docsui_test.go's externalRefPattern.
+var externalRefPattern = regexp.MustCompile(`(?i)(?:src|href)\s*=\s*['"]([^'"]*)['"]`)
+
+var absoluteURLPattern = regexp.MustCompile(`(?i)^https?://`)
+
+// externalURLs returns every src=/href= attribute value in html that looks
+// like an absolute http(s) URL — i.e. every reference that would require
+// network access beyond the server beacon itself is running.
+func externalURLs(html string) []string {
+	var out []string
+	for _, m := range externalRefPattern.FindAllStringSubmatch(html, -1) {
+		if absoluteURLPattern.MatchString(m[1]) {
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
+func TestRootRedirectsToDashboard(t *testing.T) {
+	srv := newAppMountedServer(t)
+
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusFound)
+
+	loc := resp.Header.Get("Location")
+	if loc != "/ui/dashboard" {
+		t.Fatalf("Location = %q, want /ui/dashboard", loc)
+	}
+}
+
+// --- GET /ui and GET /ui/ -> 302 /ui/dashboard ---
+
+func TestUIRootPathsRedirectToDashboard(t *testing.T) {
+	srv := newAppMountedServer(t)
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	for _, path := range []string{"/ui", "/ui/"} {
+		t.Run(path, func(t *testing.T) {
+			resp, err := client.Get(srv.URL + path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			mustStatus(t, resp, http.StatusFound)
+			if loc := resp.Header.Get("Location"); loc != "/ui/dashboard" {
+				t.Fatalf("Location = %q, want /ui/dashboard", loc)
+			}
+		})
+	}
+}
+
+// --- Same-origin guard on POST /ui/* ---
+
+// samePOSTOriginTarget is a POST endpoint that never needs any prior setup
+// and, when the request reaches the handler (i.e. the guard let it
+// through), always answers 200 — deleting an unknown connector id renders a
+// "not found" alert rather than erroring. That makes it a good same-origin
+// guard test target: any status other than 200 or 403 would mean the test
+// itself is broken, not the guard.
+const samePOSTOriginTarget = "/ui/connectors/nope/delete"
+
+func TestSameOriginGuardBlocksCrossOriginPOST(t *testing.T) {
+	srv := newAppMountedServer(t)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+samePOSTOriginTarget, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "http://evil.example")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusForbidden)
+}
+
+func TestSameOriginGuardBlocksCrossSiteSecFetchSite(t *testing.T) {
+	srv := newAppMountedServer(t)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+samePOSTOriginTarget, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No Origin header (some same-origin requests omit it per the Fetch
+	// spec) but a Sec-Fetch-Site that names a cross-site request.
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusForbidden)
+}
+
+func TestSameOriginGuardAllowsSameOriginPOST(t *testing.T) {
+	srv := newAppMountedServer(t)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+samePOSTOriginTarget, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", u.Scheme+"://"+u.Host)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+}
+
+func TestSameOriginGuardAllowsSameOriginSecFetchSite(t *testing.T) {
+	srv := newAppMountedServer(t)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+samePOSTOriginTarget, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+}
+
+func TestSameOriginGuardAllowsHeaderlessPOST(t *testing.T) {
+	srv := newAppMountedServer(t)
+	// A plain http.Post, like curl or any non-browser client, sends neither
+	// Origin nor Sec-Fetch-Site.
+	resp, err := http.Post(srv.URL+samePOSTOriginTarget, "application/x-www-form-urlencoded", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+}
+
+func TestSameOriginGuardDoesNotApplyToGET(t *testing.T) {
+	srv := newAppMountedServer(t)
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/ui/dashboard", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "http://evil.example")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+}
+
+func TestDashboardPageIsSelfContained(t *testing.T) {
+	srv := newAppMountedServer(t)
+
+	resp, err := http.Get(srv.URL + "/ui/dashboard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusOK)
+
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html", ct)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+
+	for _, want := range []string{"<obc-top-bar", "<obc-brilliance-menu", "Dashboard"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard page does not contain %q:\n%s", want, html)
+		}
+	}
+	for _, nav := range []string{"/ui/dashboard", "/ui/sources", "/ui/sinks", "/ui/connectors"} {
+		if !strings.Contains(html, nav) {
+			t.Fatalf("dashboard page nav does not link to %q:\n%s", nav, html)
+		}
+	}
+	if ext := externalURLs(html); len(ext) > 0 {
+		t.Fatalf("dashboard page references external URL(s), violating the offline constraint: %v", ext)
+	}
+}
+
+func TestAssetsServed(t *testing.T) {
+	srv := newAppMountedServer(t)
+
+	cases := []struct {
+		path       string
+		ctContains string
+		minSize    int // 0 means "just check >0 bytes"
+	}{
+		{"htmx.min.js", "javascript", 0},
+		{"openbridge.bundle.js", "javascript", 1024},
+		{"palettes.css", "css", 1024},
+		{"NotoSans.ttf", "font", 1024},
+		{"app.css", "css", 1024},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/ui/assets/" + tc.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			mustStatus(t, resp, http.StatusOK)
+
+			ct := strings.ToLower(resp.Header.Get("Content-Type"))
+			if !strings.Contains(ct, tc.ctContains) {
+				t.Fatalf("Content-Type = %q, want it to contain %q", ct, tc.ctContains)
+			}
+
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(body) == 0 {
+				t.Fatal("asset body is empty")
+			}
+			if tc.minSize > 0 && len(body) < tc.minSize {
+				t.Fatalf("%s is %d bytes, want > %d (looks truncated/fake)", tc.path, len(body), tc.minSize)
+			}
+
+			cc := resp.Header.Get("Cache-Control")
+			if !strings.Contains(cc, "max-age") {
+				t.Fatalf("Cache-Control = %q, want a long max-age directive", cc)
+			}
+		})
+	}
+}
+
+// TestAppCSSFontURLHasCacheBuster guards the one asset URL that can't carry
+// layout.html's runtime "?v=" version: the @font-face src baked into the
+// compiled app.css. Assets are served immutable/max-age=1y, so a bare
+// /ui/assets/NotoSans.ttf reference would pin browsers to a stale font
+// forever across re-vendors; uisrc/input.css hand-pins the vendored
+// OpenBridge package version as the cache-buster instead (see its comment).
+// This test fails if a rebuild of app.css drops that query parameter.
+func TestAppCSSFontURLHasCacheBuster(t *testing.T) {
+	srv := newAppMountedServer(t)
+
+	resp, err := http.Get(srv.URL + "/ui/assets/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusOK)
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(body)
+	if !strings.Contains(css, "NotoSans.ttf") {
+		t.Fatal("app.css has no NotoSans.ttf @font-face reference")
+	}
+	if !strings.Contains(css, "NotoSans.ttf?v=") {
+		t.Fatal("app.css references NotoSans.ttf without a ?v= cache-buster; " +
+			"immutable-cached assets need one (see uisrc/input.css)")
+	}
+}
+
+// TestOpenBridgeBundleIsMinified guards the vendoring pipeline: the upstream
+// @oicl/openbridge-webcomponents bundle ships unminified (~11.9MB) and MUST
+// be minified when vendored (`just vendor-openbridge` does both steps) —
+// beacon serves assets uncompressed, so an unminified bundle quadruples the
+// UI's first-load transfer. The threshold sits far above the minified size
+// (~2.9MB) and far below the unminified one, so it only trips on a re-vendor
+// that skipped the minify step.
+func TestOpenBridgeBundleIsMinified(t *testing.T) {
+	const maxBundleBytes = 6 << 20 // 6MB
+
+	srv := newAppMountedServer(t)
+	resp, err := http.Get(srv.URL + "/ui/assets/openbridge.bundle.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusOK)
+
+	n, err := io.Copy(io.Discard, resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n > maxBundleBytes {
+		t.Fatalf("openbridge.bundle.js is %dMB (> %dMB): it looks unminified — "+
+			"re-vendor with `just vendor-openbridge`, which minifies via esbuild",
+			n>>20, maxBundleBytes>>20)
+	}
+}
+
+// TestNoInlineStylingInTemplates enforces beacon UI's no-inline-CSS rule:
+// templates must contain no style= attributes and no <style> blocks (every
+// visual rule lives in the compiled Tailwind/daisyUI stylesheet or
+// OpenBridge's own component CSS, not scattered across templates). A small
+// inline <script> for brilliance persistence is fine — this only checks for
+// CSS.
+func TestNoInlineStylingInTemplates(t *testing.T) {
+	entries, err := os.ReadDir("templates")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("templates directory is empty")
+	}
+
+	styleAttr := regexp.MustCompile(`(?i)\sstyle\s*=`)
+	styleTag := regexp.MustCompile(`(?i)<style[\s>]`)
+
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".html") {
+			continue
+		}
+		path := filepath.Join("templates", e.Name())
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if styleAttr.Match(body) {
+			t.Errorf("%s contains a style= attribute; the no-inline-CSS rule forbids it", path)
+		}
+		if styleTag.Match(body) {
+			t.Errorf("%s contains a <style> block; the no-inline-CSS rule forbids it", path)
+		}
+	}
+}
+
+// --- Docs manual (internal/ui/docspages.go) ---
+
+// wantDocPages is every page internal/ui/docs/*.md ships — slug plus title
+// (the file's first "# " heading) — in sidebar order. Hand-maintained
+// rather than derived from the filesystem so a content-file typo and a
+// test typo can't quietly agree with each other;
+// TestDocsSidebarListsAllPages fails loud on drift in either direction.
+var wantDocPages = []struct{ slug, title string }{
+	{"getting-started", "Getting started"},
+	{"can-setup", "CAN setup"},
+	{"concepts", "Concepts"},
+	{"filters", "Filters"},
+	{"api", "API (for agents and scripts)"},
+	{"troubleshooting", "Troubleshooting"},
+}
+
+func TestDocsIndexRedirectsToFirstPage(t *testing.T) {
+	srv := newAppMountedServer(t)
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Get(srv.URL + "/ui/docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusFound)
+	want := "/ui/docs/" + wantDocPages[0].slug
+	if loc := resp.Header.Get("Location"); loc != want {
+		t.Fatalf("Location = %q, want %q", loc, want)
+	}
+}
+
+func TestDocPageServesKnownSlug(t *testing.T) {
+	srv := newAppMountedServer(t)
+	resp, err := http.Get(srv.URL + "/ui/docs/getting-started")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusOK)
+
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html", ct)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	if !strings.Contains(html, "Getting started") {
+		t.Fatalf("getting-started page does not contain its own heading:\n%s", html)
+	}
+	// The rendered <article> body, not just the sidebar link text.
+	if !strings.Contains(html, "<article") {
+		t.Fatalf("docs page has no <article> body:\n%s", html)
+	}
+}
+
+func TestDocPageUnknownSlugIs404(t *testing.T) {
+	srv := newAppMountedServer(t)
+	resp, err := http.Get(srv.URL + "/ui/docs/does-not-exist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusNotFound)
+}
+
+// TestDocsSidebarListsAllPages checks every shipped page's sidebar entry —
+// href AND title, as one `<a href="/ui/docs/{slug}"...>{title}</a>` anchor,
+// so a page whose title went blank or got swapped fails here even though
+// its slug link would still be present — appears on a single rendered docs
+// page (the sidebar is identical across every page; see docs.html), and
+// that wantDocPages above names exactly the six pages actually shipped
+// (neither list a stray extra nor missing one).
+func TestDocsSidebarListsAllPages(t *testing.T) {
+	srv := newAppMountedServer(t)
+	resp, err := http.Get(srv.URL + "/ui/docs/getting-started")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusOK)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+
+	if got := strings.Count(html, `href="/ui/docs/`); got != len(wantDocPages) {
+		t.Fatalf("sidebar has %d /ui/docs/ links, want %d (%v)", got, len(wantDocPages), wantDocPages)
+	}
+	// One regexp per page: its anchor must carry the right href AND close
+	// with the right link text (docs.html renders the active page's anchor
+	// with an extra class attribute between href and >, hence the [^>]*).
+	for _, p := range wantDocPages {
+		anchor := regexp.MustCompile(`<a href="/ui/docs/` + regexp.QuoteMeta(p.slug) + `"[^>]*>` + regexp.QuoteMeta(p.title) + `</a>`)
+		if !anchor.MatchString(html) {
+			t.Fatalf("sidebar missing anchor for slug %q with title %q:\n%s", p.slug, p.title, html)
+		}
+	}
+}
+
+// TestDocsPagesAreSelfContained extends TestDashboardPageIsSelfContained's
+// offline check to every manual page: none may reference an absolute
+// http(s) URL via src=/href=, since that would require network access
+// beyond beacon itself to render (see docsMarkdown's doc comment — content
+// cites URLs as inline code, never as markdown/HTML links, specifically to
+// keep this passing).
+func TestDocsPagesAreSelfContained(t *testing.T) {
+	srv := newAppMountedServer(t)
+	for _, p := range wantDocPages {
+		t.Run(p.slug, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/ui/docs/" + p.slug)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			mustStatus(t, resp, http.StatusOK)
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			html := string(body)
+			if ext := externalURLs(html); len(ext) > 0 {
+				t.Fatalf("docs page %q references external URL(s), violating the offline constraint: %v", p.slug, ext)
+			}
+		})
+	}
+}
+
+// TestDocsPagesContainNoInlineStyling extends TestNoInlineStylingInTemplates
+// (which only scans the static templates/*.html files on disk, so it
+// trivially passes for docs.html's own markup) to each manual page's actual
+// rendered HTTP response: goldmark's raw-HTML-off configuration (see
+// docsMarkdown's doc comment) should make it impossible for markdown
+// content to ever inject a style= attribute or <style> block, but this
+// exercises that guarantee against the real rendered output rather than
+// just trusting the configuration.
+func TestDocsPagesContainNoInlineStyling(t *testing.T) {
+	srv := newAppMountedServer(t)
+	styleAttr := regexp.MustCompile(`(?i)\sstyle\s*=`)
+	styleTag := regexp.MustCompile(`(?i)<style[\s>]`)
+	for _, p := range wantDocPages {
+		t.Run(p.slug, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/ui/docs/" + p.slug)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			html := string(body)
+			if styleAttr.MatchString(html) {
+				t.Errorf("docs page %q contains a style= attribute; the no-inline-CSS rule forbids it", p.slug)
+			}
+			if styleTag.MatchString(html) {
+				t.Errorf("docs page %q contains a <style> block; the no-inline-CSS rule forbids it", p.slug)
+			}
+		})
+	}
+}
+
+// TestDocsNavItemPresent checks layout.html's main sidebar nav (shared by
+// every full page, not just docs) gained the "Docs" entry pointing at
+// /ui/docs, alongside the pre-existing Dashboard/Sources/Sinks/Connectors
+// items TestDashboardPageIsSelfContained already checks for on the
+// dashboard page.
+func TestDocsNavItemPresent(t *testing.T) {
+	srv := newAppMountedServer(t)
+	resp, err := http.Get(srv.URL + "/ui/dashboard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	if !strings.Contains(html, `href="/ui/docs"`) {
+		t.Fatalf("main nav does not link to /ui/docs:\n%s", html)
+	}
+	if !strings.Contains(html, ">Docs<") {
+		t.Fatalf("main nav does not label the docs link \"Docs\":\n%s", html)
+	}
+}

@@ -1,0 +1,68 @@
+{{/* connector-panel-inner is the alert + table markup shared by the plain
+     ("connector-panel", initial page load + delete responses) and
+     out-of-band ("connector-panel-oob", create/update success responses)
+     wrapper templates below. Mirrors frag_source_table.html; see its
+     comments for the auto-dismiss/hx-swap-oob rationale not repeated here.
+     Data: internal/ui/forms.go's connectorTableData. */}}
+{{define "connector-panel-inner"}}
+{{if .Alert}}
+{{if eq .Alert.Kind "success"}}
+<div class="alert alert-success" role="alert" data-autodismiss>
+  <span>{{.Alert.Message}}</span>
+  <button type="button" class="btn btn-sm btn-ghost" onclick="this.closest('.alert').remove()">Dismiss</button>
+</div>
+{{else}}
+<div class="alert alert-error" role="alert">
+  <span>{{.Alert.Message}}</span>
+  <button type="button" class="btn btn-sm btn-ghost" onclick="this.closest('.alert').remove()">Dismiss</button>
+</div>
+{{end}}
+{{end}}
+<div class="overflow-x-auto">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Route</th>
+        <th>Filters</th>
+        <th>Enabled</th>
+        <th>Queue depth</th>
+        <th>Msg/s</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Connectors}}
+      <tr>
+        <td><a class="link" href="/ui/connectors/{{.ID}}">{{.Name}}</a></td>
+        <td>{{.SourceName}} &rarr; {{.SinkName}}</td>
+        <td>{{len .Filters}}</td>
+        <td>
+          {{if .Enabled}}<span class="badge badge-success">enabled</span>
+          {{else}}<span class="badge badge-ghost">disabled</span>{{end}}
+        </td>
+        <td>{{.Snapshot.QueueDepth}}</td>
+        <td>{{printf "%.2f" .Snapshot.MsgPerSec}}</td>
+        <td class="flex gap-2 justify-end">
+          <button type="button" class="btn btn-sm"
+                  hx-get="/ui/frag/connector-form?id={{.ID}}" hx-target="#connector-form-container" hx-swap="innerHTML">
+            Edit
+          </button>
+          <button type="button" class="btn btn-sm btn-error"
+                  hx-post="/ui/connectors/{{.ID}}/delete" hx-target="#connector-panel" hx-swap="outerHTML"
+                  hx-confirm="Delete connector &quot;{{.ID}}&quot;?">
+            Delete
+          </button>
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="7" class="text-center opacity-70">No connectors configured.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{define "connector-panel"}}<div id="connector-panel" class="flex flex-col gap-4" hx-on::load="var a=this.querySelector('[data-autodismiss]');if(a)setTimeout(function(){a.remove()},4000)">{{template "connector-panel-inner" .}}</div>{{end}}
+
+{{define "connector-panel-oob"}}<div id="connector-panel" hx-swap-oob="true" class="flex flex-col gap-4" hx-on::load="var a=this.querySelector('[data-autodismiss]');if(a)setTimeout(function(){a.remove()},4000)">{{template "connector-panel-inner" .}}</div>{{end}}

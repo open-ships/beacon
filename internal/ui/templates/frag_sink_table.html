@@ -1,0 +1,67 @@
+{{/* Mirrors frag_source_table.html; see its comments for rationale. Data:
+     internal/ui/forms.go's sinkTableData. */}}
+{{define "sink-panel-inner"}}
+{{if .Alert}}
+{{if eq .Alert.Kind "success"}}
+<div class="alert alert-success" role="alert" data-autodismiss>
+  <span>{{.Alert.Message}}</span>
+  <button type="button" class="btn btn-sm btn-ghost" onclick="this.closest('.alert').remove()">Dismiss</button>
+</div>
+{{else}}
+<div class="alert alert-error" role="alert">
+  <span>{{.Alert.Message}}</span>
+  <button type="button" class="btn btn-sm btn-ghost" onclick="this.closest('.alert').remove()">Dismiss</button>
+</div>
+{{end}}
+{{end}}
+<div class="overflow-x-auto">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>ID</th>
+        <th>Type</th>
+        <th>Enabled</th>
+        <th>State</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Sinks}}
+      <tr>
+        <td>{{.Name}}</td>
+        <td><code>{{.ID}}</code></td>
+        <td>{{.Type}}</td>
+        <td>
+          {{if .Enabled}}<span class="badge badge-success">enabled</span>
+          {{else}}<span class="badge badge-ghost">disabled</span>{{end}}
+        </td>
+        <td>
+          {{if eq .State "up"}}<span class="badge badge-success">up</span>
+          {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
+          {{else if eq .State "error"}}<span class="badge badge-error">error</span>
+          {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
+        </td>
+        <td class="flex gap-2 justify-end">
+          <button type="button" class="btn btn-sm"
+                  hx-get="/ui/frag/sink-form?id={{.ID}}" hx-target="#sink-form-container" hx-swap="innerHTML">
+            Edit
+          </button>
+          <button type="button" class="btn btn-sm btn-error"
+                  hx-post="/ui/sinks/{{.ID}}/delete" hx-target="#sink-panel" hx-swap="outerHTML"
+                  hx-confirm="Delete sink &quot;{{.ID}}&quot;? Connectors using it must be removed or repointed first.">
+            Delete
+          </button>
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="6" class="text-center opacity-70">No sinks configured.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{define "sink-panel"}}<div id="sink-panel" class="flex flex-col gap-4" hx-on::load="var a=this.querySelector('[data-autodismiss]');if(a)setTimeout(function(){a.remove()},4000)">{{template "sink-panel-inner" .}}</div>{{end}}
+
+{{define "sink-panel-oob"}}<div id="sink-panel" hx-swap-oob="true" class="flex flex-col gap-4" hx-on::load="var a=this.querySelector('[data-autodismiss]');if(a)setTimeout(function(){a.remove()},4000)">{{template "sink-panel-inner" .}}</div>{{end}}

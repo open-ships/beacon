@@ -15,7 +15,7 @@ COPY . .
 ARG VERSION=dev
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
-RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags "-X main.version=${VERSION}" \
     -o beacon ./cmd/beacon
 
@@ -28,16 +28,15 @@ RUN apk add --no-cache ca-certificates
 WORKDIR /app
 
 COPY --from=builder /build/beacon .
-COPY config.example.toml ./config.toml
 
-# Persistent SQLite database
+# Persistent SQLite database (config + connector buffers)
 VOLUME ["/data"]
 
-# SSE sink | TCP sink | Admin (health + metrics)
-EXPOSE 8080 9090 2112
+# Data server (sink endpoints) | Admin (health + metrics)
+EXPOSE 8080 2112
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget -qO- http://localhost:2112/health || exit 1
 
 ENTRYPOINT ["/app/beacon"]
-CMD ["--config", "/app/config.toml"]
+CMD ["--db", "/data/beacon.db"]

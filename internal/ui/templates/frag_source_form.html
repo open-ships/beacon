@@ -1,0 +1,59 @@
+{{/* Data: internal/ui/forms.go's sourceFormViewData. Rendered at GET
+     /ui/frag/source-form (blank or ?id=... for edit) and re-rendered by
+     POST /ui/sources[/{id}] on a validation failure (see writeSource).
+     Field wrappers use daisyUI v5's fieldset/fieldset-legend (v5 dropped
+     the old form-control/label-text pattern); see
+     internal/ui/uisrc/build/daisyui.js for the class list this was
+     confirmed against. */}}
+{{define "source-form"}}
+<form class="card bg-base-200 border border-base-300"
+      hx-post="{{if .IsEdit}}/ui/sources/{{.ID}}{{else}}/ui/sources{{end}}"
+      hx-target="#source-form-container" hx-swap="innerHTML">
+  <div class="card-body gap-3">
+    <h2 class="card-title">{{if .IsEdit}}Edit source {{.ID}}{{else}}Add source{{end}}</h2>
+    {{if .Alert}}
+    <div class="alert alert-error" role="alert"><span>{{.Alert.Message}}</span></div>
+    {{end}}
+    {{if .IsEdit}}
+    <input type="hidden" name="id" value="{{.ID}}">
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">ID</legend>
+      <input type="text" id="src-id" value="{{.ID}}" class="input w-full" disabled>
+    </fieldset>
+    {{else}}
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">ID</legend>
+      <input type="text" id="src-id" name="id" value="{{.ID}}" class="input w-full" required>
+    </fieldset>
+    {{end}}
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">Name</legend>
+      <input type="text" id="src-name" name="name" value="{{.Name}}" class="input w-full" required>
+    </fieldset>
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">Type</legend>
+      <select id="src-type" name="type" class="select w-full"
+              hx-get="/ui/frag/source-type-fields" hx-include="closest form"
+              hx-target="#source-type-fields" hx-swap="innerHTML">
+        <option value="socketcan" {{if eq .TypeFields.Type "socketcan"}}selected{{end}}>socketcan</option>
+        <option value="usbcan" {{if eq .TypeFields.Type "usbcan"}}selected{{end}}>usbcan</option>
+        <option value="http_sse" {{if eq .TypeFields.Type "http_sse"}}selected{{end}}>http_sse</option>
+        <option value="http_ws" {{if eq .TypeFields.Type "http_ws"}}selected{{end}}>http_ws</option>
+      </select>
+    </fieldset>
+    <label class="label cursor-pointer justify-start gap-2">
+      <input type="checkbox" name="enabled" value="1" class="checkbox" {{if .Enabled}}checked{{end}}>
+      Enabled
+    </label>
+    <div id="source-type-fields" class="flex flex-col gap-3">
+      {{template "source-type-fields" .TypeFields}}
+    </div>
+    <div class="card-actions justify-end">
+      <button type="button" class="btn" onclick="document.getElementById('source-form-container').innerHTML=''">
+        Cancel
+      </button>
+      <button type="submit" class="btn btn-primary">Save</button>
+    </div>
+  </div>
+</form>
+{{end}}

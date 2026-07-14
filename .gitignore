@@ -39,6 +39,13 @@ beacon.db
 # Artifacts
 /beacon
 
+# Tailwind/daisyUI standalone CLI + plugin bundles (dev-time download, not
+# source); see internal/ui/uisrc/README.md to re-fetch.
+/internal/ui/uisrc/build/
+
 # Editor/IDE
 # .idea/
 # .vscode/
+*.db-wal
+*.db-shm
+.claude/

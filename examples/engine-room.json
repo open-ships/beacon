@@ -1,0 +1,55 @@
+{
+  "sources": [
+    {
+      "id": "can0",
+      "name": "CAN bus",
+      "type": "socketcan",
+      "enabled": true,
+      "interface": "can0"
+    }
+  ],
+  "sinks": [
+    {
+      "id": "engine-sse",
+      "name": "Engine feed (browser)",
+      "type": "http_sse",
+      "enabled": true,
+      "path": "/engine"
+    },
+    {
+      "id": "engine-tcp",
+      "name": "Engine feed (NDJSON)",
+      "type": "tcp",
+      "enabled": true,
+      "address": "0.0.0.0:9090"
+    }
+  ],
+  "connectors": [
+    {
+      "id": "engine-browser",
+      "name": "Engine PGNs to browser",
+      "source_id": "can0",
+      "sink_id": "engine-sse",
+      "enabled": true,
+      "filters": [
+        "msg.pgn in [127488, 127489, 127493]"
+      ],
+      "buffer": {
+        "max_messages": 20000
+      }
+    },
+    {
+      "id": "engine-ndjson",
+      "name": "Engine PGNs to NDJSON",
+      "source_id": "can0",
+      "sink_id": "engine-tcp",
+      "enabled": true,
+      "filters": [
+        "msg.pgn in [127488, 127489, 127493]"
+      ],
+      "buffer": {
+        "max_messages": 20000
+      }
+    }
+  ]
+}

@@ -1,0 +1,76 @@
+{{/* Data: internal/ui/dashboard.go's dashboardData. Rendered at GET
+     /ui/frag/dashboard, hx-swap="innerHTML"'d into dashboard.html's
+     #dashboard-panel container on load and every 2s
+     (hx-trigger="load, every 2s") — see dashboard.html and pages.go's
+     "dashboard" pages map entry doc comment for why the initial page ships
+     this fragment empty rather than server-rendering it inline. This
+     fragment renders only #dashboard-panel's children, not the polling
+     container itself — same reason frag_connector_stats.html's
+     "connector-stats" template stops at the ".stat" tiles (see its
+     comment): the polling container already exists in dashboard.html, so
+     re-rendering it here would double-wrap it after the first swap. */}}
+{{define "dashboard-content"}}
+<div class="flex flex-col gap-6">
+  <div>
+    <h2 class="text-lg font-semibold mb-2">Components</h2>
+    <div class="flex flex-wrap gap-2">
+      {{range .Health}}
+      <div class="flex items-center gap-2 bg-base-200 border border-base-300 rounded-box px-3 py-1">
+        <span class="font-semibold">{{.Name}}</span>
+        {{if eq .State "up"}}<span class="badge badge-success">up</span>
+        {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
+        {{else if eq .State "error"}}<span class="badge badge-error">error</span>
+        {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
+      </div>
+      {{else}}
+      <p class="opacity-70">No sources or sinks configured yet.</p>
+      {{end}}
+    </div>
+  </div>
+
+  {{if .Connectors}}
+  <div>
+    <h2 class="text-lg font-semibold mb-2">Connectors</h2>
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      {{range .Connectors}}
+      <div class="card bg-base-200 border border-base-300">
+        <div class="card-body gap-2">
+          <div class="flex justify-between items-start gap-2">
+            <h3 class="card-title"><a class="link" href="/ui/connectors/{{.ID}}">{{.Name}}</a></h3>
+            <div class="flex gap-1 flex-wrap justify-end">
+              {{if .Enabled}}<span class="badge badge-success">enabled</span>
+              {{else}}<span class="badge badge-ghost">disabled</span>{{end}}
+              {{if eq .State "error"}}<span class="badge badge-error">error</span>{{end}}
+            </div>
+          </div>
+          <div class="text-sm opacity-70">{{.SourceName}} &rarr; {{.SinkName}}</div>
+          <div class="stats stats-vertical sm:stats-horizontal bg-base-100 shadow">
+            <div class="stat p-3">
+              <div class="stat-title text-xs">Msg/s</div>
+              <div class="stat-value text-lg">{{printf "%.2f" .Snapshot.MsgPerSec}}</div>
+            </div>
+            <div class="stat p-3">
+              <div class="stat-title text-xs">Bytes/s</div>
+              <div class="stat-value text-lg">{{.BytesPerSecText}}</div>
+            </div>
+            <div class="stat p-3">
+              <div class="stat-title text-xs">Queue depth</div>
+              <div class="stat-value text-lg">{{.Snapshot.QueueDepth}}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      {{end}}
+    </div>
+  </div>
+  {{else}}
+  <div class="card bg-base-200 border border-base-300">
+    <div class="card-body items-center text-center gap-3">
+      <h2 class="card-title">{{.EmptyTitle}}</h2>
+      <p>{{.EmptyMessage}}</p>
+      <a class="btn btn-primary" href="{{.EmptyHref}}">{{.EmptyCTA}}</a>
+    </div>
+  </div>
+  {{end}}
+</div>
+{{end}}

@@ -1,0 +1,31 @@
+{
+  "sources": [
+    {
+      "id": "vcan0",
+      "name": "Virtual CAN bus",
+      "type": "socketcan",
+      "enabled": true,
+      "interface": "vcan0"
+    }
+  ],
+  "sinks": [
+    {
+      "id": "sse",
+      "name": "Browser feed",
+      "type": "http_sse",
+      "enabled": true,
+      "path": "/events"
+    }
+  ],
+  "connectors": [
+    {
+      "id": "all",
+      "name": "Everything",
+      "source_id": "vcan0",
+      "sink_id": "sse",
+      "enabled": true,
+      "filters": [],
+      "buffer": {}
+    }
+  ]
+}

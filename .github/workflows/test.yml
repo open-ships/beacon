@@ -17,5 +17,50 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: gofmt
+        run: |
+          fmt="$(gofmt -l .)"
+          if [ -n "$fmt" ]; then
+            echo "gofmt needs to be run on:"
+            echo "$fmt"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: CGO_ENABLED=0 go build ./...
+
       - name: Test
-        run: go test ./...
+        run: go test ./... -timeout 300s
+
+  # race is a separate job (rather than another step in `test`, above)
+  # restricted to the packages that don't transitively import n2k/pgn: that
+  # package ICEs the Go compiler under -race (an upstream bug — see
+  # internal/msg for the import boundary that contains it). Confirmed via
+  # `go list -deps -test <pkg>` for every package in `go list ./...`: this is
+  # the exact set with zero transitive dependency on n2k/pgn (including test
+  # files) — re-verify it whenever a package's imports change. Everything
+  # else is still covered without -race by the `test` job above.
+  race:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test (race)
+        run: |
+          go test -race \
+            ./internal/bus/busfake \
+            ./internal/metrics \
+            ./internal/model \
+            ./internal/stats \
+            ./internal/store \
+            ./internal/sysinfo

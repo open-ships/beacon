@@ -1,0 +1,55 @@
+{{/* Data: internal/ui/forms.go's sinkFormViewData. Mirrors
+     frag_source_form.html; see its comments for rationale. */}}
+{{define "sink-form"}}
+<form class="card bg-base-200 border border-base-300"
+      hx-post="{{if .IsEdit}}/ui/sinks/{{.ID}}{{else}}/ui/sinks{{end}}"
+      hx-target="#sink-form-container" hx-swap="innerHTML">
+  <div class="card-body gap-3">
+    <h2 class="card-title">{{if .IsEdit}}Edit sink {{.ID}}{{else}}Add sink{{end}}</h2>
+    {{if .Alert}}
+    <div class="alert alert-error" role="alert"><span>{{.Alert.Message}}</span></div>
+    {{end}}
+    {{if .IsEdit}}
+    <input type="hidden" name="id" value="{{.ID}}">
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">ID</legend>
+      <input type="text" id="sink-id" value="{{.ID}}" class="input w-full" disabled>
+    </fieldset>
+    {{else}}
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">ID</legend>
+      <input type="text" id="sink-id" name="id" value="{{.ID}}" class="input w-full" required>
+    </fieldset>
+    {{end}}
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">Name</legend>
+      <input type="text" id="sink-name" name="name" value="{{.Name}}" class="input w-full" required>
+    </fieldset>
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">Type</legend>
+      <select id="sink-type" name="type" class="select w-full"
+              hx-get="/ui/frag/sink-type-fields" hx-include="closest form"
+              hx-target="#sink-type-fields" hx-swap="innerHTML">
+        <option value="socketcan" {{if eq .TypeFields.Type "socketcan"}}selected{{end}}>socketcan</option>
+        <option value="usbcan" {{if eq .TypeFields.Type "usbcan"}}selected{{end}}>usbcan</option>
+        <option value="http_sse" {{if eq .TypeFields.Type "http_sse"}}selected{{end}}>http_sse</option>
+        <option value="http_ws" {{if eq .TypeFields.Type "http_ws"}}selected{{end}}>http_ws</option>
+        <option value="tcp" {{if eq .TypeFields.Type "tcp"}}selected{{end}}>tcp</option>
+      </select>
+    </fieldset>
+    <label class="label cursor-pointer justify-start gap-2">
+      <input type="checkbox" name="enabled" value="1" class="checkbox" {{if .Enabled}}checked{{end}}>
+      Enabled
+    </label>
+    <div id="sink-type-fields" class="flex flex-col gap-3">
+      {{template "sink-type-fields" .TypeFields}}
+    </div>
+    <div class="card-actions justify-end">
+      <button type="button" class="btn" onclick="document.getElementById('sink-form-container').innerHTML=''">
+        Cancel
+      </button>
+      <button type="submit" class="btn btn-primary">Save</button>
+    </div>
+  </div>
+</form>
+{{end}}

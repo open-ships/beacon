@@ -1,0 +1,13 @@
+{{define "content"}}
+<div class="flex flex-col gap-4">
+  <div class="flex justify-between items-center">
+    <h1 class="text-2xl font-semibold">Sources</h1>
+    <button type="button" class="btn btn-primary"
+            hx-get="/ui/frag/source-form" hx-target="#source-form-container" hx-swap="innerHTML">
+      Add source
+    </button>
+  </div>
+  <div id="source-form-container"></div>
+  {{template "source-panel" .}}
+</div>
+{{end}}

@@ -1,157 +1,82 @@
-package filter_test
+package filter
 
 import (
 	"encoding/json"
-	"log/slog"
 	"testing"
 	"time"
 
-	"github.com/open-ships/beacon/internal/filter"
-	"github.com/open-ships/beacon/internal/n2k"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/open-ships/beacon/internal/msg"
 )
 
-func makeMsg(pgn uint32, source, dest, priority uint8, payload map[string]any) *n2k.ParsedMessage {
-	p, _ := json.Marshal(payload)
-	return &n2k.ParsedMessage{
-		PGN:       pgn,
-		Source:    source,
-		Dest:      dest,
-		Priority:  priority,
-		Timestamp: time.Now(),
-		Payload:   json.RawMessage(p),
+func env(pgnNum uint32, source uint8, payload string) *msg.Envelope {
+	return &msg.Envelope{PGN: pgnNum, Source: source, Dest: 255, Priority: 2,
+		Timestamp: time.Now(), Payload: json.RawMessage(payload)}
+}
+
+func TestPlainIntLiterals(t *testing.T) {
+	c, err := Compile([]string{"msg.pgn == 127250"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, err := c.Match(env(127250, 1, `{}`))
+	if err != nil || !ok {
+		t.Fatalf("match = %v, %v; want true", ok, err)
+	}
+	ok, _ = c.Match(env(127251, 1, `{}`))
+	if ok {
+		t.Fatal("wrong PGN matched")
 	}
 }
 
-var testLog = slog.Default()
-
-func TestCELFilter(t *testing.T) {
-	tests := []struct {
-		name    string
-		expr    string
-		msg     *n2k.ParsedMessage
-		want    bool
-		wantErr bool
-	}{
-		{
-			name: "PGN equality match",
-			expr: "msg.pgn == 127250",
-			msg:  makeMsg(127250, 1, 255, 2, nil),
-			want: true,
-		},
-		{
-			name: "PGN equality no match",
-			expr: "msg.pgn == 127250",
-			msg:  makeMsg(128259, 1, 255, 2, nil),
-			want: false,
-		},
-		{
-			name: "PGN in list match",
-			expr: "msg.pgn in [127250, 128259, 129026]",
-			msg:  makeMsg(128259, 1, 255, 2, nil),
-			want: true,
-		},
-		{
-			name: "PGN in list no match",
-			expr: "msg.pgn in [127250, 128259, 129026]",
-			msg:  makeMsg(129029, 1, 255, 2, nil),
-			want: false,
-		},
-		{
-			name: "payload field threshold above",
-			expr: `double(msg.payload.speed) > 2.0`,
-			msg:  makeMsg(128259, 1, 255, 2, map[string]any{"speed": 3.5}),
-			want: true,
-		},
-		{
-			name: "payload field threshold below",
-			expr: `double(msg.payload.speed) > 2.0`,
-			msg:  makeMsg(128259, 1, 255, 2, map[string]any{"speed": 1.0}),
-			want: false,
-		},
-		{
-			name: "boolean AND match",
-			expr: "msg.pgn == 127250 && msg.source == 1",
-			msg:  makeMsg(127250, 1, 255, 2, nil),
-			want: true,
-		},
-		{
-			name: "boolean AND no match",
-			expr: "msg.pgn == 127250 && msg.source == 2",
-			msg:  makeMsg(127250, 1, 255, 2, nil),
-			want: false,
-		},
-		{
-			name: "boolean OR",
-			expr: "msg.pgn == 127250 || msg.pgn == 128259",
-			msg:  makeMsg(128259, 1, 255, 2, nil),
-			want: true,
-		},
-		{
-			name: "priority filter",
-			expr: "msg.priority < 3",
-			msg:  makeMsg(127250, 1, 255, 2, nil),
-			want: true,
-		},
-		{
-			name: "source exclusion",
-			expr: "msg.source != 3",
-			msg:  makeMsg(127250, 1, 255, 2, nil),
-			want: true,
-		},
-		{
-			name: "unknown payload field",
-			expr: `has(msg.payload.nonexistent)`,
-			msg:  makeMsg(127250, 1, 255, 2, nil),
-			want: false,
-		},
-		{
-			name:    "invalid expression",
-			expr:    "msg.pgn === 127250",
-			wantErr: true,
-		},
+func TestAndSemanticsAcrossExprs(t *testing.T) {
+	c, err := Compile([]string{"msg.pgn in [127250, 128259]", "msg.source != 42"})
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f, err := filter.NewCELFilter(tt.expr, testLog)
-			if tt.wantErr {
-				assert.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, f.Match(tt.msg))
-		})
+	if ok, _ := c.Match(env(127250, 42, `{}`)); ok {
+		t.Fatal("second expr should have rejected")
+	}
+	if ok, _ := c.Match(env(128259, 7, `{}`)); !ok {
+		t.Fatal("both exprs should pass")
 	}
 }
 
-func TestChainAND(t *testing.T) {
-	chain, err := filter.Parse([]string{
-		"msg.pgn == 127250",
-		"msg.source == 1",
-	}, testLog, nil, "")
-	require.NoError(t, err)
+func TestPayloadField(t *testing.T) {
+	c, err := Compile([]string{"double(msg.payload.speed) > 2.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := c.Match(env(128259, 1, `{"speed": 3.5}`)); !ok {
+		t.Fatal("payload threshold should pass")
+	}
+	if ok, _ := c.Match(env(128259, 1, `{"speed": 1.0}`)); ok {
+		t.Fatal("payload threshold should reject")
+	}
+}
 
-	assert.True(t, chain.Match(makeMsg(127250, 1, 255, 2, nil)), "both filters should match")
-	assert.False(t, chain.Match(makeMsg(127250, 2, 255, 2, nil)), "chain should fail when one filter fails")
+func TestEvalErrorReturnsError(t *testing.T) {
+	c, err := Compile([]string{"double(msg.payload.missing) > 1.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, err := c.Match(env(128259, 1, `{}`))
+	if ok || err == nil {
+		t.Fatalf("missing field: match=%v err=%v; want false + error", ok, err)
+	}
+}
+
+func TestCompileErrorRejected(t *testing.T) {
+	if _, err := Compile([]string{"msg.pgn =="}); err == nil {
+		t.Fatal("invalid CEL accepted")
+	}
 }
 
 func TestEmptyChainMatchesAll(t *testing.T) {
-	chain, err := filter.Parse([]string{}, testLog, nil, "")
-	require.NoError(t, err)
-	assert.True(t, chain.Match(makeMsg(127250, 1, 255, 2, nil)))
-}
-
-func TestChainInvalidExpr(t *testing.T) {
-	_, err := filter.Parse([]string{"msg.pgn === 127250"}, testLog, nil, "")
-	assert.Error(t, err)
-}
-
-func TestCELFilter_NilPayload(t *testing.T) {
-	f, err := filter.NewCELFilter("msg.pgn == 127250", testLog)
-	require.NoError(t, err)
-
-	msg := &n2k.ParsedMessage{PGN: 127250, Payload: nil}
-	assert.True(t, f.Match(msg))
+	c, err := Compile(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := c.Match(env(1, 1, `{}`)); !ok {
+		t.Fatal("empty chain must pass everything")
+	}
 }

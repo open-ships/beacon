@@ -1,108 +1,99 @@
-// Package sink defines the Sink interface and dispatcher loop.
+// Package sink runs configured sinks. CAN sinks push-confirm each message
+// onto the bus; HTTP/TCP sinks broadcast to connected clients, with
+// replay served straight from connector queues (SSE/WS only).
 package sink
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
-	"time"
 
-	"github.com/open-ships/beacon/internal/admin"
-	"github.com/open-ships/beacon/internal/buffer"
-	"github.com/open-ships/beacon/internal/filter"
-	"github.com/open-ships/beacon/internal/n2k"
+	"github.com/open-ships/beacon/internal/bus"
+	"github.com/open-ships/beacon/internal/metrics"
+	"github.com/open-ships/beacon/internal/model"
+	"github.com/open-ships/beacon/internal/msg"
+	"github.com/open-ships/beacon/internal/queue"
 )
 
-// Sink receives decoded, filtered N2K messages and delivers them to consumers.
-type Sink interface {
-	// Name returns a stable identifier used for checkpointing.
-	Name() string
-	// Start begins serving; blocks until ctx is cancelled or fatal error.
-	Start(ctx context.Context) error
-	// Send delivers a single message. Must be safe to call from multiple goroutines.
-	Send(msg *n2k.ParsedMessage) error
-	// Close performs cleanup.
-	Close() error
+var ErrSkip = errors.New("sink skipped message")
+
+type Runtime interface {
+	ID() string
+	Stop()
+	State() (string, error)
 }
 
-// ReadySink is an optional interface that sinks may implement to signal readiness.
-type ReadySink interface {
-	Ready() <-chan struct{}
+// Pusher sinks confirm each delivery (CAN). ErrSkip means "cannot carry
+// this message, count it and move on" (e.g. envelope without raw bytes).
+type Pusher interface {
+	Push(ctx context.Context, e *msg.Envelope) error
 }
 
-// CursorTracker is an optional interface for sinks that track per-client delivery cursors.
-type CursorTracker interface {
-	// MinDeliveredID returns the minimum ID successfully delivered to all live clients.
-	// If no clients are connected, returns the fallback value.
-	MinDeliveredID(fallback int64) int64
+// Broadcaster sinks fan out to connected clients without confirmation.
+type Broadcaster interface {
+	Broadcast(entries []queue.Entry)
 }
 
-// RunDispatcher reads messages from the buffer, applies the filter chain, and sends to the sink.
-// It runs until ctx is cancelled.
-func RunDispatcher(ctx context.Context, buf buffer.Buffer, s Sink, chain filter.Chain, log *slog.Logger, metrics *admin.Metrics) {
-	lastID, err := buf.GetCheckpoint(ctx, s.Name())
+// ReplayReader is what serve-mode sinks use to replay history for a client.
+type ReplayReader interface {
+	Read(ctx context.Context, after int64, limit int) ([]queue.Entry, error)
+}
+
+// ConnectorRegistrar lets connectors attach their queue for client replay.
+type ConnectorRegistrar interface {
+	RegisterConnector(id string, r ReplayReader)
+	UnregisterConnector(id string)
+}
+
+func New(ctx context.Context, cfg model.Sink, mgr *bus.Manager, ds *DataServer, log *slog.Logger, met *metrics.Set) (Runtime, error) {
+	switch cfg.Type {
+	case model.SinkSocketCAN, model.SinkUSBCAN:
+		return newCANSink(ctx, cfg, mgr)
+	case model.SinkHTTPSSE:
+		return newServeSink(cfg, ds, log, met, serveSSE)
+	case model.SinkHTTPWS:
+		return newServeSink(cfg, ds, log, met, serveWS)
+	case model.SinkTCP:
+		return newTCPSink(cfg, log, met)
+	default:
+		return nil, fmt.Errorf("sink %q: unknown type %q", cfg.ID, cfg.Type)
+	}
+}
+
+type canSink struct {
+	id     string
+	handle *bus.Handle
+}
+
+func newCANSink(ctx context.Context, cfg model.Sink, mgr *bus.Manager) (Runtime, error) {
+	ep := bus.Endpoint{Kind: string(cfg.Type), Name: cfg.Interface}
+	if cfg.Type == model.SinkUSBCAN {
+		ep.Name = cfg.Port
+	}
+	handle, err := mgr.Acquire(ctx, ep)
 	if err != nil {
-		log.Error("get checkpoint failed", "sink", s.Name(), "err", err)
-		lastID = 0
+		return nil, err
 	}
-
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			msgs, err := buf.Read(ctx, lastID, 100)
-			if err != nil {
-				log.Error("buffer read failed", "sink", s.Name(), "err", err)
-				continue
-			}
-			for _, msg := range msgs {
-				// Increment filter evaluation counter
-				if metrics != nil {
-					metrics.FilterEvaluatedTotal.Add(ctx, 1, admin.AttrSink(s.Name()))
-				}
-
-				if chain.Match(msg) {
-					if err := s.Send(msg); err != nil {
-						log.Debug("send failed", "sink", s.Name(), "err", err)
-						if metrics != nil {
-							metrics.SinkDroppedTotal.Add(ctx, 1, admin.AttrSink(s.Name()), admin.AttrReason("send_error"))
-						}
-					} else {
-						if metrics != nil {
-							metrics.SinkSentTotal.Add(ctx, 1, admin.AttrSink(s.Name()))
-						}
-					}
-				} else {
-					if metrics != nil {
-						metrics.SinkDroppedTotal.Add(ctx, 1, admin.AttrSink(s.Name()), admin.AttrReason("filtered"))
-					}
-				}
-				lastID = msg.ID
-			}
-			if len(msgs) > 0 {
-				// If the sink supports per-client cursors, use the minimum delivered ID
-				checkpointID := lastID
-				if ct, ok := s.(CursorTracker); ok {
-					checkpointID = ct.MinDeliveredID(lastID)
-				}
-				if err := buf.UpdateCheckpoint(ctx, s.Name(), checkpointID); err != nil {
-					log.Error("update checkpoint failed", "sink", s.Name(), "err", err)
-				}
-			}
-
-			// Update lag gauge
-			if metrics != nil {
-				if maxID, err := buf.MaxID(ctx); err == nil && maxID > 0 {
-					lag := maxID - lastID
-					if lag < 0 {
-						lag = 0
-					}
-					metrics.SinkLagMessages.Record(ctx, lag, admin.AttrSink(s.Name()))
-				}
-			}
-		}
-	}
+	return &canSink{id: cfg.ID, handle: handle}, nil
 }
+
+func (s *canSink) ID() string { return s.id }
+
+// Push writes one envelope onto the bus; envelopes without raw bytes, or
+// whose raw bytes cannot be re-decoded for CAN transmission (e.g. an
+// UnknownPGN with no cataloged decoder — see bus.ErrNotEncodable), are
+// skipped (ErrSkip) rather than retried forever.
+func (s *canSink) Push(ctx context.Context, e *msg.Envelope) error {
+	if len(e.Raw) == 0 {
+		return ErrSkip
+	}
+	err := s.handle.Write(ctx, e)
+	if errors.Is(err, bus.ErrNotEncodable) {
+		return ErrSkip
+	}
+	return err
+}
+
+func (s *canSink) State() (string, error) { return s.handle.State() }
+func (s *canSink) Stop()                  { s.handle.Release() }

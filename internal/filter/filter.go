@@ -1,25 +1,65 @@
-// Package filter implements the CEL-based filter engine for N2K messages.
+// Package filter compiles and evaluates CEL expressions against message
+// envelopes. Numeric header fields are exposed as CEL ints so plain
+// integer literals work (msg.pgn == 127250).
 package filter
 
 import (
-	"github.com/open-ships/beacon/internal/n2k"
+	"fmt"
+	"time"
+
+	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
+
+	"github.com/open-ships/beacon/internal/msg"
 )
 
-// Filter decides whether a ParsedMessage should be passed to a sink.
-type Filter interface {
-	Match(msg *n2k.ParsedMessage) bool
+type Chain struct {
+	exprs []string
+	progs []cel.Program
 }
 
-// Chain is an ordered slice of filters. All filters must match (AND semantics).
-type Chain []Filter
+func Compile(exprs []string) (*Chain, error) {
+	env, err := cel.NewEnv(cel.Variable("msg", cel.MapType(cel.StringType, cel.DynType)))
+	if err != nil {
+		return nil, err
+	}
+	c := &Chain{exprs: exprs}
+	for _, expr := range exprs {
+		ast, issues := env.Compile(expr)
+		if issues != nil && issues.Err() != nil {
+			return nil, fmt.Errorf("filter %q: %w", expr, issues.Err())
+		}
+		prg, err := env.Program(ast)
+		if err != nil {
+			return nil, fmt.Errorf("filter %q: %w", expr, err)
+		}
+		c.progs = append(c.progs, prg)
+	}
+	return c, nil
+}
 
-// Match returns true only if all filters in the chain match.
-// An empty chain matches all messages.
-func (c Chain) Match(msg *n2k.ParsedMessage) bool {
-	for _, f := range c {
-		if !f.Match(msg) {
-			return false
+// Match evaluates all expressions (AND). Returns an error if any
+// expression errors at eval time; callers drop the message and count it.
+func (c *Chain) Match(e *msg.Envelope) (bool, error) {
+	if len(c.progs) == 0 {
+		return true, nil
+	}
+	in := map[string]any{"msg": map[string]any{
+		"pgn":       int64(e.PGN),
+		"source":    int64(e.Source),
+		"dest":      int64(e.Dest),
+		"priority":  int64(e.Priority),
+		"timestamp": e.Timestamp.Format(time.RFC3339Nano),
+		"payload":   e.PayloadMap(),
+	}}
+	for i, prg := range c.progs {
+		out, _, err := prg.Eval(in)
+		if err != nil {
+			return false, fmt.Errorf("filter %q: %w", c.exprs[i], err)
+		}
+		if out != types.True {
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }

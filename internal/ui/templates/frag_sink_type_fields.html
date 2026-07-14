@@ -1,0 +1,36 @@
+{{/* Data: internal/ui/forms.go's sinkTypeFieldsData. Mirrors
+     frag_source_type_fields.html except http_sse/http_ws carries a Path
+     (not URL+Headers) and there's a fifth type, tcp, carrying Address. */}}
+{{define "sink-type-fields"}}
+{{if eq .Type "socketcan"}}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Interface</legend>
+  <input type="text" id="sink-interface" name="interface" list="sink-can-ifaces"
+         value="{{.Interface}}" class="input w-full" required>
+  <datalist id="sink-can-ifaces">
+    {{range .CANInterfaces}}<option value="{{.}}"></option>{{end}}
+  </datalist>
+</fieldset>
+{{else if eq .Type "usbcan"}}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Port</legend>
+  <input type="text" id="sink-port" name="port" list="sink-serial-ports"
+         value="{{.Port}}" class="input w-full" required>
+  <datalist id="sink-serial-ports">
+    {{range .SerialPorts}}<option value="{{.}}"></option>{{end}}
+  </datalist>
+</fieldset>
+{{else if or (eq .Type "http_sse") (eq .Type "http_ws")}}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Path</legend>
+  <input type="text" id="sink-path" name="path" value="{{.Path}}"
+         placeholder="/nmea/out" class="input w-full" required>
+</fieldset>
+{{else if eq .Type "tcp"}}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Listen address</legend>
+  <input type="text" id="sink-address" name="address" value="{{.Address}}"
+         placeholder="0.0.0.0:2000" class="input w-full" required>
+</fieldset>
+{{end}}
+{{end}}

@@ -1,85 +1,82 @@
-# Configuration Examples
+# Example configs
 
-| File | Use case |
-|---|---|
-| `minimal.toml` | Bare minimum — all messages, both sinks, no filtering |
-| `navigation.toml` | Navigation dashboard — heading, GPS, speed, depth, XTE |
-| `engine-room.toml` | Engine monitoring — RPM, temps, pressures, battery |
-| `vcan-dev.toml` | Local development with virtual CAN (`vcan0`), debug logging |
-| `high-volume.toml` | Busy bus (200+ msg/s) — large buffer, aggressive PGN + priority filtering |
+Each file here is a complete, importable `model.Config` document —
+`{"sources": [...], "sinks": [...], "connectors": [...]}` — validated by
+`internal/config/examples_test.go` against the same rules every API write,
+CLI import, and `--seed` boot uses (`config.ValidateConfig`: structural
+checks plus a CEL compile of every connector's filters). If an example
+stops validating, that test fails.
 
-## Usage
+## Files
 
-```sh
-beacon --config examples/navigation.toml
+- **`minimal.json`** — one CAN source (`can0`), one SSE sink (`/events`),
+  one connector with no filters (everything passes). The smallest config
+  that actually moves data. Start here.
+- **`navigation.json`** — the same shape as `minimal.json`, but the
+  connector's filter allow-lists navigation PGNs only (heading, rapid
+  position, COG/SOG, GNSS position: `127250`, `129025`, `129026`,
+  `129029`), served on `/nav`. See the filters page (`/ui/docs/filters`)
+  for how the filter list and CEL expressions work.
+- **`engine-room.json`** — one CAN source feeding *two* connectors, both
+  filtered to engine PGNs (`127488`, `127489`, `127493`): one to an SSE
+  sink (`/engine`, for a browser dashboard) and one to a `tcp` sink
+  (`0.0.0.0:9090`, for a backend NDJSON consumer). Demonstrates fan-out —
+  multiple connectors sharing one source, each with its own filters and
+  buffer.
+- **`beacon-chain.json`** — an `http_sse` *source* pointed at another
+  beacon's SSE sink (`http://upstream-beacon.local:8080/events`), feeding
+  a local `socketcan` sink. Chains two beacons together: this instance
+  mirrors everything the upstream one publishes onto a local CAN bus.
+  Change the `url` to your upstream beacon's actual data-address and sink
+  path before using this.
+- **`vcan-dev.json`** — identical to `minimal.json` but pointed at
+  `vcan0` instead of a real interface, for developing and testing beacon
+  with no CAN hardware attached. Bring the virtual interface up first (see
+  `/ui/docs/can-setup`):
+
+  ```
+  sudo modprobe vcan
+  sudo ip link add dev vcan0 type vcan
+  sudo ip link set vcan0 up
+  ```
+
+  Then inject test frames with `cansend vcan0 18FF0001#0102030405060708`
+  (from `can-utils`).
+
+Replace `can0` / `vcan0` with your actual interface name, and adjust sink
+paths/addresses and connector filters as needed — these are starting
+points, not fixed configurations. All buffer limits shown are optional; if
+a connector's `buffer` object sets nothing at all, `max_messages` defaults
+to 100000 (see `/ui/docs/concepts`).
+
+## Using an example
+
+**First boot (no database yet):** pass the file to `--seed`. It only
+applies when the database is empty — a database that already holds a
+configuration ignores `--seed` and logs that it did so, so this is safe to
+leave on the command line permanently.
+
+```
+./beacon --db beacon.db --seed examples/minimal.json
 ```
 
-## CEL filter reference
+**Offline, against an existing database file** (the file must not be held
+open by a running beacon process — see `/ui/docs/api` for why):
 
-Filters are [CEL](https://github.com/google/cel-spec) expressions. Every expression
-receives a `msg` variable with these fields:
-
-| Field | Type | Example |
-|---|---|---|
-| `msg.pgn` | `int` | `129029` |
-| `msg.source` | `int` | `1` |
-| `msg.dest` | `int` | `255` (broadcast) |
-| `msg.priority` | `int` | `2` (0 = highest) |
-| `msg.timestamp` | `string` | `"2024-07-01T12:00:00Z"` |
-| `msg.payload.<field>` | `dyn` | `msg.payload.SpeedWaterReferenced` |
-
-Multiple expressions in the `filters` list are ANDed together. Use `||` inside
-a single expression for OR logic:
-
-```toml
-# AND — both conditions must be true
-filters = [
-  "msg.pgn in [129025, 129026]",
-  "msg.priority <= 3",
-]
-
-# OR — expressed in one CEL string
-filters = [
-  "msg.pgn == 127250 || msg.pgn == 128259",
-]
-
-# Only accept specific PGNs from a trusted GPS source (source 7)
-filters = ["msg.source != 7 || msg.pgn in [129025, 129026, 129029]"]
-
-# Per-source PGN allowlist: engine data from source 3, GPS from source 7, anything from source 1
-filters = [
-  "msg.source == 1 || (msg.source == 3 && msg.pgn in [127488, 127489, 127493]) || (msg.source == 7 && msg.pgn in [129025, 129026, 129029])",
-]
-
-# Reject all messages from untrusted sources except heading from a backup compass on source 12
-filters = [
-  "msg.source in [1, 3, 7] || (msg.source == 12 && msg.pgn == 127250)",
-]
-
-# Source allowlist combined with PGN and priority gating
-filters = [
-  "msg.source in [1, 3, 7]",
-  "msg.pgn in [129025, 129026, 127250, 128259]",
-  "msg.priority <= 3",
-]
+```
+beacon import --db beacon.db examples/navigation.json           # replaces the whole config
+beacon import --db beacon.db --merge examples/engine-room.json  # upserts onto the existing config
 ```
 
-## Common PGN quick reference
+**Live, against a running beacon** — `POST` the file to the config API:
 
-| PGN | Name |
-|---|---|
-| 127250 | Vessel Heading |
-| 127251 | Rate of Turn |
-| 127257 | Attitude |
-| 127488 | Engine Parameters, Rapid Update |
-| 127489 | Engine Parameters, Dynamic |
-| 127493 | Transmission Parameters |
-| 127505 | Fluid Level |
-| 127508 | Battery Status |
-| 128259 | Speed Through Water |
-| 128267 | Water Depth |
-| 129025 | Position, Rapid Update |
-| 129026 | COG & SOG, Rapid Update |
-| 129029 | GNSS Position Data |
-| 129283 | Cross Track Error |
-| 129284 | Navigation Data |
+```
+curl -X POST 'localhost:2112/api/v1/config/import?mode=replace' \
+  --data-binary @examples/navigation.json
+
+curl -X POST 'localhost:2112/api/v1/config/import?mode=merge' \
+  --data-binary @examples/engine-room.json
+```
+
+Either way, an invalid file is rejected before anything is written — the
+existing configuration (or empty database) is left untouched.

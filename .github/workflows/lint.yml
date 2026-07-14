@@ -17,6 +17,10 @@ jobs:
           go-version-file: go.mod
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        # action@v6 installs golangci-lint v1.x, whose go1.24 build cannot
+        # load a go1.25 module ("Go language version ... lower than the
+        # targeted Go version"). v7+ installs v2.x; pin the major so local
+        # (v2.x) and CI agree on the config schema.
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v2.11.4

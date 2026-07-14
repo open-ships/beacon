@@ -4,13 +4,17 @@ services:
     # host networking is required so the container can access the CAN interface
     network_mode: host
     volumes:
-      # Persist SQLite buffer across restarts
+      # Persist the SQLite database (config + connector buffers) across restarts
       - ./data:/data
-      # Mount your production config
-      - ./config.toml:/app/config.toml:ro
+      # Optional: seed an empty database on first boot; ignored once the
+      # database already holds a configuration.
+      # - ./seed.json:/data/seed.json:ro
     restart: unless-stopped
-    environment:
-      # Override any config key via environment variable:
-      # N2KBRIDGE_CAN_INTERFACE=can0
-      # N2KBRIDGE_BUFFER_PATH=/data/beacon.db
-      - N2KBRIDGE_APP_LOG_LEVEL=info
+    # command:
+    #   - --db=/data/beacon.db
+    #   - --seed=/data/seed.json
+    #   - --log-level=info
+    # `docker compose ps` / `docker inspect` report health from the
+    # Dockerfile's own HEALTHCHECK instruction (busybox wget against the
+    # admin server's /health, bundled in the alpine base image) — no
+    # separate healthcheck: block needed here.
