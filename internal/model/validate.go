@@ -68,6 +68,19 @@ func (s Sink) Validate() error {
 		if _, _, err := net.SplitHostPort(s.Address); err != nil {
 			return fmt.Errorf("sink %q: invalid tcp address %q: %v", s.ID, s.Address, err)
 		}
+	case SinkFile:
+		if !strings.HasPrefix(s.FilePath, "/") {
+			return fmt.Errorf("sink %q: file_path must be an absolute path", s.ID)
+		}
+		if s.Format != FileFormatNDJSON && s.Format != FileFormatCANDump {
+			return fmt.Errorf("sink %q: format must be %q or %q", s.ID, FileFormatNDJSON, FileFormatCANDump)
+		}
+		if s.MaxFileBytes < 0 {
+			return fmt.Errorf("sink %q: max_file_bytes must not be negative", s.ID)
+		}
+		if s.MaxFiles < 0 {
+			return fmt.Errorf("sink %q: max_files must not be negative", s.ID)
+		}
 	default:
 		return fmt.Errorf("sink %q: unknown type %q", s.ID, s.Type)
 	}
