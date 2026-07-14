@@ -149,6 +149,17 @@ func (s *fileSink) Push(_ context.Context, e *msg.Envelope) error {
 		return err
 	}
 
+	// The whole encoded message — for candump, ALL frames of a multi-frame
+	// fast-packet message — goes through one Write+Flush under mu, so a
+	// message's lines never interleave with another connector's and never
+	// span a rotation boundary. On-disk atomicity is still only best-effort:
+	// a genuinely short write (e.g. ENOSPC mid-line) can leave a torn
+	// trailing line, and since the error return below makes the connector
+	// retry this envelope, a full duplicate of the message is appended once
+	// the condition clears. Both are acceptable: a torn line no longer
+	// matches the candump "(ts) token ID#HEX" shape (or NDJSON's one-object-
+	// per-line), so replay/ingest tools skip it, and duplicates are the
+	// documented at-least-once delivery semantics.
 	n, werr := s.bw.Write(line)
 	if werr == nil {
 		werr = s.bw.Flush()
@@ -190,7 +201,7 @@ func (s *fileSink) encodeCANDump(e *msg.Envelope) ([]byte, error) {
 	}
 	frames, err := s.fragmentCAN(e)
 	if err != nil {
-		return nil, ErrSkip
+		return nil, err // wraps ErrSkip with the skip reason
 	}
 
 	sec := e.Timestamp.Unix()
@@ -214,7 +225,10 @@ func (s *fileSink) fragmentCAN(e *msg.Envelope) ([]canFrame, error) {
 		return []canFrame{{id: canID, data: padTo8(payload)}}, nil
 	}
 	if len(payload) > maxFastPacketPayload {
-		return nil, fmt.Errorf("payload %d bytes exceeds fast-packet max %d", len(payload), maxFastPacketPayload)
+		// Permanently oversized for the fast-packet protocol: wrap ErrSkip
+		// (so pushAll advances past it) while keeping the reason loggable.
+		return nil, fmt.Errorf("payload %d bytes exceeds fast-packet max %d: %w",
+			len(payload), maxFastPacketPayload, ErrSkip)
 	}
 
 	key := fpKey{pgn: e.PGN, source: e.Source}
@@ -251,6 +265,9 @@ func buildCANID(priority uint8, pgnNum uint32, source, dest uint8) uint32 {
 // isFastPacketPGN reports whether pgnNum uses the NMEA 2000 fast-packet
 // protocol. The n2k pgn package exports per-PGN metadata for exactly this
 // (pgn.PgnInfoLookup[pgn][*].Fast) and is used here as the source of truth.
+// Scanning for ANY Fast variant relies on all variants of a PGN agreeing on
+// Fast — an upstream-data invariant, empirically true at the pinned n2k
+// version (54 multi-entry PGNs, 0 disagreements).
 //
 // Caveat: PGNs the manifest has no entry for at all (proprietary/uncataloged
 // PGNs beacon only sees as pgn.UnknownPGN) fall back to a size heuristic:
@@ -327,26 +344,29 @@ func frameFastPacket(canID uint32, payload []byte, seqID uint8) []canFrame {
 // fresh active file. maxFiles counts the active file plus its backups, so
 // backups occupy indices 1..maxFiles-1.
 //
-// Must be called with s.mu held. If a shift step fails partway (e.g. a
-// permission error on one rotated backup), rotate still reopens the active
-// path unconditionally before returning the error: a partial rotation
-// failure must not leave the sink wedged on a closed file descriptor for
-// every subsequent Push. The returned error still propagates to the caller
-// so the connector's retry/backoff (and the sink's State()) surface it.
+// Must be called with s.mu held. Every step before the reopen — flush,
+// close, and each shift rename/remove — is best-effort: the first failure is
+// recorded but rotation always proceeds all the way to reopening the active
+// path, because leaving s.f/s.bw bound to a closed (or half-rotated) file
+// descriptor would make every subsequent Push fail permanently and wedge the
+// connector in retry until process restart. The recorded error still
+// propagates to the caller so the connector's retry/backoff (and the sink's
+// State()) surface it.
+//
+// The flush here only has bytes to lose if Push's own per-line flush already
+// failed — and in that case Push returned that error without reaching
+// rotate, so at entry the buffer is empty in practice and a flush failure
+// here loses nothing.
 func (s *fileSink) rotate() error {
-	if err := s.bw.Flush(); err != nil {
-		return err
-	}
-	if err := s.f.Close(); err != nil {
-		return err
-	}
-
 	var rotErr error
 	setErr := func(err error) {
 		if err != nil && !os.IsNotExist(err) && rotErr == nil {
 			rotErr = err
 		}
 	}
+	setErr(s.bw.Flush())
+	setErr(s.f.Close())
+
 	if s.maxFiles > 1 {
 		setErr(os.Remove(fmt.Sprintf("%s.%d", s.path, s.maxFiles-1)))
 		for n := s.maxFiles - 2; n >= 1; n-- {

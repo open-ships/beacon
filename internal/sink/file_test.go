@@ -111,6 +111,50 @@ func TestFileSinkCANDumpNoRawSkips(t *testing.T) {
 	}
 }
 
+// TestBuildCANID pins the CAN-ID bit layout against vectors verified with
+// n2k's internal/framer.BuildCANID (its canid_test.go plus direct
+// computation): one PDU2 broadcast (the busfake fixture) and two PDU1
+// addressed PGNs — one node-addressed (dest lands in bits 15-8) and one
+// broadcast-dest.
+func TestBuildCANID(t *testing.T) {
+	cases := []struct {
+		name         string
+		priority     uint8
+		pgn          uint32
+		source, dest uint8
+		want         uint32
+	}{
+		{"PDU2 broadcast 127250 (busfake fixture)", 2, 127250, 12, 255, 0x09F1120C},
+		{"PDU1 ISO address claim 60928 to node 20", 3, 60928, 10, 20, 0x0CEE140A},
+		{"PDU1 ISO request 59904 broadcast", 6, 59904, 0, 255, 0x18EAFF00},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := buildCANID(tc.priority, tc.pgn, tc.source, tc.dest); got != tc.want {
+				t.Fatalf("buildCANID(%d, %d, %d, %d) = %08X, want %08X",
+					tc.priority, tc.pgn, tc.source, tc.dest, got, tc.want)
+			}
+		})
+	}
+}
+
+// A payload beyond the fast-packet maximum (223 bytes) can never be framed:
+// Push must return an error wrapping ErrSkip (permanent per-message
+// condition, connector advances past it) with the reason still attached.
+func TestFileSinkCANDumpOversizedPayloadSkips(t *testing.T) {
+	rt, _ := newTestFileSink(t, model.FileFormatCANDump, 0, 0)
+	defer rt.Stop()
+	e := &msg.Envelope{ConnectorID: "nav", PGN: 129029, Source: 5, Dest: 255, Priority: 3,
+		Timestamp: time.Now(), Raw: make([]byte, 224)}
+	err := rt.(Pusher).Push(context.Background(), e)
+	if !errors.Is(err, ErrSkip) {
+		t.Fatalf("Push err = %v, want ErrSkip", err)
+	}
+	if !strings.Contains(err.Error(), "224") {
+		t.Fatalf("skip reason not preserved in error: %v", err)
+	}
+}
+
 // parseCANDumpLine splits a "(ts) connector ID#DATA" line into the hex CAN
 // ID and decoded data bytes.
 func parseCANDumpLine(t *testing.T, line string) (idHex string, data []byte) {
@@ -351,6 +395,65 @@ func TestFileSinkRotation(t *testing.T) {
 	if _, err := os.Stat(path + ".3"); !os.IsNotExist(err) {
 		t.Fatalf("file.3 exists (or unexpected error %v), want deleted (MaxFiles=3 caps at 2 backups)", err)
 	}
+}
+
+// TestFileSinkRotateReopensAfterCloseFailure is the regression test for the
+// rotation-wedge bug: when rotate's own flush/close of the outgoing file
+// fails, the sink must STILL shift the backups and reopen a fresh active
+// file (reporting the error) rather than staying bound to the dead
+// descriptor — otherwise every subsequent Push fails forever and the
+// connector retries until process restart. Failure is injected by closing
+// the fd out from under the sink and leaving unflushed bytes in the buffer,
+// making both the flush and the close inside rotate fail.
+func TestFileSinkRotateReopensAfterCloseFailure(t *testing.T) {
+	rt, path := newTestFileSink(t, model.FileFormatNDJSON, 0, 3)
+	p := rt.(Pusher)
+	fs := rt.(*fileSink)
+
+	push := func(seq int64) error {
+		return p.Push(context.Background(), &msg.Envelope{
+			Seq: seq, ConnectorID: "nav", PGN: 127250, Source: 1, Dest: 255,
+			Priority: 2, Timestamp: time.Now(), Payload: json.RawMessage(`{}`)})
+	}
+	if err := push(1); err != nil {
+		t.Fatal(err)
+	}
+
+	fs.mu.Lock()
+	_, _ = fs.bw.WriteString("unflushed") // buffered only: makes rotate's flush hit the dead fd
+	_ = fs.f.Close()                      // dead fd: rotate's flush AND close now both fail
+	err := fs.rotate()
+	fs.mu.Unlock()
+	if err == nil {
+		t.Fatal("rotate over a dead fd must report an error")
+	}
+
+	// Despite the error, the sink must have rotated and reopened: the old
+	// content is in file.1, the active file is fresh, and Push works again.
+	if err := push(2); err != nil {
+		t.Fatalf("Push after failed rotate = %v, want success on reopened file", err)
+	}
+	if state, serr := rt.State(); state != "up" || serr != nil {
+		t.Fatalf("state after recovered rotate = %q/%v, want up/nil", state, serr)
+	}
+	rt.Stop()
+
+	assertSeq := func(name string, want int64) {
+		t.Helper()
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var e msg.Envelope
+		if err := json.Unmarshal(bytes.TrimRight(b, "\n"), &e); err != nil {
+			t.Fatalf("%s: %v (%q)", name, err, b)
+		}
+		if e.Seq != want {
+			t.Fatalf("%s seq = %d, want %d", name, e.Seq, want)
+		}
+	}
+	assertSeq(path+".1", 1) // pre-rotate line, shifted despite the error
+	assertSeq(path, 2)      // post-rotate line, on the reopened active file
 }
 
 // TestFileSinkConcurrentPushNoCorruption exercises the shared-mutex
