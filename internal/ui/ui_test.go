@@ -344,6 +344,35 @@ func TestAppCSSFontURLHasCacheBuster(t *testing.T) {
 	}
 }
 
+// TestOpenBridgeBundleIsMinified guards the vendoring pipeline: the upstream
+// @oicl/openbridge-webcomponents bundle ships unminified (~11.9MB) and MUST
+// be minified when vendored (`just vendor-openbridge` does both steps) —
+// beacon serves assets uncompressed, so an unminified bundle quadruples the
+// UI's first-load transfer. The threshold sits far above the minified size
+// (~2.9MB) and far below the unminified one, so it only trips on a re-vendor
+// that skipped the minify step.
+func TestOpenBridgeBundleIsMinified(t *testing.T) {
+	const maxBundleBytes = 6 << 20 // 6MB
+
+	srv := newAppMountedServer(t)
+	resp, err := http.Get(srv.URL + "/ui/assets/openbridge.bundle.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusOK)
+
+	n, err := io.Copy(io.Discard, resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n > maxBundleBytes {
+		t.Fatalf("openbridge.bundle.js is %dMB (> %dMB): it looks unminified — "+
+			"re-vendor with `just vendor-openbridge`, which minifies via esbuild",
+			n>>20, maxBundleBytes>>20)
+	}
+}
+
 // TestNoInlineStylingInTemplates enforces beacon UI's no-inline-CSS rule:
 // templates must contain no style= attributes and no <style> blocks (every
 // visual rule lives in the compiled Tailwind/daisyUI stylesheet or

@@ -37,15 +37,17 @@ without it, htmx just avoids a full page reload.
   https://cdn.jsdelivr.net/npm/@oicl/openbridge-webcomponents@1.0.1/src/palettes/variables.css
   https://cdn.jsdelivr.net/npm/@oicl/openbridge-webcomponents@1.0.1/bundle/NotoSans.ttf
   ```
-- Downloaded with:
-  ```
-  curl -L -o internal/ui/assets/openbridge.bundle.js \
-    "https://cdn.jsdelivr.net/npm/@oicl/openbridge-webcomponents@1.0.1/bundle/openbridge-webcomponents.bundle.js"
-  curl -L -o internal/ui/assets/palettes.css \
-    "https://cdn.jsdelivr.net/npm/@oicl/openbridge-webcomponents@1.0.1/src/palettes/variables.css"
-  curl -L -o internal/ui/assets/NotoSans.ttf \
-    "https://cdn.jsdelivr.net/npm/@oicl/openbridge-webcomponents@1.0.1/bundle/NotoSans.ttf"
-  ```
+- Vendored with `just vendor-openbridge` (see the justfile), which downloads
+  the three files above at the pinned version and **minifies the JS bundle
+  with esbuild** (pinned in the justfile, currently 0.28.1, via
+  `npx esbuild --minify`). The committed `openbridge.bundle.js` is therefore
+  NOT byte-identical to the upstream artifact: upstream publishes no minified
+  build, and the unminified bundle is ~11.9MB vs ~2.9MB minified — beacon
+  serves assets uncompressed, so this is the UI's first-load transfer.
+  `TestOpenBridgeBundleIsMinified` (internal/ui/ui_test.go) fails if an
+  unminified bundle is ever committed. `palettes.css` and `NotoSans.ttf` are
+  vendored verbatim. Node is required at vendor time only (for npx); nothing
+  here runs at build or runtime.
 
 `openbridge.bundle.js` is OpenBridge's standalone custom-elements bundle:
 loading it via `<script type="module">` registers every `obc-*` /
@@ -72,10 +74,10 @@ version as the cache-buster, since it's baked into the compiled `app.css`
 and can't carry beacon's runtime version like `layout.html`'s asset URLs
 do; see `../uisrc/README.md`).
 
-To upgrade: re-run the curl commands above with a pinned
-`@<new-version>` instead of `@1.0.1`, update the version noted here, bump
-the `?v=` in `../uisrc/input.css`'s `@font-face` and rerun `just ui-css`,
-then re-run `internal/ui/ui_test.go` plus the visual smoke check in
+To upgrade: bump `openbridge_version` in the justfile, run
+`just vendor-openbridge`, update the version noted here, bump the `?v=` in
+`../uisrc/input.css`'s `@font-face` and rerun `just ui-css`, then re-run
+`internal/ui/ui_test.go` plus the visual smoke check in
 `../uisrc/README.md`.
 
 ## app.css

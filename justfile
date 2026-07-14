@@ -45,6 +45,27 @@ ui-css:
         -o internal/ui/assets/app.css \
         --minify
 
+# OpenBridge web-components release to vendor (see internal/ui/assets/README.md)
+openbridge_version := "1.0.1"
+# esbuild release used to minify the vendored bundle — pinned so the committed
+# artifact is reproducible from the upstream download
+esbuild_version := "0.28.1"
+
+# re-vendor the OpenBridge assets: download the pinned release and minify the
+# component bundle (upstream publishes no minified build; ~11.9MB -> ~2.9MB).
+# Dev-time only — needs network + Node for npx; nothing here runs at build or
+# runtime, the outputs are committed and embedded via go:embed. A test
+# (TestOpenBridgeBundleIsMinified) fails if an unminified bundle is committed.
+vendor-openbridge:
+    curl -fsSL -o /tmp/openbridge.bundle.unmin.js \
+        "https://cdn.jsdelivr.net/npm/@oicl/openbridge-webcomponents@{{openbridge_version}}/bundle/openbridge-webcomponents.bundle.js"
+    npx -y esbuild@{{esbuild_version}} /tmp/openbridge.bundle.unmin.js \
+        --minify --outfile=internal/ui/assets/openbridge.bundle.js
+    curl -fsSL -o internal/ui/assets/palettes.css \
+        "https://cdn.jsdelivr.net/npm/@oicl/openbridge-webcomponents@{{openbridge_version}}/src/palettes/variables.css"
+    curl -fsSL -o internal/ui/assets/NotoSans.ttf \
+        "https://cdn.jsdelivr.net/npm/@oicl/openbridge-webcomponents@{{openbridge_version}}/bundle/NotoSans.ttf"
+
 # format all Go source files
 fmt:
     gofmt -w .
