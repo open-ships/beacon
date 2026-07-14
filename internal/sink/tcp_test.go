@@ -53,7 +53,7 @@ func TestTCPLiveTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	time.Sleep(100 * time.Millisecond)
 
 	rt.(Broadcaster).Broadcast([]queue.Entry{entry("nav", 7, 127250)})
@@ -90,7 +90,7 @@ func TestTCPStopDecrementsClientGauge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	waitFor(t, 3*time.Second, "TCP client gauge to reach 1", func() bool {
 		v, ok := sinkClientsGauge(t, prom, "tcp")
 		return ok && v == 1

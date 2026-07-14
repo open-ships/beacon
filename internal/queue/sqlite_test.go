@@ -143,7 +143,7 @@ func TestQueuesAreIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	qa := NewSQLite(st, "a", model.BufferLimits{MaxMessages: 100})
 	qb := NewSQLite(st, "b", model.BufferLimits{MaxMessages: 100})
 	ctx := context.Background()

@@ -145,7 +145,7 @@ func TestReopenKeepsData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	cfg, _ := s2.LoadConfig(ctx)
 	if len(cfg.Sinks) != 1 {
 		t.Fatal("data lost across reopen")

@@ -35,7 +35,7 @@ func (q *sqliteQueue) Append(ctx context.Context, envs []*msg.Envelope) error {
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 	for _, e := range envs {
 		doc, err := json.Marshal(e)
 		if err != nil {
@@ -55,7 +55,7 @@ func (q *sqliteQueue) Read(ctx context.Context, after int64, limit int) ([]Entry
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Entry
 	for rows.Next() {
 		var seq int64

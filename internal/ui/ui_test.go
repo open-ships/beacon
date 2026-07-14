@@ -61,9 +61,9 @@ func newAppMountedServer(t *testing.T) *httptest.Server {
 func mustStatus(t *testing.T, resp *http.Response, want int) {
 	t.Helper()
 	if resp.StatusCode != want {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		var buf bytes.Buffer
-		buf.ReadFrom(resp.Body)
+		_, _ = buf.ReadFrom(resp.Body)
 		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, want, buf.String())
 	}
 }
@@ -100,7 +100,7 @@ func TestRootRedirectsToDashboard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	mustStatus(t, resp, http.StatusFound)
 
 	loc := resp.Header.Get("Location")
@@ -124,7 +124,7 @@ func TestUIRootPathsRedirectToDashboard(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			mustStatus(t, resp, http.StatusFound)
 			if loc := resp.Header.Get("Location"); loc != "/ui/dashboard" {
 				t.Fatalf("Location = %q, want /ui/dashboard", loc)
@@ -237,7 +237,7 @@ func TestDashboardPageIsSelfContained(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	mustStatus(t, resp, http.StatusOK)
 
 	ct := resp.Header.Get("Content-Type")
@@ -286,7 +286,7 @@ func TestAssetsServed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			mustStatus(t, resp, http.StatusOK)
 
 			ct := strings.ToLower(resp.Header.Get("Content-Type"))
@@ -327,7 +327,7 @@ func TestAppCSSFontURLHasCacheBuster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	mustStatus(t, resp, http.StatusOK)
 
 	body, err := io.ReadAll(resp.Body)
@@ -407,7 +407,7 @@ func TestDocsIndexRedirectsToFirstPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	mustStatus(t, resp, http.StatusFound)
 	want := "/ui/docs/" + wantDocPages[0].slug
 	if loc := resp.Header.Get("Location"); loc != want {
@@ -421,7 +421,7 @@ func TestDocPageServesKnownSlug(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	mustStatus(t, resp, http.StatusOK)
 
 	ct := resp.Header.Get("Content-Type")
@@ -448,7 +448,7 @@ func TestDocPageUnknownSlugIs404(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	mustStatus(t, resp, http.StatusNotFound)
 }
 
@@ -465,7 +465,7 @@ func TestDocsSidebarListsAllPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	mustStatus(t, resp, http.StatusOK)
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -501,7 +501,7 @@ func TestDocsPagesAreSelfContained(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			mustStatus(t, resp, http.StatusOK)
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
@@ -533,7 +533,7 @@ func TestDocsPagesContainNoInlineStyling(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
 				t.Fatal(err)
@@ -560,7 +560,7 @@ func TestDocsNavItemPresent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)

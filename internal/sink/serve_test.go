@@ -105,7 +105,7 @@ func TestSSELiveBroadcast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
 		t.Fatalf("content-type = %q", ct)
 	}
@@ -129,7 +129,7 @@ func TestSSEReplayWithLastEventID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	events := readSSEEvents(t, resp, 2, 3*time.Second)
 	if events[0]["pgn"].(float64) != 128259 || events[1]["pgn"].(float64) != 129026 {
 		t.Fatalf("replay wrong: %v", events)
@@ -141,7 +141,7 @@ func TestDataServerRouteLifecycle(t *testing.T) {
 	if err := ds.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer ds.Stop(context.Background())
+	defer func() { _ = ds.Stop(context.Background()) }()
 
 	resp, _ := http.Get(fmt.Sprintf("http://%s/nope", ds.Addr()))
 	if resp.StatusCode != http.StatusNotFound {
@@ -171,7 +171,7 @@ func TestDataServerStopWithActiveSSEStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Prove the stream is live before stopping.
 	waitFor(t, 3*time.Second, "SSE client to register",

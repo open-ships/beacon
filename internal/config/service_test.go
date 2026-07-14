@@ -187,7 +187,7 @@ func TestSinkLifecycle(t *testing.T) {
 	// store unchanged, no reconcile call for this failed write.
 	before := rec.callCount()
 	err = svc.PutSink(ctx, baseSink("k2", "/a"), true)
-	asValidationError(t, err)
+	_ = asValidationError(t, err)
 	if rec.callCount() != before {
 		t.Fatalf("reconcile calls after failed path-collision create = %d, want %d", rec.callCount(), before)
 	}
@@ -205,7 +205,7 @@ func TestConnectorUnknownSource(t *testing.T) {
 
 	// No source/sink exist at all.
 	err := svc.PutConnector(ctx, baseConnector("c1", "nope", "alsonope"), true)
-	asValidationError(t, err)
+	_ = asValidationError(t, err)
 	if rec.callCount() != 0 {
 		t.Fatalf("reconcile calls = %d, want 0", rec.callCount())
 	}
@@ -455,7 +455,7 @@ func TestImportInvalidLeavesStoreUnchanged(t *testing.T) {
 		Connectors: []model.Connector{baseConnector("c1", "ghost", "ghost")},
 	}
 	err := svc.Import(ctx, badCfg, true)
-	asValidationError(t, err)
+	_ = asValidationError(t, err)
 	if rec.callCount() != before {
 		t.Fatalf("reconcile calls = %d, want %d", rec.callCount(), before)
 	}
@@ -514,7 +514,7 @@ func TestValidateFilters(t *testing.T) {
 		t.Fatalf("valid filter rejected: %v", err)
 	}
 	err := svc.ValidateFilters([]string{"msg.pgn =="})
-	asValidationError(t, err)
+	_ = asValidationError(t, err)
 }
 
 // --- ValidateConfig package function ---
@@ -532,7 +532,7 @@ func TestValidateConfigFunction(t *testing.T) {
 	invalid := valid
 	invalid.Connectors = []model.Connector{baseConnector("c1", "ghost", "k1")}
 	err := ValidateConfig(invalid)
-	asValidationError(t, err)
+	_ = asValidationError(t, err)
 }
 
 func must(t *testing.T, err error) {

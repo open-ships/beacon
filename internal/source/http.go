@@ -98,7 +98,7 @@ func runSSE(ctx context.Context, cfg model.Source, publish func(*msg.Envelope)) 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("sse endpoint returned %s", resp.Status)
 	}
@@ -131,7 +131,7 @@ func runWS(ctx context.Context, cfg model.Source, publish func(*msg.Envelope)) e
 	if err != nil {
 		return err
 	}
-	defer c.CloseNow()
+	defer func() { _ = c.CloseNow() }()
 	c.SetReadLimit(1024 * 1024)
 	for {
 		_, data, err := c.Read(ctx)

@@ -89,7 +89,7 @@ func TestEndToEndFilteredSSEWithReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	time.Sleep(300 * time.Millisecond)        // client registered, bus client up
 	fake.Inject(busfake.VesselHeadingFrame()) // PGN 127250 — passes filter
@@ -113,7 +113,7 @@ func TestEndToEndFilteredSSEWithReplay(t *testing.T) {
 			t.Fatalf("SSE payload still contains info: %v", payload)
 		}
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	// Replay: reconnect from before the second heading.
 	req, _ := http.NewRequest("GET", fmt.Sprintf("http://%s/nav", a.DataAddr()), nil)
@@ -122,7 +122,7 @@ func TestEndToEndFilteredSSEWithReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	replayed := sseEvents(t, resp2, 1)
 	if replayed[0]["pgn"].(float64) != 127250 {
 		t.Fatalf("replayed pgn %v", replayed[0]["pgn"])
@@ -133,7 +133,7 @@ func TestEndToEndFilteredSSEWithReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer hresp.Body.Close()
+	defer func() { _ = hresp.Body.Close() }()
 	var health struct {
 		Status     string                             `json:"status"`
 		Components []struct{ Kind, ID, State string } `json:"components"`
@@ -150,7 +150,7 @@ func TestEndToEndFilteredSSEWithReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer mresp.Body.Close()
+	defer func() { _ = mresp.Body.Close() }()
 	var buf strings.Builder
 	sc := bufio.NewScanner(mresp.Body)
 	for sc.Scan() {

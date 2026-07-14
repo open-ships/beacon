@@ -18,7 +18,7 @@ func seedStore(t *testing.T, dbPath string, cfg model.Config) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	if err := st.ReplaceConfig(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestRunImportReplace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	cfg, err := st.LoadConfig(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +152,7 @@ func TestRunImportMerge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	cfg, err := st.LoadConfig(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -198,7 +198,7 @@ func TestRunImportInvalidLeavesStoreUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	cfg, err := st.LoadConfig(t.Context())
 	if err != nil {
 		t.Fatal(err)

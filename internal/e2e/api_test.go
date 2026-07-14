@@ -80,10 +80,10 @@ func doJSON(t *testing.T, method, url string, body any) *http.Response {
 // want, then closes the body (the caller is done with it either way).
 func mustStatus(t *testing.T, resp *http.Response, want int) {
 	t.Helper()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != want {
 		var buf bytes.Buffer
-		buf.ReadFrom(resp.Body)
+		_, _ = buf.ReadFrom(resp.Body)
 		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, want, buf.String())
 	}
 }
@@ -92,7 +92,7 @@ func mustStatus(t *testing.T, resp *http.Response, want int) {
 // then closes the body.
 func decodeJSON(t *testing.T, resp *http.Response, v any) {
 	t.Helper()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestEndToEndAPIDrivenLifecycle(t *testing.T) {
 			t.Fatalf("SSE payload still contains info: %v", payload)
 		}
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	// Step 5: GET .../heading/metrics -> total_messages >= 1.
 	t.Log("step 5: connector metrics reflect delivered messages")
@@ -280,7 +280,7 @@ func TestEndToEndAPIDrivenLifecycle(t *testing.T) {
 	time.Sleep(100 * time.Millisecond) // let the fresh subscription register
 	fake.Inject(busfake.VesselHeadingFrame())
 	assertNoSSEEvents(t, resp2, 1*time.Second)
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 
 	// Step 7: DELETE the connector; its metrics endpoint 404s (the 404
 	// comes from svc.GetConnector failing once the config entity is gone,

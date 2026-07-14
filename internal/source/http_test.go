@@ -36,7 +36,7 @@ func TestSSEDialerReceivesAndReconnects(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl := w.(http.Flusher)
-		fmt.Fprintf(w, "id: upstream:99\ndata: %s\n\n", envelopeJSON(127250))
+		_, _ = fmt.Fprintf(w, "id: upstream:99\ndata: %s\n\n", envelopeJSON(127250))
 		fl.Flush()
 		// close connection to force a reconnect
 	}))
@@ -83,7 +83,7 @@ func TestWSDialerReceives(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer c.CloseNow()
+		defer func() { _ = c.CloseNow() }()
 		_ = c.Write(r.Context(), websocket.MessageText, []byte(envelopeJSON(128259)))
 		time.Sleep(time.Second)
 	}))

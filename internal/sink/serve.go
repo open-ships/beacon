@@ -244,7 +244,7 @@ func serveWS(s *serveSink, w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 	// CloseRead spawns the read pump this write-only handler otherwise
 	// lacks: it services control frames (ping/pong/close) and returns a
 	// context cancelled when the connection dies or r.Context() is
@@ -261,7 +261,7 @@ func serveWS(s *serveSink, w http.ResponseWriter, r *http.Request) {
 		return conn.Write(ctx, websocket.MessageText, doc)
 	}
 
-	c, ok := s.addClient(func() { conn.Close(websocket.StatusPolicyViolation, "client too slow") })
+	c, ok := s.addClient(func() { _ = conn.Close(websocket.StatusPolicyViolation, "client too slow") })
 	if !ok {
 		return
 	}

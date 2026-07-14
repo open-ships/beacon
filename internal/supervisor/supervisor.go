@@ -480,9 +480,7 @@ func (s *Supervisor) Statuses() []Status {
 	for id := range s.connectors {
 		out = append(out, Status{Kind: "connector", ID: id, State: "up"})
 	}
-	for _, st := range s.errored {
-		out = append(out, st)
-	}
+	out = append(out, s.errored...)
 	return out
 }
 

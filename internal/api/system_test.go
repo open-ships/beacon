@@ -194,7 +194,7 @@ func TestExportEmptyStoreReturnsEmptyArraysNotNull(t *testing.T) {
 
 	resp := doJSON(t, http.MethodGet, srv.URL+"/api/v1/config/export", nil)
 	mustStatus(t, resp, http.StatusOK)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)

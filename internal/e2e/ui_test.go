@@ -32,7 +32,7 @@ func postForm(t *testing.T, target string, values url.Values) *http.Response {
 // error.
 func bodyString(t *testing.T, resp *http.Response) string {
 	t.Helper()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -201,7 +201,7 @@ func TestUIDrivenLifecycle(t *testing.T) {
 			t.Fatalf("filter leaked pgn %v", e["pgn"])
 		}
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	// Step 6: poll the connector detail's live stats fragment until
 	// TotalMessages >= 1. The dashboard card itself only shows rates

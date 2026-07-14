@@ -97,7 +97,7 @@ func list[T any](ctx context.Context, db *sql.DB, table string) ([]T, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make([]T, 0)
 	for rows.Next() {
 		var doc string
@@ -157,7 +157,7 @@ func (s *Store) KnownConnectorIDs(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []string
 	for rows.Next() {
 		var id string

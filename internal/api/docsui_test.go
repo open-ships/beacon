@@ -63,7 +63,7 @@ func TestDocsPageIsSelfContained(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	mustStatus(t, resp, http.StatusOK)
 
 	ct := resp.Header.Get("Content-Type")
@@ -95,7 +95,7 @@ func TestScalarBundleIsServed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	mustStatus(t, resp, http.StatusOK)
 
 	ct := resp.Header.Get("Content-Type")
@@ -120,7 +120,7 @@ func TestScalarBundleHasLongCacheHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	mustStatus(t, resp, http.StatusOK)
 
 	cc := resp.Header.Get("Cache-Control")
@@ -137,7 +137,7 @@ func TestOpenAPIJSONServedAtDocsURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	mustStatus(t, resp, http.StatusOK)
 
 	body, err := io.ReadAll(resp.Body)

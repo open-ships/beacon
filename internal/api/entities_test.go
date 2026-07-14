@@ -96,7 +96,7 @@ func doJSON(t *testing.T, method, url string, body any) *http.Response {
 
 func decodeInto(t *testing.T, resp *http.Response, v any) {
 	t.Helper()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -110,9 +110,9 @@ func putEntity(t *testing.T, srv *httptest.Server, kind, id string, body any) *h
 func mustStatus(t *testing.T, resp *http.Response, want int) {
 	t.Helper()
 	if resp.StatusCode != want {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		var buf bytes.Buffer
-		buf.ReadFrom(resp.Body)
+		_, _ = buf.ReadFrom(resp.Body)
 		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, want, buf.String())
 	}
 }
@@ -436,7 +436,7 @@ func TestSchemaLinksUnderAppMount(t *testing.T) {
 	// The OpenAPI document must be reachable through the same mux too.
 	resp = doJSON(t, http.MethodGet, srv.URL+"/api/openapi.json", nil)
 	mustStatus(t, resp, http.StatusOK)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 // --- 500 bodies must not leak internal error text ---
@@ -463,7 +463,7 @@ func TestInternalErrorSanitized(t *testing.T) {
 	resp := doJSON(t, http.MethodGet, srv.URL+"/api/v1/sources", nil)
 	mustStatus(t, resp, http.StatusInternalServerError)
 	raw, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if err != nil {
 		t.Fatal(err)
 	}

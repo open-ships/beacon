@@ -116,7 +116,7 @@ func runExport(dbPath string, w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	cfg, err := st.LoadConfig(context.Background())
 	if err != nil {
@@ -149,7 +149,7 @@ func runImport(dbPath, filePath string, merge bool, w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	ctx := context.Background()
 	result := incoming
@@ -166,7 +166,7 @@ func runImport(dbPath, filePath string, merge bool, w io.Writer) error {
 	if err := st.ReplaceConfig(ctx, result); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
-	fmt.Fprintf(w, "imported: %d sources, %d sinks, %d connectors\n",
+	_, _ = fmt.Fprintf(w, "imported: %d sources, %d sinks, %d connectors\n",
 		len(result.Sources), len(result.Sinks), len(result.Connectors))
 	return nil
 }

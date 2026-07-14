@@ -213,7 +213,7 @@ func TestPushSkipAdvancesCursorAndCountsSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	q := queue.NewSQLite(st, "conn1", model.BufferLimits{MaxMessages: 1000})
 	chain, _ := filter.Compile(nil)
 
@@ -281,7 +281,7 @@ func TestResumeFromCheckpointAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	q := queue.NewSQLite(st, "conn1", model.BufferLimits{MaxMessages: 1000})
 	chain, _ := filter.Compile(nil)
 
@@ -321,7 +321,7 @@ func TestStopFlushesPendingBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	q := queue.NewSQLite(st, "conn1", model.BufferLimits{MaxMessages: 1000})
 	chain, _ := filter.Compile(nil)
 
@@ -354,7 +354,7 @@ func TestStopMidRetryCheckpointsPartialProgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	q := queue.NewSQLite(st, "conn1", model.BufferLimits{MaxMessages: 1000})
 	chain, _ := filter.Compile(nil)
 

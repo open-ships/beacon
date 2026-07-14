@@ -31,7 +31,7 @@ func getHealth(t *testing.T, a *App) map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var body map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
@@ -98,7 +98,7 @@ func TestDocsRedirectToUIDocs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusMovedPermanently {
 				t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusMovedPermanently)
 			}
