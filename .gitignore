@@ -49,4 +49,3 @@ beacon.db
 *.db-wal
 *.db-shm
 .claude/
-.superpowers/
