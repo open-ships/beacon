@@ -31,6 +31,17 @@ func TestValidateOK(t *testing.T) {
 	}
 }
 
+// A file sink with zero MaxFileBytes/MaxFiles (meaning "use defaults") must
+// validate cleanly — zero is not the same as negative.
+func TestValidateFileSinkOK(t *testing.T) {
+	cfg := validConfig()
+	cfg.Sinks = append(cfg.Sinks, Sink{ID: "log", Name: "Log", Type: SinkFile, Enabled: true,
+		FilePath: "/var/log/beacon/nav.jsonl", Format: FileFormatNDJSON})
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid file sink rejected: %v", err)
+	}
+}
+
 func TestValidateRejects(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -50,6 +61,26 @@ func TestValidateRejects(t *testing.T) {
 		{"connector unknown sink", func(c *Config) { c.Connectors[0].SinkID = "nope" }},
 		{"unknown source type", func(c *Config) { c.Sources[0].Type = "carrier-pigeon" }},
 		{"negative buffer limit", func(c *Config) { c.Connectors[0].Buffer.MaxMessages = -1 }},
+		{"file sink without file_path", func(c *Config) {
+			c.Sinks = append(c.Sinks, Sink{ID: "log", Name: "Log", Type: SinkFile, Enabled: true,
+				FilePath: "", Format: FileFormatNDJSON})
+		}},
+		{"file sink path not absolute", func(c *Config) {
+			c.Sinks = append(c.Sinks, Sink{ID: "log", Name: "Log", Type: SinkFile, Enabled: true,
+				FilePath: "relative/path.log", Format: FileFormatNDJSON})
+		}},
+		{"file sink bad format", func(c *Config) {
+			c.Sinks = append(c.Sinks, Sink{ID: "log", Name: "Log", Type: SinkFile, Enabled: true,
+				FilePath: "/var/log/beacon.log", Format: "xml"})
+		}},
+		{"file sink negative max_file_bytes", func(c *Config) {
+			c.Sinks = append(c.Sinks, Sink{ID: "log", Name: "Log", Type: SinkFile, Enabled: true,
+				FilePath: "/var/log/beacon.log", Format: FileFormatNDJSON, MaxFileBytes: -1})
+		}},
+		{"file sink negative max_files", func(c *Config) {
+			c.Sinks = append(c.Sinks, Sink{ID: "log", Name: "Log", Type: SinkFile, Enabled: true,
+				FilePath: "/var/log/beacon.log", Format: FileFormatNDJSON, MaxFiles: -1})
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

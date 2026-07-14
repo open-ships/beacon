@@ -43,6 +43,26 @@ each new stuck-entry retry sequence at `warn` (`push failed; retrying`,
 then drops to `debug` for that same entry's subsequent retries) — check
 its logs if `queue_depth` is climbing but nothing looks skipped.
 
+## File sink not writing
+
+1. **Is `file_path` absolute?** A file sink rejects a relative path at
+   validation time (`file_path must be an absolute path`) — it never even
+   attempts to open one, so this fails the write/import immediately rather
+   than showing up here later.
+2. **Does the parent directory exist and is it writable by the beacon
+   process?** The sink opens the file with `O_CREATE` but does not create
+   missing parent directories, and a permissions problem on either the
+   directory or an existing file surfaces the same way: the sink fails to
+   start.
+3. **Check `GET /health`** (admin port). A file sink that failed to open (or
+   whose last write/rotation failed) reports `"error"` there with an `err`
+   field naming the underlying OS error — read it before guessing.
+4. **Disk full?** Like CAN sinks, a file sink's write failure is retried
+   with the connector's backoff rather than dropping the message — see CAN
+   write failures above. Watch that connector's `queue_depth` climb while
+   nothing is being written; once space frees up, the sink catches up
+   automatically with no manual intervention.
+
 ## Queue growth
 
 Every connector's buffer is bounded by its own `max_messages` / `max_age`

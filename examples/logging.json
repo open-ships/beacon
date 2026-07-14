@@ -1,0 +1,53 @@
+{
+  "sources": [
+    {
+      "id": "can0",
+      "name": "CAN bus",
+      "type": "socketcan",
+      "enabled": true,
+      "interface": "can0"
+    }
+  ],
+  "sinks": [
+    {
+      "id": "nav-ndjson",
+      "name": "Nav log (NDJSON)",
+      "type": "file",
+      "enabled": true,
+      "file_path": "/data/log/nav.ndjson",
+      "format": "ndjson",
+      "max_file_bytes": 52428800,
+      "max_files": 3
+    },
+    {
+      "id": "nav-candump",
+      "name": "Nav log (candump)",
+      "type": "file",
+      "enabled": true,
+      "file_path": "/data/log/nav.candump",
+      "format": "candump",
+      "max_file_bytes": 52428800,
+      "max_files": 3
+    }
+  ],
+  "connectors": [
+    {
+      "id": "log-ndjson",
+      "name": "Everything to NDJSON",
+      "source_id": "can0",
+      "sink_id": "nav-ndjson",
+      "enabled": true,
+      "filters": [],
+      "buffer": {}
+    },
+    {
+      "id": "log-candump",
+      "name": "Everything to candump",
+      "source_id": "can0",
+      "sink_id": "nav-candump",
+      "enabled": true,
+      "filters": [],
+      "buffer": {}
+    }
+  ]
+}

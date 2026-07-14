@@ -56,6 +56,8 @@ func New(ctx context.Context, cfg model.Sink, mgr *bus.Manager, ds *DataServer, 
 		return newServeSink(cfg, ds, log, met, serveWS)
 	case model.SinkTCP:
 		return newTCPSink(cfg, log, met)
+	case model.SinkFile:
+		return newFileSink(cfg, log)
 	default:
 		return nil, fmt.Errorf("sink %q: unknown type %q", cfg.ID, cfg.Type)
 	}

@@ -26,6 +26,21 @@ const (
 	SinkHTTPSSE   SinkType = "http_sse"
 	SinkHTTPWS    SinkType = "http_ws"
 	SinkTCP       SinkType = "tcp"
+	SinkFile      SinkType = "file"
+)
+
+// File sink formats (Sink.Format, sink type file only).
+const (
+	FileFormatNDJSON  = "ndjson"
+	FileFormatCANDump = "candump"
+)
+
+// Defaults applied by the file sink when MaxFileBytes/MaxFiles are left
+// unset (0). MaxFiles counts the active file plus rotated backups, so the
+// default keeps the active file and 4 rotated backups.
+const (
+	DefaultMaxFileBytes int64 = 100 << 20 // 100 MiB
+	DefaultMaxFiles           = 5
 )
 
 // ReservedPathPrefixes cannot be used by HTTP sink paths.
@@ -63,14 +78,18 @@ type Source struct {
 }
 
 type Sink struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	Type      SinkType `json:"type"`
-	Enabled   bool     `json:"enabled"`
-	Interface string   `json:"interface,omitempty"` // socketcan
-	Port      string   `json:"port,omitempty"`      // usbcan
-	Path      string   `json:"path,omitempty"`      // http_sse / http_ws (served on data server)
-	Address   string   `json:"address,omitempty"`   // tcp listen address
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Type         SinkType `json:"type"`
+	Enabled      bool     `json:"enabled"`
+	Interface    string   `json:"interface,omitempty"`      // socketcan
+	Port         string   `json:"port,omitempty"`           // usbcan
+	Path         string   `json:"path,omitempty"`           // http_sse / http_ws (served on data server)
+	Address      string   `json:"address,omitempty"`        // tcp listen address
+	FilePath     string   `json:"file_path,omitempty"`      // file: absolute output path
+	Format       string   `json:"format,omitempty"`         // file: "ndjson" or "candump"
+	MaxFileBytes int64    `json:"max_file_bytes,omitempty"` // file: rotate threshold, 0 = default
+	MaxFiles     int      `json:"max_files,omitempty"`      // file: total files kept, 0 = default
 }
 
 type BufferLimits struct {
