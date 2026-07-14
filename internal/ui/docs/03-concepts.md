@@ -4,8 +4,9 @@
 
 - A **source** decodes NMEA 2000 messages onto beacon from one endpoint: a
   CAN interface, a USB-CAN adapter, or an HTTP stream.
-- A **sink** delivers messages somewhere: back onto a CAN bus, or out over
-  HTTP/TCP to clients.
+- A **sink** delivers messages somewhere: back onto a CAN bus, out over
+  HTTP/TCP to clients, or appended to a local file (`ndjson` or `candump`
+  format).
 - A **connector** is the only thing that actually moves data — it names
   exactly one source and one sink, an optional list of CEL filter
   expressions (see the filters page), and its own durable buffer. A source
@@ -105,6 +106,26 @@ Delivery guarantees differ by sink kind:
   clients happen to be connected at the moment, with no per-message
   confirmation. SSE/WS clients can recover anything they missed via replay
   (above), bounded by the connector's buffer limits; a `tcp` client cannot.
+- **File sinks** (`file`) confirm each write the same way CAN sinks confirm
+  a push: a write or flush failure is retried with the connector's backoff
+  until it succeeds, so nothing is silently dropped while the disk stays
+  writable — at-least-once delivery. In `ndjson` format every envelope is
+  written as one JSON object per line; in `candump` format an envelope with
+  no raw CAN bytes (the same "undecodable PGN" case CAN sinks skip — see
+  the `raw` field note above) is **skipped**, not retried, and a payload too
+  large for the fast-packet protocol to re-fragment (over 223 bytes) is
+  skipped too. A payload over 8 bytes is re-fragmented into wire-accurate
+  NMEA 2000 fast-packet frames — the same frames that would actually appear
+  on the CAN bus — so a `candump` log can be replayed with the `can-utils`
+  package's `canplayer`: `canplayer -I nav.log vcan0=<connector-id>` maps
+  the connector id each line carries in place of an interface name
+  (candump's token field) onto a real or virtual interface (`vcan0` here)
+  to send the frames on. The active file rotates to `<path>.1` (and
+  `.1`→`.2`, etc., oldest dropped) once it exceeds `max_file_bytes`;
+  `max_files` counts the active file plus its rotated backups. A short write
+  from a full disk (`ENOSPC`) can leave a torn trailing line or, once the
+  condition clears and the retried write succeeds, a duplicate of that one
+  message — both expected under this delivery model, not corruption.
 
 ## Hot apply
 

@@ -197,6 +197,7 @@ func TestSinkTypeFieldsFragmentPerType(t *testing.T) {
 		{"http_sse", []string{`name="path"`}},
 		{"http_ws", []string{`name="path"`}},
 		{"tcp", []string{`name="address"`}},
+		{"file", []string{`name="file_path"`, `name="format"`, `name="max_file_bytes"`, `name="max_files"`, "ndjson", "candump"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.typ, func(t *testing.T) {
@@ -354,6 +355,193 @@ func TestSinkCreateRoundTrip(t *testing.T) {
 	}
 	if got.Address != "0.0.0.0:2000" || !got.Enabled {
 		t.Fatalf("persisted sink = %+v", got)
+	}
+}
+
+// --- File sink ---
+
+// TestFileSinkCreateRoundTrip covers the file sink's four type-specific
+// fields end to end: submitted through the form, persisted via
+// svc.PutSink, and visible again on the sinks table (Detail column) and the
+// edit form. max_file_bytes/max_files are left blank on the submission —
+// blank means "use the file sink's built-in default" (model.
+// DefaultMaxFileBytes/DefaultMaxFiles), which toModel's parseOptionalInt64/
+// parseOptionalInt turn into 0, not an error.
+func TestFileSinkCreateRoundTrip(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	resp := postForm(t, srv, "/ui/sinks", url.Values{
+		"id": {"navlog"}, "name": {"Nav log"}, "type": {"file"},
+		"enabled": {"1"}, "file_path": {"/data/nav.log"}, "format": {"ndjson"},
+	})
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	if !strings.Contains(body, "hx-swap-oob") || !strings.Contains(body, "alert-success") {
+		t.Fatalf("create response missing oob swap/success alert:\n%s", body)
+	}
+	// The sinks table's Detail column shows the file path for a file sink,
+	// the same way it shows an address for a tcp sink (see sinkDetail).
+	if !strings.Contains(body, "<code>/data/nav.log</code>") {
+		t.Fatalf("create response table row missing file path detail:\n%s", body)
+	}
+
+	got, err := svc.GetSink(context.Background(), "navlog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FilePath != "/data/nav.log" || got.Format != "ndjson" || got.MaxFileBytes != 0 || got.MaxFiles != 0 || !got.Enabled {
+		t.Fatalf("persisted sink = %+v", got)
+	}
+
+	// The edit form round-trips file_path/format and shows the defaults as
+	// placeholders (blank stored value -> blank input, default shown only
+	// as a placeholder, not baked into the value).
+	resp2, err := http.Get(srv.URL + "/ui/frag/sink-form?id=navlog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp2, http.StatusOK)
+	body2 := mustBody(t, resp2)
+	for _, want := range []string{
+		`name="file_path" value="/data/nav.log"`,
+		`option value="ndjson" selected`,
+		`placeholder="104857600"`,
+		`placeholder="5"`,
+	} {
+		if !strings.Contains(body2, want) {
+			t.Fatalf("edit form missing %q:\n%s", want, body2)
+		}
+	}
+}
+
+// TestFileSinkMaxFileBytesAndMaxFilesRoundTrip covers explicit (non-blank)
+// max_file_bytes/max_files values persisting and round-tripping back into
+// the edit form as their literal values, not the defaults.
+func TestFileSinkMaxFileBytesAndMaxFilesRoundTrip(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	resp := postForm(t, srv, "/ui/sinks", url.Values{
+		"id": {"navlog"}, "name": {"Nav log"}, "type": {"file"},
+		"file_path": {"/data/nav.candump"}, "format": {"candump"},
+		"max_file_bytes": {"52428800"}, "max_files": {"3"},
+	})
+	mustStatus(t, resp, http.StatusOK)
+
+	got, err := svc.GetSink(context.Background(), "navlog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Format != "candump" || got.MaxFileBytes != 52428800 || got.MaxFiles != 3 {
+		t.Fatalf("persisted sink = %+v", got)
+	}
+
+	resp2, err := http.Get(srv.URL + "/ui/frag/sink-form?id=navlog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := mustBody(t, resp2)
+	for _, want := range []string{
+		`name="max_file_bytes" value="52428800"`,
+		`name="max_files" value="3"`,
+		`option value="candump" selected`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("edit form missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// TestFileSinkCreateRelativePathRendersFormNot500 covers model.Sink.
+// Validate's file_path-must-be-absolute rule surfacing as a 200 alert with
+// the submitted value preserved, the same contract every other sink
+// validation failure follows (see TestSinkCreateValidationErrorRendersFormNot500).
+func TestFileSinkCreateRelativePathRendersFormNot500(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	resp := postForm(t, srv, "/ui/sinks", url.Values{
+		"id": {"navlog"}, "name": {"Nav log"}, "type": {"file"},
+		"file_path": {"relative/nav.log"}, "format": {"ndjson"},
+	})
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	if !strings.Contains(body, "alert-error") {
+		t.Fatalf("expected a validation alert:\n%s", body)
+	}
+	if !strings.Contains(body, `name="file_path" value="relative/nav.log"`) {
+		t.Fatalf("expected the submitted file_path to be preserved:\n%s", body)
+	}
+	if _, err := svc.GetSink(context.Background(), "navlog"); err == nil {
+		t.Fatal("invalid file sink should not have been persisted")
+	}
+}
+
+// TestFileSinkNonNumericMaxFileBytesRendersFormNot500 covers toModel's
+// parseOptionalInt64 error path: a non-numeric max_file_bytes must become an
+// inline validation alert (with the bad value preserved), never a 500 —
+// the same contract TestConnectorMaxAgeParseErrorRendersFormNot500 covers
+// for the connector form's buffer fields.
+func TestFileSinkNonNumericMaxFileBytesRendersFormNot500(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	resp := postForm(t, srv, "/ui/sinks", url.Values{
+		"id": {"navlog"}, "name": {"Nav log"}, "type": {"file"},
+		"file_path": {"/data/nav.log"}, "format": {"ndjson"},
+		"max_file_bytes": {"not-a-number"},
+	})
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	if !strings.Contains(body, "alert-error") {
+		t.Fatalf("expected a validation alert:\n%s", body)
+	}
+	if !strings.Contains(body, `name="max_file_bytes" value="not-a-number"`) {
+		t.Fatalf("expected the submitted max_file_bytes to be preserved:\n%s", body)
+	}
+	if _, err := svc.GetSink(context.Background(), "navlog"); err == nil {
+		t.Fatal("file sink with a non-numeric max_file_bytes should not have been persisted")
+	}
+}
+
+// TestFileSinkNonNumericMaxFilesRendersFormNot500 is
+// TestFileSinkNonNumericMaxFileBytesRendersFormNot500's counterpart for
+// max_files (parseOptionalInt, the int-valued sibling of parseOptionalInt64
+// — see forms.go).
+func TestFileSinkNonNumericMaxFilesRendersFormNot500(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	resp := postForm(t, srv, "/ui/sinks", url.Values{
+		"id": {"navlog"}, "name": {"Nav log"}, "type": {"file"},
+		"file_path": {"/data/nav.log"}, "format": {"ndjson"},
+		"max_files": {"not-a-number"},
+	})
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	if !strings.Contains(body, "alert-error") {
+		t.Fatalf("expected a validation alert:\n%s", body)
+	}
+	if !strings.Contains(body, `name="max_files" value="not-a-number"`) {
+		t.Fatalf("expected the submitted max_files to be preserved:\n%s", body)
+	}
+	if _, err := svc.GetSink(context.Background(), "navlog"); err == nil {
+		t.Fatal("file sink with a non-numeric max_files should not have been persisted")
+	}
+}
+
+// TestSinksPageShowsFilePathDetailForFileSink covers the sinks table's
+// Detail column (frag_sink_table.html) rendering the file path for a file
+// sink on the plain page load, not just the create-response OOB swap
+// TestFileSinkCreateRoundTrip already covers.
+func TestSinksPageShowsFilePathDetailForFileSink(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	must(t, svc.PutSink(context.Background(), model.Sink{
+		ID: "navlog", Name: "Nav log", Type: model.SinkFile, Enabled: true,
+		FilePath: "/data/nav.log", Format: model.FileFormatNDJSON,
+	}, true))
+
+	resp, err := http.Get(srv.URL + "/ui/sinks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	for _, want := range []string{"Nav log", "<code>navlog</code>", "file", "<code>/data/nav.log</code>"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("sinks page missing %q:\n%s", want, body)
+		}
 	}
 }
 

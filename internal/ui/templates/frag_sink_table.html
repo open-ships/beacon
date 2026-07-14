@@ -1,5 +1,10 @@
 {{/* Mirrors frag_source_table.html; see its comments for rationale. Data:
-     internal/ui/forms.go's sinkTableData. */}}
+     internal/ui/forms.go's sinkTableData. Unlike the sources table, this
+     one has a Detail column: sinks have a sixth type (file) whose whole
+     point is WHERE it writes to, so each row's Detail (forms.go's
+     sinkDetail: Interface/Port/Path/Address/FilePath depending on .Type)
+     renders that value directly in the table instead of requiring an Edit
+     click to see it. */}}
 {{define "sink-panel-inner"}}
 {{if .Alert}}
 {{if eq .Alert.Kind "success"}}
@@ -21,6 +26,7 @@
         <th>Name</th>
         <th>ID</th>
         <th>Type</th>
+        <th>Detail</th>
         <th>Enabled</th>
         <th>State</th>
         <th></th>
@@ -32,6 +38,7 @@
         <td>{{.Name}}</td>
         <td><code>{{.ID}}</code></td>
         <td>{{.Type}}</td>
+        <td><code>{{.Detail}}</code></td>
         <td>
           {{if .Enabled}}<span class="badge badge-success">enabled</span>
           {{else}}<span class="badge badge-ghost">disabled</span>{{end}}
@@ -55,7 +62,7 @@
         </td>
       </tr>
       {{else}}
-      <tr><td colspan="6" class="text-center opacity-70">No sinks configured.</td></tr>
+      <tr><td colspan="7" class="text-center opacity-70">No sinks configured.</td></tr>
       {{end}}
     </tbody>
   </table>

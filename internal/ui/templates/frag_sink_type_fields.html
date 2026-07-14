@@ -1,6 +1,12 @@
 {{/* Data: internal/ui/forms.go's sinkTypeFieldsData. Mirrors
      frag_source_type_fields.html except http_sse/http_ws carries a Path
-     (not URL+Headers) and there's a fifth type, tcp, carrying Address. */}}
+     (not URL+Headers), there's a fifth type, tcp, carrying Address, and a
+     sixth, file, carrying FilePath/Format/MaxFileBytes/MaxFiles.
+     MaxFileBytes/MaxFiles are plain number inputs left blank by default;
+     DefaultMaxFileBytes/DefaultMaxFiles (model.DefaultMaxFileBytes/
+     DefaultMaxFiles, formatted in Go — see fileSinkDefaults) show as
+     placeholders so the operator can see what "blank" actually means
+     without this template hardcoding the numbers. */}}
 {{define "sink-type-fields"}}
 {{if eq .Type "socketcan"}}
 <fieldset class="fieldset">
@@ -31,6 +37,31 @@
   <legend class="fieldset-legend">Listen address</legend>
   <input type="text" id="sink-address" name="address" value="{{.Address}}"
          placeholder="0.0.0.0:2000" class="input w-full" required>
+</fieldset>
+{{else if eq .Type "file"}}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">File path</legend>
+  <input type="text" id="sink-file-path" name="file_path" value="{{.FilePath}}"
+         placeholder="/data/nav.log" class="input w-full" required>
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Format</legend>
+  <select id="sink-format" name="format" class="select w-full">
+    <option value="ndjson" {{if or (eq .Format "ndjson") (eq .Format "")}}selected{{end}}>ndjson</option>
+    <option value="candump" {{if eq .Format "candump"}}selected{{end}}>candump</option>
+  </select>
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Max file bytes</legend>
+  <input type="number" id="sink-max-file-bytes" name="max_file_bytes" value="{{.MaxFileBytes}}"
+         placeholder="{{.DefaultMaxFileBytes}}" class="input w-full" min="0">
+  <p class="text-xs opacity-70">0 or blank = default ({{.DefaultMaxFileBytes}} bytes)</p>
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Max files</legend>
+  <input type="number" id="sink-max-files" name="max_files" value="{{.MaxFiles}}"
+         placeholder="{{.DefaultMaxFiles}}" class="input w-full" min="0">
+  <p class="text-xs opacity-70">0 or blank = default ({{.DefaultMaxFiles}} files)</p>
 </fieldset>
 {{end}}
 {{end}}

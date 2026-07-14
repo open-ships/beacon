@@ -29,6 +29,16 @@ stops validating, that test fails.
   mirrors everything the upstream one publishes onto a local CAN bus.
   Change the `url` to your upstream beacon's actual data-address and sink
   path before using this.
+- **`logging.json`** — one CAN source (`can0`) feeding *two* connectors into
+  two local `file` sinks: one `ndjson` (`/data/log/nav.ndjson`) and one
+  `candump` (`/data/log/nav.candump`), both capped at 50 MiB &times; 3 files
+  (`max_file_bytes: 52428800`, `max_files: 3` — the active file plus two
+  rotated backups). No filters, so everything the source decodes is logged.
+  `file_path` must be an absolute path that exists on disk (the sink opens
+  it but does not create missing parent directories) — create `/data/log`
+  first, or change both paths to a directory you control. See the concepts
+  page (`/ui/docs/concepts`) for file sink delivery semantics, rotation, and
+  replaying a `candump` log with `canplayer`.
 - **`vcan-dev.json`** — identical to `minimal.json` but pointed at
   `vcan0` instead of a real interface, for developing and testing beacon
   with no CAN hardware attached. Bring the virtual interface up first (see

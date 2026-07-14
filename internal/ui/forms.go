@@ -8,7 +8,8 @@
 // (sourceX / sinkX pairs) rather than a shared generic implementation: the
 // two entities' type-specific fields differ enough (source http_sse/
 // http_ws carries URL+Headers; sink http_sse/http_ws carries Path, and
-// sink alone has a tcp type carrying Address) that a generic abstraction
+// sink alone has tcp (Address) and file (FilePath/Format/MaxFileBytes/
+// MaxFiles) types with no source equivalent) that a generic abstraction
 // would need almost as much per-kind branching as just writing both out,
 // while being harder to follow — the same tradeoff internal/api/entities.go
 // already made for its source/sink/connector route registration. Connectors
@@ -554,22 +555,47 @@ func handleSourceDelete(svc *config.Service, log *slog.Logger) http.HandlerFunc 
 //
 // Exactly parallel to the Sources section above; see its comments for
 // rationale not repeated here. The only structural differences: sinks have
-// a fifth type (tcp, carrying Address) and their http_sse/http_ws type
+// a fifth type (tcp, carrying Address) and a sixth (file, carrying
+// FilePath/Format/MaxFileBytes/MaxFiles), and their http_sse/http_ws type
 // carries a Path rather than a URL+Headers pair.
 
 // sinkRow is one row of the sinks table (frag_sink_table.html):
-// model.Sink plus its live supervisor state.
+// model.Sink plus its live supervisor state and its type-specific Detail
+// value (see sinkDetail).
 type sinkRow struct {
 	model.Sink
-	State string
+	State  string
+	Detail string
 }
 
 func sinkRows(sinks []model.Sink, statuses []supervisor.Status) []sinkRow {
 	rows := make([]sinkRow, len(sinks))
 	for i, s := range sinks {
-		rows[i] = sinkRow{Sink: s, State: stateFor(statuses, "sink", s.ID)}
+		rows[i] = sinkRow{Sink: s, State: stateFor(statuses, "sink", s.ID), Detail: sinkDetail(s)}
 	}
 	return rows
+}
+
+// sinkDetail renders the sinks table's Detail column: the one field that
+// actually says WHERE a sink writes to (or reads a push from), matching
+// whichever field frag_sink_type_fields.html shows as that sink's primary
+// input for its type — Interface for socketcan, Port for usbcan, Path for
+// http_sse/http_ws, Address for tcp, FilePath for file.
+func sinkDetail(s model.Sink) string {
+	switch s.Type {
+	case model.SinkSocketCAN:
+		return s.Interface
+	case model.SinkUSBCAN:
+		return s.Port
+	case model.SinkHTTPSSE, model.SinkHTTPWS:
+		return s.Path
+	case model.SinkTCP:
+		return s.Address
+	case model.SinkFile:
+		return s.FilePath
+	default:
+		return ""
+	}
 }
 
 // sinkTableData is frag_sink_table.html's "sink-panel"/"sink-panel-oob"
@@ -585,15 +611,41 @@ type sinksPageData struct {
 	sinkTableData
 }
 
-// sinkTypeFieldsData is frag_sink_type_fields.html's data.
+// sinkTypeFieldsData is frag_sink_type_fields.html's data. FilePath/Format/
+// MaxFileBytes/MaxFiles back the file type's fields (model.Sink's
+// file_path/format/max_file_bytes/max_files); MaxFileBytes and MaxFiles are
+// plain strings for the same empty-string-means-unset reason
+// connectorFormViewData's MaxMessages/MaxBytes are (see formatOptionalInt64/
+// parseOptionalInt64) — 0/blank means "use the file sink's built-in
+// default". DefaultMaxFileBytes/DefaultMaxFiles carry those defaults
+// (model.DefaultMaxFileBytes/DefaultMaxFiles, rendered as decimal strings by
+// fileSinkDefaults) purely for the template to show as input placeholders,
+// so the actual numbers live in the model package, not hardcoded here or in
+// the template.
 type sinkTypeFieldsData struct {
-	Type          string
-	Interface     string
-	Port          string
-	Path          string
-	Address       string
-	CANInterfaces []string
-	SerialPorts   []string
+	Type                string
+	Interface           string
+	Port                string
+	Path                string
+	Address             string
+	FilePath            string
+	Format              string
+	MaxFileBytes        string
+	MaxFiles            string
+	DefaultMaxFileBytes string
+	DefaultMaxFiles     string
+	CANInterfaces       []string
+	SerialPorts         []string
+}
+
+// fileSinkDefaults returns model.DefaultMaxFileBytes/DefaultMaxFiles as
+// plain decimal strings, for sinkTypeFieldsData.DefaultMaxFileBytes/
+// DefaultMaxFiles — every construction site below sets these two fields
+// from here rather than a literal, so the placeholders shown on the file
+// sink's max_file_bytes/max_files inputs can't drift from the model
+// package's actual defaults.
+func fileSinkDefaults() (maxFileBytes, maxFiles string) {
+	return strconv.FormatInt(model.DefaultMaxFileBytes, 10), strconv.Itoa(model.DefaultMaxFiles)
 }
 
 // sinkFormViewData is frag_sink_form.html's data.
@@ -607,66 +659,99 @@ type sinkFormViewData struct {
 }
 
 func sinkFormViewFromModel(v model.Sink, can, serial []string) sinkFormViewData {
+	defMaxFileBytes, defMaxFiles := fileSinkDefaults()
 	return sinkFormViewData{
 		IsEdit:  true,
 		ID:      v.ID,
 		Name:    v.Name,
 		Enabled: v.Enabled,
 		TypeFields: sinkTypeFieldsData{
-			Type:          string(v.Type),
-			Interface:     v.Interface,
-			Port:          v.Port,
-			Path:          v.Path,
-			Address:       v.Address,
-			CANInterfaces: can,
-			SerialPorts:   serial,
+			Type:                string(v.Type),
+			Interface:           v.Interface,
+			Port:                v.Port,
+			Path:                v.Path,
+			Address:             v.Address,
+			FilePath:            v.FilePath,
+			Format:              v.Format,
+			MaxFileBytes:        formatOptionalInt64(v.MaxFileBytes),
+			MaxFiles:            formatOptionalInt(v.MaxFiles),
+			DefaultMaxFileBytes: defMaxFileBytes,
+			DefaultMaxFiles:     defMaxFiles,
+			CANInterfaces:       can,
+			SerialPorts:         serial,
 		},
 	}
 }
 
 func blankSinkFormView(can, serial []string) sinkFormViewData {
+	defMaxFileBytes, defMaxFiles := fileSinkDefaults()
 	return sinkFormViewData{
 		TypeFields: sinkTypeFieldsData{
-			Type:          string(model.SinkSocketCAN),
-			CANInterfaces: can,
-			SerialPorts:   serial,
+			Type:                string(model.SinkSocketCAN),
+			DefaultMaxFileBytes: defMaxFileBytes,
+			DefaultMaxFiles:     defMaxFiles,
+			CANInterfaces:       can,
+			SerialPorts:         serial,
 		},
 	}
 }
 
 func sinkFormViewFromRequest(r *http.Request, isEdit bool, can, serial []string) sinkFormViewData {
+	defMaxFileBytes, defMaxFiles := fileSinkDefaults()
 	return sinkFormViewData{
 		IsEdit:  isEdit,
 		ID:      r.PostFormValue("id"),
 		Name:    r.PostFormValue("name"),
 		Enabled: r.PostFormValue("enabled") != "",
 		TypeFields: sinkTypeFieldsData{
-			Type:          r.PostFormValue("type"),
-			Interface:     r.PostFormValue("interface"),
-			Port:          r.PostFormValue("port"),
-			Path:          r.PostFormValue("path"),
-			Address:       r.PostFormValue("address"),
-			CANInterfaces: can,
-			SerialPorts:   serial,
+			Type:                r.PostFormValue("type"),
+			Interface:           r.PostFormValue("interface"),
+			Port:                r.PostFormValue("port"),
+			Path:                r.PostFormValue("path"),
+			Address:             r.PostFormValue("address"),
+			FilePath:            r.PostFormValue("file_path"),
+			Format:              r.PostFormValue("format"),
+			MaxFileBytes:        r.PostFormValue("max_file_bytes"),
+			MaxFiles:            r.PostFormValue("max_files"),
+			DefaultMaxFileBytes: defMaxFileBytes,
+			DefaultMaxFiles:     defMaxFiles,
+			CANInterfaces:       can,
+			SerialPorts:         serial,
 		},
 	}
 }
 
-// toModel converts a submitted form view into a model.Sink. Unlike
-// sourceFormViewData.toModel, there is no parse step that can fail here
-// (sinks carry no headers-style free-text field) — kept as a method
-// returning an error anyway for symmetry with sources and so writeSink can
-// treat both uniformly.
+// toModel converts a submitted form view into a model.Sink. The two file
+// sink number fields (MaxFileBytes/MaxFiles) are the only parse steps that
+// can fail here, the same "" -> 0 -> default / non-numeric -> validation
+// alert contract as connectorFormViewData.toModel's buffer fields (see
+// parseOptionalInt64/parseOptionalInt) — everything else (missing/invalid
+// type-specific field for the selected type, an unknown type, ...) is left
+// for config.Service's own structural validation to catch and report as a
+// *config.ValidationError, so this package doesn't duplicate model
+// validation rules.
 func (f sinkFormViewData) toModel() (model.Sink, error) {
+	maxFileBytes, err := parseOptionalInt64(f.TypeFields.MaxFileBytes)
+	if err != nil {
+		return model.Sink{}, fmt.Errorf("max_file_bytes: %w", err)
+	}
+	maxFiles, err := parseOptionalInt(f.TypeFields.MaxFiles)
+	if err != nil {
+		return model.Sink{}, fmt.Errorf("max_files: %w", err)
+	}
 	return model.Sink{
-		ID:        f.ID,
-		Name:      f.Name,
-		Type:      model.SinkType(f.TypeFields.Type),
-		Enabled:   f.Enabled,
-		Interface: f.TypeFields.Interface,
-		Port:      f.TypeFields.Port,
-		Path:      f.TypeFields.Path,
-		Address:   f.TypeFields.Address,
+		ID:           f.ID,
+		Name:         f.Name,
+		Type:         model.SinkType(f.TypeFields.Type),
+		Enabled:      f.Enabled,
+		Interface:    f.TypeFields.Interface,
+		Port:         f.TypeFields.Port,
+		Path:         f.TypeFields.Path,
+		Address:      f.TypeFields.Address,
+		FilePath:     f.TypeFields.FilePath,
+		Format:       f.TypeFields.Format,
+		MaxFileBytes: maxFileBytes,
+		MaxFiles:     maxFiles,
 	}, nil
 }
 
@@ -717,15 +802,22 @@ func handleSinkFormFrag(svc *config.Service, log *slog.Logger) http.HandlerFunc 
 func handleSinkTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		can, serial := discoverHardware()
+		defMaxFileBytes, defMaxFiles := fileSinkDefaults()
 		q := r.URL.Query()
 		data := sinkTypeFieldsData{
-			Type:          q.Get("type"),
-			Interface:     q.Get("interface"),
-			Port:          q.Get("port"),
-			Path:          q.Get("path"),
-			Address:       q.Get("address"),
-			CANInterfaces: can,
-			SerialPorts:   serial,
+			Type:                q.Get("type"),
+			Interface:           q.Get("interface"),
+			Port:                q.Get("port"),
+			Path:                q.Get("path"),
+			Address:             q.Get("address"),
+			FilePath:            q.Get("file_path"),
+			Format:              q.Get("format"),
+			MaxFileBytes:        q.Get("max_file_bytes"),
+			MaxFiles:            q.Get("max_files"),
+			DefaultMaxFileBytes: defMaxFileBytes,
+			DefaultMaxFiles:     defMaxFiles,
+			CANInterfaces:       can,
+			SerialPorts:         serial,
 		}
 		renderFragment(w, log, "sink-type-fields", data)
 	}
@@ -965,6 +1057,23 @@ func parseOptionalInt64(s string) (int64, error) {
 		return 0, fmt.Errorf("%q is not a whole number", s)
 	}
 	return v, nil
+}
+
+// formatOptionalInt/parseOptionalInt are formatOptionalInt64/
+// parseOptionalInt64's int-valued counterparts, for model.Sink.MaxFiles
+// (an int, unlike the int64 buffer limits and MaxFileBytes) — same "" means
+// 0/unset contract, delegated to the int64 versions rather than
+// reimplemented.
+func formatOptionalInt(v int) string {
+	return formatOptionalInt64(int64(v))
+}
+
+func parseOptionalInt(s string) (int, error) {
+	v, err := parseOptionalInt64(s)
+	if err != nil {
+		return 0, err
+	}
+	return int(v), nil
 }
 
 // formatMaxAge renders a buffer max-age as a Go duration string, or "" for
