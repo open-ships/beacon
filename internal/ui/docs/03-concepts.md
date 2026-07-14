@@ -114,18 +114,24 @@ Delivery guarantees differ by sink kind:
   no raw CAN bytes (the same "undecodable PGN" case CAN sinks skip — see
   the `raw` field note above) is **skipped**, not retried, and a payload too
   large for the fast-packet protocol to re-fragment (over 223 bytes) is
-  skipped too. A payload over 8 bytes is re-fragmented into wire-accurate
+  skipped too. Fast-packet PGNs are re-fragmented into wire-accurate
   NMEA 2000 fast-packet frames — the same frames that would actually appear
   on the CAN bus — so a `candump` log can be replayed with the `can-utils`
   package's `canplayer`: `canplayer -I nav.log vcan0=<connector-id>` maps
   the connector id each line carries in place of an interface name
   (candump's token field) onto a real or virtual interface (`vcan0` here)
-  to send the frames on. The active file rotates to `<path>.1` (and
+  to send the frames on. Fast-packet detection uses the PGN catalog; for a
+  PGN the catalog doesn't know, beacon falls back to payload size (over 8
+  bytes → fast-packet), so a small-payload message on an uncataloged
+  proprietary fast-packet PGN logs as a single frame rather than a
+  fast-packet sequence. The active file rotates to `<path>.1` (and
   `.1`→`.2`, etc., oldest dropped) once it exceeds `max_file_bytes`;
   `max_files` counts the active file plus its rotated backups. A short write
   from a full disk (`ENOSPC`) can leave a torn trailing line or, once the
-  condition clears and the retried write succeeds, a duplicate of that one
-  message — both expected under this delivery model, not corruption.
+  condition clears and the retried write succeeds, a logically-equivalent
+  resend of that one message (for fast-packet lines the resend carries a
+  fresh sequence number, so it isn't byte-identical) — both expected under
+  this delivery model, not corruption.
 
 ## Hot apply
 
