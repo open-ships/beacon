@@ -3,10 +3,10 @@
 ## Sources, sinks, connectors
 
 - A **source** decodes NMEA 2000 messages onto beacon from one endpoint: a
-  CAN interface, a USB-CAN adapter, or an HTTP stream.
+  CAN interface, a USB-CAN adapter, an HTTP stream, or an MQTT topic.
 - A **sink** delivers messages somewhere: back onto a CAN bus, out over
-  HTTP/TCP to clients, or appended to a local file (`ndjson` or `candump`
-  format).
+  HTTP/TCP/MQTT to clients and brokers, or appended to a local file
+  (`ndjson` or `candump` format).
 - A **connector** is the only thing that actually moves data — it names
   exactly one source and one sink, an optional list of CEL filter
   expressions (see the filters page), and its own durable buffer. A source
@@ -19,7 +19,7 @@ filters and its own buffer.
 
 ## The envelope
 
-Every message flowing through beacon — in a connector's buffer, over SSE/WS/TCP,
+Every message flowing through beacon — in a connector's buffer, over SSE/WS/TCP/MQTT,
 and as the value a CEL filter's `msg` variable is bound to — is a JSON
 object with this shape:
 
@@ -33,7 +33,7 @@ object with this shape:
 | `priority` | integer | always | 0 (highest) to 7 (lowest) |
 | `timestamp` | string | always | RFC 3339 timestamp |
 | `payload` | object or `null` | always | the decoded PGN fields, one JSON key per field, `null` for a PGN beacon doesn't know how to decode |
-| `raw` | string (base64) | usually | the CAN payload bytes: for an undecodable PGN, the original bytes as received; for a decoded PGN, the canonical re-encoding (omitted in the rare case re-encoding fails). Undecodable PGNs still carry these bytes here, but a CAN sink cannot write them back out (see Delivery guarantees below) — they're skipped by `socketcan`/`usbcan` sinks and delivered as-is to HTTP/TCP sinks |
+| `raw` | string (base64) | usually | the CAN payload bytes: for an undecodable PGN, the original bytes as received; for a decoded PGN, the canonical re-encoding (omitted in the rare case re-encoding fails). Undecodable PGNs still carry these bytes here, but a CAN sink cannot write them back out (see Delivery guarantees below) — they're skipped by `socketcan`/`usbcan` sinks and delivered as-is to HTTP/TCP/MQTT sinks |
 
 `id` and `connector` are only populated once a message has passed through a
 connector's buffer — a freshly-decoded message from a source doesn't have
@@ -87,7 +87,9 @@ holds, ask for everything after sequence zero: `?after=<connector>:0`.
 
 Delivery guarantees differ by sink kind:
 
-- **CAN sinks** (`socketcan`, `usbcan`) confirm each message that can be
+- **CAN sinks** (`socketcan`, `usbcan`, and `tcp_gateway`, which transmits
+  onto a remote bus through a Yacht Devices or Actisense TCP WiFi gateway
+  with the same semantics) confirm each message that can be
   re-encoded onto the bus: a push failure is retried with exponential
   backoff (starting at 250ms, doubling up to a 5 second cap) until it
   succeeds or the connector stops — the connector's buffer absorbs the
@@ -100,12 +102,13 @@ Delivery guarantees differ by sink kind:
   decoder) is the one exception: it's **skipped**, not retried — counted
   under the connector's `skipped` message stage, with the cursor advancing
   past it exactly like a successful delivery, so one unrecognized PGN
-  can't wedge the connector. HTTP/TCP sinks still deliver these messages —
+  can't wedge the connector. HTTP/TCP/MQTT sinks still deliver these messages —
   see the `raw` field note above.
-- **HTTP/TCP sinks** (`http_sse`, `http_ws`, `tcp`) broadcast to whichever
+- **HTTP/TCP/MQTT sinks** (`http_sse`, `http_ws`, `tcp`, `mqtt`) broadcast to whichever
   clients happen to be connected at the moment, with no per-message
   confirmation. SSE/WS clients can recover anything they missed via replay
-  (above), bounded by the connector's buffer limits; a `tcp` client cannot.
+  (above), bounded by the connector's buffer limits; `tcp` and `mqtt`
+  consumers cannot.
 - **File sinks** (`file`) confirm each write the same way CAN sinks confirm
   a push: a write or flush failure is retried with the connector's backoff
   until it succeeds, so nothing is silently dropped while the disk stays

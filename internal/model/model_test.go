@@ -42,6 +42,40 @@ func TestValidateFileSinkOK(t *testing.T) {
 	}
 }
 
+func TestValidateMQTTSourceAndSinkOK(t *testing.T) {
+	cfg := validConfig()
+	cfg.Sources = append(cfg.Sources, Source{
+		ID: "mqtt-in", Name: "MQTT input", Type: SourceMQTT, Enabled: true,
+		URL: "mqtt://broker.local:1883", Topic: "vessels/main/engine/#",
+	})
+	cfg.Sinks = append(cfg.Sinks, Sink{
+		ID: "mqtt-out", Name: "MQTT output", Type: SinkMQTT, Enabled: true,
+		URL: "mqtts://broker.local:8883", Topic: "vessels/main/engine/json",
+	})
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid mqtt source/sink rejected: %v", err)
+	}
+	if got := NormalizeMQTTBrokerURL("mqtts://broker.local:8883"); got != "ssl://broker.local:8883" {
+		t.Fatalf("NormalizeMQTTBrokerURL = %q", got)
+	}
+}
+
+func TestValidateFileAndGatewaySourcesOK(t *testing.T) {
+	cfg := validConfig()
+	cfg.Sources = append(cfg.Sources,
+		Source{ID: "replay", Name: "Capture replay", Type: SourceFile, Enabled: true, FilePath: "/data/capture.log"},
+		Source{ID: "gw-tcp", Name: "YD gateway", Type: SourceTCP, Enabled: true, Address: "192.168.4.1:1457", Format: StreamFormatYDRaw},
+		Source{ID: "gw-udp", Name: "Actisense UDP", Type: SourceUDP, Enabled: true, Address: "0.0.0.0:2000", Format: StreamFormatActisense},
+	)
+	cfg.Sinks = append(cfg.Sinks, Sink{
+		ID: "gw-out", Name: "YD gateway out", Type: SinkTCPGateway, Enabled: true,
+		Address: "192.168.4.1:1457", Format: StreamFormatYDRaw,
+	})
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid file/tcp/udp sources or gateway sink rejected: %v", err)
+	}
+}
+
 func TestValidateRejects(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -51,6 +85,30 @@ func TestValidateRejects(t *testing.T) {
 		{"bad slug", func(c *Config) { c.Sources[0].ID = "Can 0!" }},
 		{"socketcan without interface", func(c *Config) { c.Sources[0].Interface = "" }},
 		{"http source without url", func(c *Config) { c.Sources[1].URL = "" }},
+		{"mqtt source without broker", func(c *Config) {
+			c.Sources = append(c.Sources, Source{ID: "mqtt-in", Name: "MQTT", Type: SourceMQTT, Enabled: true, Topic: "vessels/#"})
+		}},
+		{"mqtt source without topic", func(c *Config) {
+			c.Sources = append(c.Sources, Source{ID: "mqtt-in", Name: "MQTT", Type: SourceMQTT, Enabled: true, URL: "mqtt://broker.local:1883"})
+		}},
+		{"file source without path", func(c *Config) {
+			c.Sources = append(c.Sources, Source{ID: "replay", Name: "R", Type: SourceFile, Enabled: true})
+		}},
+		{"file source path not absolute", func(c *Config) {
+			c.Sources = append(c.Sources, Source{ID: "replay", Name: "R", Type: SourceFile, Enabled: true, FilePath: "capture.log"})
+		}},
+		{"tcp source without address", func(c *Config) {
+			c.Sources = append(c.Sources, Source{ID: "gw", Name: "G", Type: SourceTCP, Enabled: true, Format: StreamFormatYDRaw})
+		}},
+		{"tcp source bad format", func(c *Config) {
+			c.Sources = append(c.Sources, Source{ID: "gw", Name: "G", Type: SourceTCP, Enabled: true, Address: "192.168.4.1:1457", Format: "nmea0183"})
+		}},
+		{"gateway sink without address", func(c *Config) {
+			c.Sinks = append(c.Sinks, Sink{ID: "gw-out", Name: "G", Type: SinkTCPGateway, Enabled: true, Format: StreamFormatYDRaw})
+		}},
+		{"gateway sink bad format", func(c *Config) {
+			c.Sinks = append(c.Sinks, Sink{ID: "gw-out", Name: "G", Type: SinkTCPGateway, Enabled: true, Address: "192.168.4.1:1457", Format: "candump"})
+		}},
 		{"sse sink without path", func(c *Config) { c.Sinks[0].Path = "" }},
 		{"sink path not absolute", func(c *Config) { c.Sinks[0].Path = "nav" }},
 		{"sink path reserved", func(c *Config) { c.Sinks[0].Path = "/api/v1/x" }},
@@ -80,6 +138,16 @@ func TestValidateRejects(t *testing.T) {
 		{"file sink negative max_files", func(c *Config) {
 			c.Sinks = append(c.Sinks, Sink{ID: "log", Name: "Log", Type: SinkFile, Enabled: true,
 				FilePath: "/var/log/beacon.log", Format: FileFormatNDJSON, MaxFiles: -1})
+		}},
+		{"mqtt sink without broker", func(c *Config) {
+			c.Sinks = append(c.Sinks, Sink{ID: "mqtt-out", Name: "MQTT", Type: SinkMQTT, Enabled: true, Topic: "vessels/main/engine/json"})
+		}},
+		{"mqtt sink without topic", func(c *Config) {
+			c.Sinks = append(c.Sinks, Sink{ID: "mqtt-out", Name: "MQTT", Type: SinkMQTT, Enabled: true, URL: "mqtt://broker.local:1883"})
+		}},
+		{"mqtt sink publish wildcard", func(c *Config) {
+			c.Sinks = append(c.Sinks, Sink{ID: "mqtt-out", Name: "MQTT", Type: SinkMQTT, Enabled: true,
+				URL: "mqtt://broker.local:1883", Topic: "vessels/#"})
 		}},
 	}
 	for _, tc := range cases {

@@ -36,6 +36,24 @@ func (s Source) Validate() error {
 			(u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "ws" && u.Scheme != "wss") {
 			return fmt.Errorf("source %q: invalid url %q", s.ID, s.URL)
 		}
+	case SourceMQTT:
+		if err := validateMQTTBrokerURL(s.URL); err != nil {
+			return fmt.Errorf("source %q: invalid mqtt broker url %q: %w", s.ID, s.URL, err)
+		}
+		if strings.TrimSpace(s.Topic) == "" {
+			return fmt.Errorf("source %q: mqtt requires topic", s.ID)
+		}
+	case SourceFile:
+		if !strings.HasPrefix(s.FilePath, "/") {
+			return fmt.Errorf("source %q: file_path must be an absolute path", s.ID)
+		}
+	case SourceTCP, SourceUDP:
+		if _, _, err := net.SplitHostPort(s.Address); err != nil {
+			return fmt.Errorf("source %q: invalid gateway address %q: %v", s.ID, s.Address, err)
+		}
+		if s.Format != StreamFormatYDRaw && s.Format != StreamFormatActisense {
+			return fmt.Errorf("source %q: format must be %q or %q", s.ID, StreamFormatYDRaw, StreamFormatActisense)
+		}
 	default:
 		return fmt.Errorf("source %q: unknown type %q", s.ID, s.Type)
 	}
@@ -68,6 +86,13 @@ func (s Sink) Validate() error {
 		if _, _, err := net.SplitHostPort(s.Address); err != nil {
 			return fmt.Errorf("sink %q: invalid tcp address %q: %v", s.ID, s.Address, err)
 		}
+	case SinkTCPGateway:
+		if _, _, err := net.SplitHostPort(s.Address); err != nil {
+			return fmt.Errorf("sink %q: invalid gateway address %q: %v", s.ID, s.Address, err)
+		}
+		if s.Format != StreamFormatYDRaw && s.Format != StreamFormatActisense {
+			return fmt.Errorf("sink %q: format must be %q or %q", s.ID, StreamFormatYDRaw, StreamFormatActisense)
+		}
 	case SinkFile:
 		if !strings.HasPrefix(s.FilePath, "/") {
 			return fmt.Errorf("sink %q: file_path must be an absolute path", s.ID)
@@ -81,10 +106,50 @@ func (s Sink) Validate() error {
 		if s.MaxFiles < 0 {
 			return fmt.Errorf("sink %q: max_files must not be negative", s.ID)
 		}
+	case SinkMQTT:
+		if err := validateMQTTBrokerURL(s.URL); err != nil {
+			return fmt.Errorf("sink %q: invalid mqtt broker url %q: %w", s.ID, s.URL, err)
+		}
+		if strings.TrimSpace(s.Topic) == "" {
+			return fmt.Errorf("sink %q: mqtt requires topic", s.ID)
+		}
+		if strings.ContainsAny(s.Topic, "+#") {
+			return fmt.Errorf("sink %q: mqtt publish topic must not contain wildcards", s.ID)
+		}
 	default:
 		return fmt.Errorf("sink %q: unknown type %q", s.ID, s.Type)
 	}
 	return nil
+}
+
+func validateMQTTBrokerURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.Host == "" {
+		return fmt.Errorf("missing host")
+	}
+	switch u.Scheme {
+	case "tcp", "ssl", "mqtt", "mqtts", "ws", "wss":
+		return nil
+	default:
+		return fmt.Errorf("scheme must be tcp, ssl, mqtt, mqtts, ws, or wss")
+	}
+}
+
+func NormalizeMQTTBrokerURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	switch u.Scheme {
+	case "mqtt":
+		u.Scheme = "tcp"
+	case "mqtts":
+		u.Scheme = "ssl"
+	}
+	return u.String()
 }
 
 func (c Connector) Validate() error {

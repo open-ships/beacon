@@ -2,12 +2,13 @@
 <div class="flex flex-col gap-4">
   <div class="flex justify-between items-center">
     <h1 class="text-2xl font-semibold">Sinks</h1>
-    <button type="button" class="btn btn-primary"
-            hx-get="/ui/frag/sink-form" hx-target="#sink-form-container" hx-swap="innerHTML">
-      Add sink
-    </button>
+    {{if not .SinkForm}}
+    <a class="btn btn-primary" href="/ui/sinks/new">Add sink</a>
+    {{end}}
   </div>
-  <div id="sink-form-container"></div>
+  <div id="sink-form-container">{{if .SinkForm}}{{template "sink-form" .SinkForm}}{{end}}</div>
+  {{if not .SinkForm}}
   {{template "sink-panel" .}}
+  {{end}}
 </div>
 {{end}}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -145,14 +147,77 @@ func headingEnvelope() *msg.Envelope {
 
 func waitUp(t *testing.T, h *Handle) {
 	t.Helper()
+	waitState(t, h, "up")
+}
+
+func waitState(t *testing.T, h *Handle, want string) error {
+	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if s, _ := h.State(); s == "up" {
-			return
+		if s, err := h.State(); s == want {
+			return err
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("client never reached up state")
+	state, err := h.State()
+	t.Fatalf("client state = %q, err = %v; want %q", state, err, want)
+	return nil
+}
+
+func TestUSBCANMissingPortReportsError(t *testing.T) {
+	m := NewManager(slog.Default(), nil, n2k.WithClaimTimeout(10*time.Millisecond))
+	h, err := m.Acquire(context.Background(), Endpoint{
+		Kind: "usbcan",
+		Name: filepath.Join(t.TempDir(), "missing-tty"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Release()
+
+	err = waitState(t, h, "error")
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("state err = %v, want missing-port error", err)
+	}
+}
+
+// writeFailBus is a Bus whose frame writes always fail, simulating a bus that
+// cannot transmit the initial NMEA address claim. n2k v0.2.0 performs claiming
+// during NewClient and returns the write error ("n2k: starting address
+// claim: ..."), which the manager must surface as an "error" state rather than
+// hang or crash. (Before v0.2.0 the equivalent test used a bus that *panicked*
+// on write; v0.2.0 runs the claim on an n2k-owned goroutine that does not
+// recover panics — an upstream robustness gap — so a panicking bus now crashes
+// the process and can no longer be exercised here. Real socketcan/usbcan buses
+// return errors, not panics, so this covers the production path.)
+type writeFailBus struct{}
+
+func (writeFailBus) Run(ctx context.Context, _ func(can.Frame)) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (writeFailBus) WriteFrame(can.Frame) error {
+	return errors.New("claim write failed")
+}
+
+func (writeFailBus) Close() error { return nil }
+
+func TestClientStartupWriteFailureReportsError(t *testing.T) {
+	m := NewManager(slog.Default(), nil,
+		n2k.WithBus(writeFailBus{}),
+		n2k.WithClaimTimeout(10*time.Millisecond))
+	h, err := m.Acquire(context.Background(), Endpoint{Kind: "socketcan", Name: "can0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Release()
+
+	err = waitState(t, h, "error")
+	if err == nil || !strings.Contains(err.Error(), "starting address claim") ||
+		!strings.Contains(err.Error(), "claim write failed") {
+		t.Fatalf("state err = %v, want surfaced claim write failure", err)
+	}
 }
 
 func TestWriteRejectsEmptyRaw(t *testing.T) {

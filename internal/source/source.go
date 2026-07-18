@@ -12,6 +12,7 @@ import (
 	"github.com/open-ships/beacon/internal/metrics"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/msg"
+	"github.com/open-ships/beacon/internal/stats"
 )
 
 // Runtime is a running source: it broadcasts envelopes to subscribers.
@@ -23,15 +24,23 @@ type Runtime interface {
 }
 
 // New starts the source runtime for cfg. CAN types acquire from mgr;
-// HTTP types dial cfg.URL with reconnect backoff (250ms→5s).
-func New(ctx context.Context, cfg model.Source, mgr *bus.Manager, log *slog.Logger, met *metrics.Set) (Runtime, error) {
+// network types dial with reconnect backoff (250ms→5s).
+func New(ctx context.Context, cfg model.Source, mgr *bus.Manager, log *slog.Logger, met *metrics.Set, reg *stats.Registry) (Runtime, error) {
 	switch cfg.Type {
 	case model.SourceSocketCAN, model.SourceUSBCAN:
-		return newCANSource(ctx, cfg, mgr, log, met)
+		return newCANSource(ctx, cfg, mgr, log, met, reg)
 	case model.SourceHTTPSSE:
-		return newDialerSource(ctx, cfg, log, met, runSSE)
+		return newDialerSource(ctx, cfg, log, met, reg, runSSE)
 	case model.SourceHTTPWS:
-		return newDialerSource(ctx, cfg, log, met, runWS)
+		return newDialerSource(ctx, cfg, log, met, reg, runWS)
+	case model.SourceMQTT:
+		return newDialerSource(ctx, cfg, log, met, reg, runMQTT)
+	case model.SourceFile:
+		return newDialerSource(ctx, cfg, log, met, reg, runFile)
+	case model.SourceTCP:
+		return newDialerSource(ctx, cfg, log, met, reg, runTCP)
+	case model.SourceUDP:
+		return newDialerSource(ctx, cfg, log, met, reg, runUDP)
 	default:
 		return nil, fmt.Errorf("source %q: unknown type %q", cfg.ID, cfg.Type)
 	}
@@ -101,7 +110,7 @@ type canSource struct {
 	cancel context.CancelFunc
 }
 
-func newCANSource(ctx context.Context, cfg model.Source, mgr *bus.Manager, log *slog.Logger, met *metrics.Set) (Runtime, error) {
+func newCANSource(ctx context.Context, cfg model.Source, mgr *bus.Manager, log *slog.Logger, met *metrics.Set, reg *stats.Registry) (Runtime, error) {
 	ep := bus.Endpoint{Kind: string(cfg.Type), Name: cfg.Interface}
 	if cfg.Type == model.SourceUSBCAN {
 		ep.Name = cfg.Port
@@ -124,6 +133,7 @@ func newCANSource(ctx context.Context, cfg model.Source, mgr *bus.Manager, log *
 					return
 				}
 				met.SourceMessages(runCtx, cfg.ID, 1)
+				reg.RecordSource(cfg.ID, e)
 				s.hub.publish(e)
 			}
 		}

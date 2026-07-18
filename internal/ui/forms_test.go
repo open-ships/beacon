@@ -2,6 +2,8 @@ package ui_test
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/open-ships/beacon/internal/config"
 	"github.com/open-ships/beacon/internal/model"
+	"github.com/open-ships/beacon/internal/msg"
 	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/store"
 	"github.com/open-ships/beacon/internal/ui"
@@ -34,7 +37,7 @@ func newUIServerWithService(t *testing.T) (*httptest.Server, *config.Service) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	svc := config.NewService(st, fakeReconciler{}, nil)
-	handler := ui.Handler(svc, stats.NewRegistry(), fakeReconciler{}.Statuses, "test", nil)
+	handler := ui.Handler(svc, stats.NewRegistry(), fakeReconciler{}.Statuses, nil, "test", nil)
 
 	mux := http.NewServeMux()
 	mux.Handle("/ui/", handler)
@@ -56,7 +59,7 @@ func newUIServerWithServiceAndRegistry(t *testing.T) (*httptest.Server, *config.
 	t.Cleanup(func() { _ = st.Close() })
 	svc := config.NewService(st, fakeReconciler{}, nil)
 	reg := stats.NewRegistry()
-	handler := ui.Handler(svc, reg, fakeReconciler{}.Statuses, "test", nil)
+	handler := ui.Handler(svc, reg, fakeReconciler{}.Statuses, nil, "test", nil)
 
 	mux := http.NewServeMux()
 	mux.Handle("/ui/", handler)
@@ -115,9 +118,98 @@ func TestSourcesPageRendersConfiguredEntities(t *testing.T) {
 	}
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
-	for _, want := range []string{"Engine CAN", "<code>can0</code>", "socketcan", "badge-success"} {
+	for _, want := range []string{"Engine CAN", "<code>can0</code>", "socketcan", "Detail", "badge-success", `href="/ui/sources/new"`, `href="/ui/sources/can0/"`, `href="/ui/sources/can0/edit"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sources page missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestSourceNewPageOpensCreateForm(t *testing.T) {
+	srv, _ := newUIServerWithService(t)
+
+	resp, err := http.Get(srv.URL + "/ui/sources/new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	for _, want := range []string{
+		"Add source", `hx-post="/ui/sources"`, `name="id"`, `name="interface"`,
+		`aria-label="Breadcrumb"`, `href="/ui/sources"`, `aria-current="page">Add source</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("source new page missing %q:\n%s", want, body)
+		}
+	}
+	for _, notWant := range []string{`href="/ui/sources/new"`, `id="source-panel"`} {
+		if strings.Contains(body, notWant) {
+			t.Fatalf("source new page should not include %q:\n%s", notWant, body)
+		}
+	}
+}
+
+func TestSourceEditPageOpensEditForm(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	must(t, svc.PutSource(context.Background(), model.Source{
+		ID: "can0", Name: "Engine CAN", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0",
+	}, true))
+
+	resp, err := http.Get(srv.URL + "/ui/sources/can0/edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	for _, want := range []string{
+		"Edit source can0",
+		`type="hidden" name="id" value="can0"`,
+		`value="Engine CAN"`,
+		`name="interface"`,
+		`value="can0"`,
+		`aria-label="Breadcrumb"`,
+		`href="/ui/sources"`,
+		`aria-current="page">Edit can0</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("sources page edit form missing %q:\n%s", want, body)
+		}
+	}
+	for _, notWant := range []string{`href="/ui/sources/new"`, `id="source-panel"`} {
+		if strings.Contains(body, notWant) {
+			t.Fatalf("source edit page should not include %q:\n%s", notWant, body)
+		}
+	}
+
+	resp2, err := http.Get(srv.URL + "/ui/sources/missing/edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp2, http.StatusNotFound)
+}
+
+func TestSourceOverviewPageRendersConfigAndLiveFragment(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	must(t, svc.PutSource(context.Background(), model.Source{
+		ID: "mqtt-in", Name: "MQTT input", Type: model.SourceMQTT, Enabled: false,
+		URL: "mqtt://broker.local:1883", Topic: "vessels/main/#",
+	}, true))
+
+	resp, err := http.Get(srv.URL + "/ui/sources/mqtt-in/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	for _, want := range []string{
+		"source overview", "MQTT input", "<code>mqtt</code>",
+		"<code>mqtt://broker.local:1883</code>", "<code>vessels/main/#</code>",
+		`href="/ui/sources/mqtt-in/edit"`,
+		`aria-label="Breadcrumb"`, `href="/ui/sources"`, `aria-current="page">MQTT input</span>`,
+		`hx-get="/ui/frag/sources/mqtt-in/overview"`, `hx-trigger="load, every 2s"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("source overview page missing %q:\n%s", want, body)
 		}
 	}
 }
@@ -134,9 +226,98 @@ func TestSinksPageRendersConfiguredEntities(t *testing.T) {
 	}
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
-	for _, want := range []string{"NMEA Out", "<code>out1</code>", "tcp", "badge-success"} {
+	for _, want := range []string{"NMEA Out", "<code>out1</code>", "tcp", "<code>0.0.0.0:2000</code>", "badge-success", `href="/ui/sinks/new"`, `href="/ui/sinks/out1/"`, `href="/ui/sinks/out1/edit"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sinks page missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestSinkNewPageOpensCreateForm(t *testing.T) {
+	srv, _ := newUIServerWithService(t)
+
+	resp, err := http.Get(srv.URL + "/ui/sinks/new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	for _, want := range []string{
+		"Add sink", `hx-post="/ui/sinks"`, `name="id"`, `name="interface"`,
+		`aria-label="Breadcrumb"`, `href="/ui/sinks"`, `aria-current="page">Add sink</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("sink new page missing %q:\n%s", want, body)
+		}
+	}
+	for _, notWant := range []string{`href="/ui/sinks/new"`, `id="sink-panel"`} {
+		if strings.Contains(body, notWant) {
+			t.Fatalf("sink new page should not include %q:\n%s", notWant, body)
+		}
+	}
+}
+
+func TestSinkEditPageOpensEditForm(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	must(t, svc.PutSink(context.Background(), model.Sink{
+		ID: "out1", Name: "NMEA Out", Type: model.SinkTCP, Enabled: true, Address: "0.0.0.0:2000",
+	}, true))
+
+	resp, err := http.Get(srv.URL + "/ui/sinks/out1/edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	for _, want := range []string{
+		"Edit sink out1",
+		`type="hidden" name="id" value="out1"`,
+		`value="NMEA Out"`,
+		`name="address"`,
+		`value="0.0.0.0:2000"`,
+		`aria-label="Breadcrumb"`,
+		`href="/ui/sinks"`,
+		`aria-current="page">Edit out1</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("sinks page edit form missing %q:\n%s", want, body)
+		}
+	}
+	for _, notWant := range []string{`href="/ui/sinks/new"`, `id="sink-panel"`} {
+		if strings.Contains(body, notWant) {
+			t.Fatalf("sink edit page should not include %q:\n%s", notWant, body)
+		}
+	}
+
+	resp2, err := http.Get(srv.URL + "/ui/sinks/missing/edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp2, http.StatusNotFound)
+}
+
+func TestSinkOverviewPageRendersConfigAndLiveFragment(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	must(t, svc.PutSink(context.Background(), model.Sink{
+		ID: "mqtt-out", Name: "MQTT output", Type: model.SinkMQTT, Enabled: false,
+		URL: "mqtt://broker.local:1883", Topic: "vessels/main/json",
+	}, true))
+
+	resp, err := http.Get(srv.URL + "/ui/sinks/mqtt-out/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	for _, want := range []string{
+		"sink overview", "MQTT output", "<code>mqtt</code>",
+		"<code>mqtt://broker.local:1883</code>", "<code>vessels/main/json</code>",
+		`href="/ui/sinks/mqtt-out/edit"`,
+		`aria-label="Breadcrumb"`, `href="/ui/sinks"`, `aria-current="page">MQTT output</span>`,
+		`hx-get="/ui/frag/sinks/mqtt-out/overview"`, `hx-trigger="load, every 2s"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("sink overview page missing %q:\n%s", want, body)
 		}
 	}
 }
@@ -153,6 +334,10 @@ func TestSourceTypeFieldsFragmentPerType(t *testing.T) {
 		{"usbcan", []string{`name="port"`, "<datalist"}},
 		{"http_sse", []string{`name="url"`, `name="headers"`}},
 		{"http_ws", []string{`name="url"`, `name="headers"`}},
+		{"mqtt", []string{`name="url"`, `name="topic"`, `mqtt://broker.local:1883`}},
+		{"tcp", []string{`name="address"`, `name="format"`, "ydraw", "actisense"}},
+		{"udp", []string{`name="address"`, `name="format"`, "ydraw", "actisense"}},
+		{"file", []string{`name="file_path"`}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.typ, func(t *testing.T) {
@@ -198,6 +383,8 @@ func TestSinkTypeFieldsFragmentPerType(t *testing.T) {
 		{"http_ws", []string{`name="path"`}},
 		{"tcp", []string{`name="address"`}},
 		{"file", []string{`name="file_path"`, `name="format"`, `name="max_file_bytes"`, `name="max_files"`, "ndjson", "candump"}},
+		{"mqtt", []string{`name="url"`, `name="topic"`, `mqtt://broker.local:1883`}},
+		{"tcp_gateway", []string{`name="address"`, `name="format"`, "ydraw", "actisense"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.typ, func(t *testing.T) {
@@ -218,13 +405,13 @@ func TestSinkTypeFieldsFragmentPerType(t *testing.T) {
 
 // --- Add/edit form fragment ---
 
-func TestSourceFormFragEditModePreFillsAndLocksID(t *testing.T) {
+func TestSourceEditPagePreFillsAndLocksID(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	must(t, svc.PutSource(context.Background(), model.Source{
 		ID: "can0", Name: "Engine", Type: model.SourceSocketCAN, Interface: "can0", Enabled: true,
 	}, true))
 
-	resp, err := http.Get(srv.URL + "/ui/frag/source-form?id=can0")
+	resp, err := http.Get(srv.URL + "/ui/sources/can0/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +423,7 @@ func TestSourceFormFragEditModePreFillsAndLocksID(t *testing.T) {
 		}
 	}
 
-	resp2, err := http.Get(srv.URL + "/ui/frag/source-form?id=doesnotexist")
+	resp2, err := http.Get(srv.URL + "/ui/sources/doesnotexist/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,26 +432,47 @@ func TestSourceFormFragEditModePreFillsAndLocksID(t *testing.T) {
 
 // --- Create/update round trip ---
 
+// flashCookieName mirrors the unexported flashCookie const in flash.go; kept
+// as a literal here because this is an external (ui_test) package.
+const flashCookieName = "beacon_flash"
+
+// assertCreateRedirect asserts resp is a create handler's flash-redirect: an
+// HTTP 200 carrying an HX-Redirect to the dashboard plus a one-shot flash
+// cookie whose decoded message equals wantMsg. It consumes resp.Body.
+func assertCreateRedirect(t *testing.T, resp *http.Response, wantMsg string) {
+	t.Helper()
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("HX-Redirect"); got != "/ui/dashboard" {
+		t.Fatalf("HX-Redirect = %q, want /ui/dashboard", got)
+	}
+	for _, c := range resp.Cookies() {
+		if c.Name != flashCookieName {
+			continue
+		}
+		b, err := base64.URLEncoding.DecodeString(c.Value)
+		if err != nil {
+			t.Fatalf("flash cookie value not base64: %v", err)
+		}
+		if string(b) != wantMsg {
+			t.Fatalf("flash message = %q, want %q", b, wantMsg)
+		}
+		return
+	}
+	t.Fatalf("create response set no %q cookie", flashCookieName)
+}
+
 func TestSourceCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	resp := postForm(t, srv, "/ui/sources", url.Values{
 		"id": {"can0"}, "name": {"Engine CAN"}, "type": {"socketcan"},
 		"enabled": {"1"}, "interface": {"can0"},
 	})
-	mustStatus(t, resp, http.StatusOK)
-	body := mustBody(t, resp)
-	if !strings.Contains(body, "hx-swap-oob") {
-		t.Fatalf("create response missing out-of-band table swap:\n%s", body)
-	}
-	if !strings.Contains(body, "Engine CAN") || !strings.Contains(body, "alert-success") {
-		t.Fatalf("create response missing success alert/table row:\n%s", body)
-	}
-	// The success alert must auto-dismiss (plan: "success toast ...
-	// auto-dismiss"): the alert carries the data-autodismiss marker and the
-	// swapped-in panel carries the hx-on::load timer that removes it.
-	if !strings.Contains(body, `role="alert" data-autodismiss`) || !strings.Contains(body, "hx-on::load") {
-		t.Fatalf("create response missing auto-dismiss mechanism (data-autodismiss + hx-on::load):\n%s", body)
-	}
+	// Create redirects the operator to the dashboard with a one-shot flash,
+	// rather than swapping the table in place (that is the update path).
+	assertCreateRedirect(t, resp, `Source "can0" created`)
 
 	got, err := svc.GetSource(context.Background(), "can0")
 	if err != nil {
@@ -324,7 +532,7 @@ func TestSourceHeadersRoundTrip(t *testing.T) {
 		t.Fatalf("parsed headers = %+v", got.Headers)
 	}
 
-	resp2, err := http.Get(srv.URL + "/ui/frag/source-form?id=sse1")
+	resp2, err := http.Get(srv.URL + "/ui/sources/sse1/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,20 +542,41 @@ func TestSourceHeadersRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMQTTSourceCreateRoundTrip(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	resp := postForm(t, srv, "/ui/sources", url.Values{
+		"id": {"mqtt-in"}, "name": {"MQTT input"}, "type": {"mqtt"},
+		"enabled": {"1"}, "url": {"mqtt://broker.local:1883"}, "topic": {"vessels/main/engine/#"},
+	})
+	assertCreateRedirect(t, resp, `Source "mqtt-in" created`)
+
+	got, err := svc.GetSource(context.Background(), "mqtt-in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.URL != "mqtt://broker.local:1883" || got.Topic != "vessels/main/engine/#" || !got.Enabled {
+		t.Fatalf("persisted source = %+v", got)
+	}
+
+	resp2, err := http.Get(srv.URL + "/ui/sources/mqtt-in/edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body2 := mustBody(t, resp2)
+	for _, want := range []string{`name="url" value="mqtt://broker.local:1883"`, `name="topic" value="vessels/main/engine/#"`} {
+		if !strings.Contains(body2, want) {
+			t.Fatalf("edit form missing %q:\n%s", want, body2)
+		}
+	}
+}
+
 func TestSinkCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	resp := postForm(t, srv, "/ui/sinks", url.Values{
 		"id": {"out1"}, "name": {"NMEA Out"}, "type": {"tcp"},
 		"enabled": {"1"}, "address": {"0.0.0.0:2000"},
 	})
-	mustStatus(t, resp, http.StatusOK)
-	body := mustBody(t, resp)
-	if !strings.Contains(body, "hx-swap-oob") || !strings.Contains(body, "alert-success") {
-		t.Fatalf("create response missing oob swap/success alert:\n%s", body)
-	}
-	if !strings.Contains(body, `role="alert" data-autodismiss`) || !strings.Contains(body, "hx-on::load") {
-		t.Fatalf("create response missing auto-dismiss mechanism (data-autodismiss + hx-on::load):\n%s", body)
-	}
+	assertCreateRedirect(t, resp, `Sink "out1" created`)
 
 	got, err := svc.GetSink(context.Background(), "out1")
 	if err != nil {
@@ -355,6 +584,62 @@ func TestSinkCreateRoundTrip(t *testing.T) {
 	}
 	if got.Address != "0.0.0.0:2000" || !got.Enabled {
 		t.Fatalf("persisted sink = %+v", got)
+	}
+}
+
+func TestMQTTSinkCreateRoundTrip(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	resp := postForm(t, srv, "/ui/sinks", url.Values{
+		"id": {"mqtt-out"}, "name": {"MQTT output"}, "type": {"mqtt"},
+		"enabled": {"1"}, "url": {"mqtt://broker.local:1883"}, "topic": {"vessels/main/engine/json"},
+	})
+	assertCreateRedirect(t, resp, `Sink "mqtt-out" created`)
+
+	got, err := svc.GetSink(context.Background(), "mqtt-out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.URL != "mqtt://broker.local:1883" || got.Topic != "vessels/main/engine/json" || !got.Enabled {
+		t.Fatalf("persisted sink = %+v", got)
+	}
+
+	resp2, err := http.Get(srv.URL + "/ui/sinks/mqtt-out/edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body2 := mustBody(t, resp2)
+	for _, want := range []string{`name="url" value="mqtt://broker.local:1883"`, `name="topic" value="vessels/main/engine/json"`} {
+		if !strings.Contains(body2, want) {
+			t.Fatalf("edit form missing %q:\n%s", want, body2)
+		}
+	}
+}
+
+func TestTCPGatewaySinkCreateRoundTrip(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	resp := postForm(t, srv, "/ui/sinks", url.Values{
+		"id": {"gw-out"}, "name": {"YD gateway out"}, "type": {"tcp_gateway"},
+		"enabled": {"1"}, "address": {"192.168.4.1:1457"}, "format": {"ydraw"},
+	})
+	assertCreateRedirect(t, resp, `Sink "gw-out" created`)
+
+	got, err := svc.GetSink(context.Background(), "gw-out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Address != "192.168.4.1:1457" || got.Format != "ydraw" || !got.Enabled {
+		t.Fatalf("persisted sink = %+v", got)
+	}
+
+	resp2, err := http.Get(srv.URL + "/ui/sinks/gw-out/edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := mustBody(t, resp2)
+	for _, want := range []string{`name="address" value="192.168.4.1:1457"`, `option value="ydraw" selected`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("edit form missing %q:\n%s", want, body)
+		}
 	}
 }
 
@@ -373,16 +658,7 @@ func TestFileSinkCreateRoundTrip(t *testing.T) {
 		"id": {"navlog"}, "name": {"Nav log"}, "type": {"file"},
 		"enabled": {"1"}, "file_path": {"/data/nav.log"}, "format": {"ndjson"},
 	})
-	mustStatus(t, resp, http.StatusOK)
-	body := mustBody(t, resp)
-	if !strings.Contains(body, "hx-swap-oob") || !strings.Contains(body, "alert-success") {
-		t.Fatalf("create response missing oob swap/success alert:\n%s", body)
-	}
-	// The sinks table's Detail column shows the file path for a file sink,
-	// the same way it shows an address for a tcp sink (see sinkDetail).
-	if !strings.Contains(body, "<code>/data/nav.log</code>") {
-		t.Fatalf("create response table row missing file path detail:\n%s", body)
-	}
+	assertCreateRedirect(t, resp, `Sink "navlog" created`)
 
 	got, err := svc.GetSink(context.Background(), "navlog")
 	if err != nil {
@@ -395,7 +671,7 @@ func TestFileSinkCreateRoundTrip(t *testing.T) {
 	// The edit form round-trips file_path/format and shows the defaults as
 	// placeholders (blank stored value -> blank input, default shown only
 	// as a placeholder, not baked into the value).
-	resp2, err := http.Get(srv.URL + "/ui/frag/sink-form?id=navlog")
+	resp2, err := http.Get(srv.URL + "/ui/sinks/navlog/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +709,7 @@ func TestFileSinkMaxFileBytesAndMaxFilesRoundTrip(t *testing.T) {
 		t.Fatalf("persisted sink = %+v", got)
 	}
 
-	resp2, err := http.Get(srv.URL + "/ui/frag/sink-form?id=navlog")
+	resp2, err := http.Get(srv.URL + "/ui/sinks/navlog/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -750,7 +1026,7 @@ func TestConnectorsPageRendersConfiguredEntities(t *testing.T) {
 	// One" — seedSourceSink's names), not their raw ids: see
 	// TestConnectorsPageNameFallsBackToIDWhenEmpty for the fallback case.
 	for _, want := range []string{
-		`href="/ui/connectors/conn1"`, "NMEA Bridge",
+		`href="/ui/connectors/new"`, `href="/ui/connectors/conn1/"`, `href="/ui/connectors/conn1/edit"`, "NMEA Bridge",
 		"Source One", "Sink One",
 		"badge-success",
 	} {
@@ -789,7 +1065,76 @@ func TestConnectorsPageNameFallsBackToIDWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestConnectorFormFragEditModePreFillsAndLocksID(t *testing.T) {
+func TestConnectorNewPageOpensCreateForm(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	seedSourceSink(t, svc)
+
+	resp, err := http.Get(srv.URL + "/ui/connectors/new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	for _, want := range []string{
+		"Add connector",
+		`hx-post="/ui/connectors"`,
+		`name="id"`,
+		`value="src1"`,
+		`value="sink1"`,
+		`aria-label="Breadcrumb"`,
+		`href="/ui/connectors"`,
+		`aria-current="page">Add connector</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("connector new page missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestConnectorEditPageOpensEditForm(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	seedSourceSink(t, svc)
+	must(t, svc.PutConnector(context.Background(), model.Connector{
+		ID: "conn1", Name: "NMEA Bridge", SourceID: "src1", SinkID: "sink1",
+		Filters: []string{"msg.pgn == 127250"},
+		Buffer:  model.BufferLimits{MaxMessages: 500, MaxAge: model.Duration(24 * time.Hour), MaxBytes: 1048576},
+		Enabled: true,
+	}, true))
+
+	resp, err := http.Get(srv.URL + "/ui/connectors/conn1/edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	for _, want := range []string{
+		"Edit connector conn1",
+		`type="hidden" name="id" value="conn1"`,
+		`value="NMEA Bridge"`,
+		"checked",
+		`value="src1" selected`,
+		`value="sink1" selected`,
+		"msg.pgn == 127250",
+		`value="500"`,
+		`value="24h0m0s"`,
+		`value="1048576"`,
+		`aria-label="Breadcrumb"`,
+		`href="/ui/connectors"`,
+		`aria-current="page">Edit conn1</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("connector edit page missing %q:\n%s", want, body)
+		}
+	}
+
+	resp2, err := http.Get(srv.URL + "/ui/connectors/doesnotexist/edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp2, http.StatusNotFound)
+}
+
+func TestConnectorEditPagePreFillsAndLocksID(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	seedSourceSink(t, svc)
 	must(t, svc.PutConnector(context.Background(), model.Connector{
@@ -799,7 +1144,7 @@ func TestConnectorFormFragEditModePreFillsAndLocksID(t *testing.T) {
 		Enabled: true,
 	}, true))
 
-	resp, err := http.Get(srv.URL + "/ui/frag/connector-form?id=conn1")
+	resp, err := http.Get(srv.URL + "/ui/connectors/conn1/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -816,7 +1161,7 @@ func TestConnectorFormFragEditModePreFillsAndLocksID(t *testing.T) {
 		}
 	}
 
-	resp2, err := http.Get(srv.URL + "/ui/frag/connector-form?id=doesnotexist")
+	resp2, err := http.Get(srv.URL + "/ui/connectors/doesnotexist/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -833,14 +1178,7 @@ func TestConnectorCreateRoundTrip(t *testing.T) {
 		"filters":      {"msg.pgn == 127250\n\n  msg.priority < 4  \n"},
 		"max_messages": {"500"}, "max_age": {"24h"}, "max_bytes": {"1048576"},
 	})
-	mustStatus(t, resp, http.StatusOK)
-	body := mustBody(t, resp)
-	if !strings.Contains(body, "hx-swap-oob") || !strings.Contains(body, "alert-success") {
-		t.Fatalf("create response missing oob swap/success alert:\n%s", body)
-	}
-	if !strings.Contains(body, `role="alert" data-autodismiss`) || !strings.Contains(body, "hx-on::load") {
-		t.Fatalf("create response missing auto-dismiss mechanism (data-autodismiss + hx-on::load):\n%s", body)
-	}
+	assertCreateRedirect(t, resp, `Connector "conn1" created`)
 
 	got, err := svc.GetConnector(context.Background(), "conn1")
 	if err != nil {
@@ -862,6 +1200,59 @@ func TestConnectorCreateRoundTrip(t *testing.T) {
 	}
 	if body2 := mustBody(t, resp2); !strings.Contains(body2, "NMEA Bridge") {
 		t.Fatalf("GET /ui/connectors does not reflect created connector:\n%s", body2)
+	}
+}
+
+// TestCreateFlashShownOnDashboardOnce follows a create through its
+// HX-Redirect: the dashboard renders the flash banner once and clears the
+// cookie, so a subsequent load never shows it again.
+func TestCreateFlashShownOnDashboardOnce(t *testing.T) {
+	srv, _ := newUIServerWithService(t)
+	resp := postForm(t, srv, "/ui/sinks", url.Values{
+		"id": {"out1"}, "name": {"NMEA Out"}, "type": {"tcp"},
+		"enabled": {"1"}, "address": {"0.0.0.0:2000"},
+	})
+	_ = resp.Body.Close()
+	var flash *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == flashCookieName {
+			flash = c
+		}
+	}
+	if flash == nil {
+		t.Fatal("create set no flash cookie to carry to the dashboard")
+	}
+
+	// The dashboard (the redirect target) renders the flash once...
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/ui/dashboard", nil)
+	req.AddCookie(flash)
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := mustBody(t, resp2)
+	// The message renders with html/template's quote escaping (" -> &#34;).
+	if !strings.Contains(body, "alert-success") || !strings.Contains(body, `Sink &#34;out1&#34; created`) {
+		t.Fatalf("dashboard did not render the flash message:\n%s", body)
+	}
+	// ...and clears the cookie so it can never show twice.
+	cleared := false
+	for _, c := range resp2.Cookies() {
+		if c.Name == flashCookieName && c.Value == "" {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Fatal("dashboard did not clear the flash cookie after rendering it")
+	}
+
+	// A dashboard load without the cookie shows no flash at all.
+	resp3, err := http.Get(srv.URL + "/ui/dashboard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body3 := mustBody(t, resp3); strings.Contains(body3, `Sink &#34;out1&#34; created`) {
+		t.Fatalf("flash leaked onto a cookieless dashboard load:\n%s", body3)
 	}
 }
 
@@ -1132,7 +1523,47 @@ func TestConnectorStatsFragmentUnknownIDDeletedNoticeHaltsPolling(t *testing.T) 
 	}
 }
 
-func TestConnectorDetailPageRendersConfigSummary(t *testing.T) {
+func TestOverviewFragmentsRenderStatsAndMessageStreams(t *testing.T) {
+	srv, svc, reg := newUIServerWithServiceAndRegistry(t)
+	ctx := context.Background()
+	must(t, svc.PutSource(ctx, model.Source{ID: "src1", Name: "Source One", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0"}, true))
+	must(t, svc.PutSink(ctx, model.Sink{ID: "sink1", Name: "Sink One", Type: model.SinkTCP, Enabled: true, Address: "127.0.0.1:9000"}, true))
+	must(t, svc.PutConnector(ctx, model.Connector{ID: "conn1", Name: "NMEA Bridge", SourceID: "src1", SinkID: "sink1", Enabled: true}, true))
+
+	env := &msg.Envelope{
+		PGN: 127250, Source: 12, Dest: 255, Priority: 2,
+		Payload: json.RawMessage(`{"heading":15708}`),
+	}
+	reg.RecordSource("src1", env)
+	reg.RecordSink("sink1", "conn1", env)
+	reg.RecordConnectorEvent("conn1", "received", env)
+	reg.Record("conn1", 1, int64(env.SizeBytes()))
+
+	for _, tc := range []struct {
+		path  string
+		wants []string
+	}{
+		{"/ui/frag/sources/src1/overview", []string{"source-overview-live", "Status", "Statistics", "Message stream", "Total messages", "127250", "heading", "received"}},
+		{"/ui/frag/sinks/sink1/overview", []string{"sink-overview-live", "Status", "Statistics", "Message stream", "Total messages", "127250", "heading", "sent", "conn1"}},
+		{"/ui/frag/connectors/conn1/overview", []string{"connector-overview-live", "Status", "Statistics", "Message stream", "Total messages", "127250", "heading", "received", "conn1"}},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + tc.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustStatus(t, resp, http.StatusOK)
+			body := mustBody(t, resp)
+			for _, want := range tc.wants {
+				if !strings.Contains(body, want) {
+					t.Fatalf("overview fragment missing %q:\n%s", want, body)
+				}
+			}
+		})
+	}
+}
+
+func TestConnectorOverviewPageRendersConfigSummary(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	seedSourceSink(t, svc)
 	must(t, svc.PutConnector(context.Background(), model.Connector{
@@ -1149,9 +1580,11 @@ func TestConnectorDetailPageRendersConfigSummary(t *testing.T) {
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
 	for _, want := range []string{
-		"NMEA Bridge", "<code>src1</code>", "<code>sink1</code>", "badge-success",
+		"connector overview", "NMEA Bridge", "<code>src1</code>", "<code>sink1</code>",
 		"msg.pgn == 127250", "500", "24h0m0s", "1048576",
-		`hx-get="/ui/frag/connectors/conn1/stats"`, `hx-trigger="load, every 2s"`,
+		`href="/ui/connectors/conn1/edit"`,
+		`aria-label="Breadcrumb"`, `href="/ui/connectors"`, `aria-current="page">NMEA Bridge</span>`,
+		`hx-get="/ui/frag/connectors/conn1/overview"`, `hx-trigger="load, every 2s"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("connector detail page missing %q:\n%s", want, body)

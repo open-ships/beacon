@@ -10,67 +10,253 @@
      comment): the polling container already exists in dashboard.html, so
      re-rendering it here would double-wrap it after the first swap. */}}
 {{define "dashboard-content"}}
-<div class="flex flex-col gap-6">
-  <div>
-    <h2 class="text-lg font-semibold mb-2">Components</h2>
-    <div class="flex flex-wrap gap-2">
-      {{range .Health}}
-      <div class="flex items-center gap-2 bg-base-200 border border-base-300 rounded-box px-3 py-1">
-        <span class="font-semibold">{{.Name}}</span>
-        {{if eq .State "up"}}<span class="badge badge-success">up</span>
-        {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
-        {{else if eq .State "error"}}<span class="badge badge-error">error</span>
-        {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
-      </div>
-      {{else}}
-      <p class="opacity-70">No sources or sinks configured yet.</p>
-      {{end}}
+<div class="home-flow">
+  <section class="home-flow-header" aria-label="Data flow overview">
+    <div class="home-flow-copy">
+      <p class="eyebrow">openships.ai / beacon</p>
+      <h2>Data flow</h2>
     </div>
-  </div>
+    <div class="home-flow-actions">
+      <a class="btn" href="/ui/sources/new">New source</a>
+      <a class="btn" href="/ui/sinks/new">New sink</a>
+      <a class="btn btn-primary" href="/ui/connectors/new">New connector</a>
+    </div>
+  </section>
 
-  {{if .Connectors}}
-  <div>
-    <h2 class="text-lg font-semibold mb-2">Connectors</h2>
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-      {{range .Connectors}}
-      <div class="card bg-base-200 border border-base-300">
-        <div class="card-body gap-2">
-          <div class="flex justify-between items-start gap-2">
-            <h3 class="card-title"><a class="link" href="/ui/connectors/{{.ID}}">{{.Name}}</a></h3>
-            <div class="flex gap-1 flex-wrap justify-end">
-              {{if .Enabled}}<span class="badge badge-success">enabled</span>
-              {{else}}<span class="badge badge-ghost">disabled</span>{{end}}
-              {{if eq .State "error"}}<span class="badge badge-error">error</span>{{end}}
-            </div>
-          </div>
-          <div class="text-sm opacity-70">{{.SourceName}} &rarr; {{.SinkName}}</div>
-          <div class="stats stats-vertical sm:stats-horizontal bg-base-100 shadow">
-            <div class="stat p-3">
-              <div class="stat-title text-xs">Msg/s</div>
-              <div class="stat-value text-lg">{{printf "%.2f" .Snapshot.MsgPerSec}}</div>
-            </div>
-            <div class="stat p-3">
-              <div class="stat-title text-xs">Bytes/s</div>
-              <div class="stat-value text-lg">{{.BytesPerSecText}}</div>
-            </div>
-            <div class="stat p-3">
-              <div class="stat-title text-xs">Queue depth</div>
-              <div class="stat-value text-lg">{{.Snapshot.QueueDepth}}</div>
-            </div>
-          </div>
+  {{if .Flows}}
+  <section class="dag-board" aria-label="Configured source connector sink graph">
+    <div class="dag-label dag-label-source">Sources</div>
+    <div class="dag-label dag-label-connector">Connectors</div>
+    <div class="dag-label dag-label-sink">Sinks</div>
+    {{range .Flows}}
+    <div class="dag-row">
+      <a class="dag-node dag-node-source state-{{.Source.State}}" href="/ui/sources/{{.Source.ID}}/" data-node-id="{{.Source.ID}}">
+        <div class="dag-node-header">
+          <span class="dag-kind">source</span>
+          {{if eq .Source.State "up"}}<span class="badge badge-success">up</span>
+          {{else if eq .Source.State "degraded"}}<span class="badge badge-warning">degraded</span>
+          {{else if eq .Source.State "error"}}<span class="badge badge-error">error</span>
+          {{else}}<span class="badge badge-ghost">{{.Source.State}}</span>{{end}}
         </div>
-      </div>
-      {{end}}
+        <div class="dag-node-title">{{.Source.Name}}</div>
+        <div class="dag-node-meta"><code>{{.Source.ID}}</code><span>{{.Source.Type}}</span>{{if .Source.Detail}}<span>{{.Source.Detail}}</span>{{end}}</div>
+      </a>
+
+      <div class="dag-link" aria-hidden="true"></div>
+
+      <a class="dag-node dag-node-connector state-{{.State}}" href="/ui/connectors/{{.ID}}/" data-connector-id="{{.ID}}">
+        <div class="dag-node-header">
+          <span class="dag-kind">connector</span>
+          <span class="badge {{if .Enabled}}badge-success{{else}}badge-ghost{{end}}">{{if .Enabled}}enabled{{else}}disabled{{end}}</span>
+          {{if eq .State "error"}}<span class="badge badge-error">error</span>{{end}}
+        </div>
+        <div class="dag-node-title">{{.Name}}</div>
+        <div class="dag-node-meta"><code>{{.ID}}</code><span>{{len .Filters}} filters</span></div>
+        <div class="dag-metrics">
+          <span><strong>{{printf "%.2f" .Snapshot.MsgPerSec}}</strong> msg/s</span>
+          <span><strong>{{.BytesPerSecText}}</strong></span>
+          <span><strong>{{.Snapshot.QueueDepth}}</strong> queued</span>
+        </div>
+      </a>
+
+      <div class="dag-link" aria-hidden="true"></div>
+
+      <a class="dag-node dag-node-sink state-{{.Sink.State}}" href="/ui/sinks/{{.Sink.ID}}/" data-node-id="{{.Sink.ID}}">
+        <div class="dag-node-header">
+          <span class="dag-kind">sink</span>
+          {{if eq .Sink.State "up"}}<span class="badge badge-success">up</span>
+          {{else if eq .Sink.State "degraded"}}<span class="badge badge-warning">degraded</span>
+          {{else if eq .Sink.State "error"}}<span class="badge badge-error">error</span>
+          {{else}}<span class="badge badge-ghost">{{.Sink.State}}</span>{{end}}
+        </div>
+        <div class="dag-node-title">{{.Sink.Name}}</div>
+        <div class="dag-node-meta"><code>{{.Sink.ID}}</code><span>{{.Sink.Type}}</span>{{if .Sink.Detail}}<span>{{.Sink.Detail}}</span>{{end}}</div>
+      </a>
     </div>
-  </div>
+    {{end}}
+  </section>
   {{else}}
-  <div class="card bg-base-200 border border-base-300">
-    <div class="card-body items-center text-center gap-3">
-      <h2 class="card-title">{{.EmptyTitle}}</h2>
-      <p>{{.EmptyMessage}}</p>
-      <a class="btn btn-primary" href="{{.EmptyHref}}">{{.EmptyCTA}}</a>
-    </div>
-  </div>
+  <section class="empty-state">
+    <p class="eyebrow">Setup</p>
+    <h2>{{.EmptyTitle}}</h2>
+    <p>{{.EmptyMessage}}</p>
+    <a class="btn btn-primary" href="{{.EmptyHref}}">{{.EmptyCTA}}</a>
+  </section>
   {{end}}
+
+  <div class="metadata-stack">
+    <section class="metadata-section" aria-label="Sources metadata">
+      <div class="section-heading">
+        <h3>Sources</h3>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="table metadata-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>ID</th>
+              <th>Type</th>
+              <th>Detail</th>
+              <th>State</th>
+              <th>Connectors</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Sources}}
+            <tr data-href="/ui/sources/{{.ID}}/">
+              <td><a class="link" href="/ui/sources/{{.ID}}/">{{.Name}}</a></td>
+              <td><code>{{.ID}}</code></td>
+              <td>{{.Type}}</td>
+              <td>{{if .Detail}}<code>{{.Detail}}</code>{{else}}<span class="opacity-70">-</span>{{end}}</td>
+              <td>
+                {{if eq .State "up"}}<span class="badge badge-success">up</span>
+                {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
+                {{else if eq .State "error"}}<span class="badge badge-error">error</span>
+                {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
+              </td>
+              <td>
+                <span class="usage-cell">
+                  <span class="usage-dot {{if gt .ConnectorCount 0}}usage-dot-used{{else}}usage-dot-unused{{end}}" aria-hidden="true"></span>
+                  {{.ConnectorCount}} connector{{if ne .ConnectorCount 1}}s{{end}}
+                </span>
+              </td>
+              <td><a class="btn btn-sm" href="/ui/sources/{{.ID}}/edit">Edit</a></td>
+            </tr>
+            {{else}}
+            <tr><td colspan="7" class="text-center opacity-70">No sources configured.</td></tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="metadata-section" aria-label="Sinks metadata">
+      <div class="section-heading">
+        <h3>Sinks</h3>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="table metadata-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>ID</th>
+              <th>Type</th>
+              <th>Detail</th>
+              <th>State</th>
+              <th>Connectors</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Sinks}}
+            <tr data-href="/ui/sinks/{{.ID}}/">
+              <td><a class="link" href="/ui/sinks/{{.ID}}/">{{.Name}}</a></td>
+              <td><code>{{.ID}}</code></td>
+              <td>{{.Type}}</td>
+              <td>{{if .Detail}}<code>{{.Detail}}</code>{{else}}<span class="opacity-70">-</span>{{end}}</td>
+              <td>
+                {{if eq .State "up"}}<span class="badge badge-success">up</span>
+                {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
+                {{else if eq .State "error"}}<span class="badge badge-error">error</span>
+                {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
+              </td>
+              <td>
+                <span class="usage-cell">
+                  <span class="usage-dot {{if gt .ConnectorCount 0}}usage-dot-used{{else}}usage-dot-unused{{end}}" aria-hidden="true"></span>
+                  {{.ConnectorCount}} connector{{if ne .ConnectorCount 1}}s{{end}}
+                </span>
+              </td>
+              <td><a class="btn btn-sm" href="/ui/sinks/{{.ID}}/edit">Edit</a></td>
+            </tr>
+            {{else}}
+            <tr><td colspan="7" class="text-center opacity-70">No sinks configured.</td></tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="metadata-section" aria-label="Connectors metadata">
+      <div class="section-heading">
+        <h3>Connectors</h3>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="table metadata-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>ID</th>
+              <th>Route</th>
+              <th>Enabled</th>
+              <th>Filters</th>
+              <th>Msg/s</th>
+              <th>Queue</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Flows}}
+            <tr data-href="/ui/connectors/{{.ID}}/">
+              <td><a class="link" href="/ui/connectors/{{.ID}}/">{{.Name}}</a></td>
+              <td><code>{{.ID}}</code></td>
+              <td>
+                <a class="link" href="/ui/sources/{{.Source.ID}}/">{{.Source.Name}}</a>
+                &rarr;
+                <a class="link" href="/ui/sinks/{{.Sink.ID}}/">{{.Sink.Name}}</a>
+              </td>
+              <td>
+                {{if .Enabled}}<span class="badge badge-success">enabled</span>
+                {{else}}<span class="badge badge-ghost">disabled</span>{{end}}
+              </td>
+              <td>{{len .Filters}}</td>
+              <td>{{printf "%.2f" .Snapshot.MsgPerSec}}</td>
+              <td>{{.Snapshot.QueueDepth}}</td>
+              <td><a class="btn btn-sm" href="/ui/connectors/{{.ID}}/edit">Edit</a></td>
+            </tr>
+            {{else}}
+            <tr><td colspan="8" class="text-center opacity-70">No connectors configured.</td></tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    {{if .Devices}}
+    {{/* Bus devices are discovered automatically by the n2k client (v0.2.0
+         registry); this section only appears once a CAN bus has seen any. */}}
+    <section class="metadata-section" aria-label="Bus devices">
+      <div class="section-heading">
+        <h3>Bus devices</h3>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="table metadata-table">
+          <thead>
+            <tr>
+              <th>Endpoint</th>
+              <th>Address</th>
+              <th>NAME</th>
+              <th>Model</th>
+              <th>Serial</th>
+              <th>Last seen</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Devices}}
+            <tr>
+              <td><code>{{.Endpoint}}</code></td>
+              <td>{{.Address}}</td>
+              <td><code>{{.Name}}</code></td>
+              <td>{{if .Model}}{{.Model}}{{else}}<span class="opacity-70">-</span>{{end}}</td>
+              <td>{{if .Serial}}<code>{{.Serial}}</code>{{else}}<span class="opacity-70">-</span>{{end}}</td>
+              <td>{{.LastSeen}}</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {{end}}
+  </div>
 </div>
 {{end}}

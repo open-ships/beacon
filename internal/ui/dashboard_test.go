@@ -18,7 +18,7 @@ import (
 )
 
 // settableReconciler is a config.Reconciler test double whose Statuses
-// return value a test sets directly. dashboard.go's health chips and
+// return value a test sets directly. dashboard.go's endpoint nodes and
 // connector error badges are driven entirely by supervisor.Status.State, so
 // exercising every state (up/degraded/error) plus the "component missing
 // from Statuses" case (the transient-absence tolerance the dashboard's
@@ -59,7 +59,7 @@ func newDashboardTestServer(t *testing.T) (*httptest.Server, *config.Service, *s
 	rec := &settableReconciler{}
 	svc := config.NewService(st, rec, nil)
 	reg := stats.NewRegistry()
-	handler := ui.Handler(svc, reg, rec.Statuses, "test", nil)
+	handler := ui.Handler(svc, reg, rec.Statuses, nil, "test", nil)
 
 	mux := http.NewServeMux()
 	mux.Handle("/ui/", handler)
@@ -68,26 +68,24 @@ func newDashboardTestServer(t *testing.T) (*httptest.Server, *config.Service, *s
 	return srv, svc, reg, rec
 }
 
-// chipSnippet returns the health-chip (or connector-card badge cluster)
-// markup for the given name — from its "font-semibold" name span up to the
-// chip wrapper's closing </div> — so a test can assert which badge class
-// appears WITHIN that one chip without being tripped up by other chips'
-// badges elsewhere in the fragment (multiple components can legitimately
-// share a state, e.g. two "restarting" chips) or by exact whitespace
-// formatting.
-func chipSnippet(t *testing.T, body, name string) string {
+// markerSnippet returns a bounded slice of markup around marker so a test can
+// assert badge classes near one specific graph node without depending on
+// exact whitespace or nested div boundaries.
+func markerSnippet(t *testing.T, body, marker string) string {
 	t.Helper()
-	marker := `<span class="font-semibold">` + name + `</span>`
 	idx := strings.Index(body, marker)
 	if idx < 0 {
-		t.Fatalf("dashboard fragment has no chip for %q:\n%s", name, body)
+		t.Fatalf("dashboard fragment has no marker %q:\n%s", marker, body)
 	}
-	rest := body[idx:]
-	end := strings.Index(rest, "</div>")
-	if end < 0 {
-		t.Fatalf("chip for %q has no closing </div>:\n%s", name, body)
+	start := idx - 250
+	if start < 0 {
+		start = 0
 	}
-	return rest[:end]
+	end := idx + 500
+	if end > len(body) {
+		end = len(body)
+	}
+	return body[start:end]
 }
 
 func dashboardFrag(t *testing.T, srv *httptest.Server) string {
@@ -106,36 +104,49 @@ func TestDashboardFragEmptyStateNoSourcesPointsAtSources(t *testing.T) {
 	srv, _, _, _ := newDashboardTestServer(t)
 
 	body := dashboardFrag(t, srv)
-	for _, want := range []string{"Add your first source", `href="/ui/sources"`} {
+	for _, want := range []string{"Add your first source", `href="/ui/sources/new"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("empty dashboard fragment missing %q:\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, `href="/ui/connectors"`) {
-		t.Fatalf("empty dashboard fragment with no sources should not link /ui/connectors:\n%s", body)
+	empty := markerSnippet(t, body, "Add your first source")
+	if !strings.Contains(empty, `href="/ui/sources/new"`) {
+		t.Fatalf("initial empty-state CTA should point at sources:\n%s", empty)
 	}
 }
 
-func TestDashboardFragEmptyStateWithSourcesPointsAtConnectors(t *testing.T) {
+func TestDashboardFragEmptyStateWithSourceNeedsSink(t *testing.T) {
 	srv, svc, _, _ := newDashboardTestServer(t)
 	must(t, svc.PutSource(context.Background(), model.Source{
 		ID: "can0", Name: "Main bus", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0",
 	}, true))
 
 	body := dashboardFrag(t, srv)
-	for _, want := range []string{"Add your first connector", `href="/ui/connectors"`} {
+	for _, want := range []string{"Add your first sink", `href="/ui/sinks/new"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard fragment (sources, no connectors) missing %q:\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, "Add your first source") {
-		t.Fatalf("dashboard fragment with sources configured should not offer to add a source:\n%s", body)
+	if strings.Contains(body, "Add your first connector") {
+		t.Fatalf("dashboard fragment with no sinks should not offer to add a connector:\n%s", body)
 	}
 }
 
-// --- Connector cards ---
+func TestDashboardFragEmptyStateWithSourceAndSinkPointsAtConnectors(t *testing.T) {
+	srv, svc, _, _ := newDashboardTestServer(t)
+	seedSourceSink(t, svc)
 
-func TestDashboardFragRendersConnectorCard(t *testing.T) {
+	body := dashboardFrag(t, srv)
+	for _, want := range []string{"Add your first connector", `href="/ui/connectors/new"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("dashboard fragment (source+sink, no connectors) missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// --- Home DAG ---
+
+func TestDashboardFragRendersConnectorDAG(t *testing.T) {
 	srv, svc, reg, _ := newDashboardTestServer(t)
 	seedSourceSink(t, svc)
 	must(t, svc.PutConnector(context.Background(), model.Connector{
@@ -146,34 +157,30 @@ func TestDashboardFragRendersConnectorCard(t *testing.T) {
 
 	body := dashboardFrag(t, srv)
 	for _, want := range []string{
-		"Heading only", `href="/ui/connectors/heading"`,
-		"badge-success\">enabled</span>", "Queue depth", "Msg/s", "Bytes/s",
+		"dag-board", "dag-node-source", "dag-node-connector", "dag-node-sink",
+		`data-node-id="src1"`, `data-connector-id="heading"`, `data-node-id="sink1"`,
+		`href="/ui/sources/src1/"`, `href="/ui/sinks/sink1/"`,
+		`href="/ui/sources/new"`, `href="/ui/sinks/new"`, `href="/ui/connectors/new"`,
+		"metadata-stack", "metadata-table",
+		"<th>Detail</th>", "<code>can0</code>", "<code>127.0.0.1:9000</code>",
+		"Heading only", `href="/ui/connectors/heading/"`, "Source One", "Sink One",
+		`href="/ui/sources/src1/">Source One</a>`, `href="/ui/sinks/sink1/">Sink One</a>`,
+		"badge-success\">enabled</span>", "msg/s", "B/s", "queued",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard fragment missing %q:\n%s", want, body)
 		}
-	}
-	// The card's route line shows the source/sink NAMES (seedSourceSink's
-	// "Source One"/"Sink One"), not their raw ids — asserted as one exact
-	// substring (rather than "Source One"/"Sink One" independently) because
-	// the components health strip elsewhere on the same page also renders
-	// each source/sink's plain Name, which would make a loose substring
-	// check pass even without this card's own route line using names. See
-	// TestDashboardFragConnectorCardNameFallsBackToIDWhenEmpty for the
-	// fallback-to-id case.
-	if !strings.Contains(body, ">Source One &rarr; Sink One<") {
-		t.Fatalf("dashboard connector card route line does not show source/sink names:\n%s", body)
 	}
 	if strings.Contains(body, "Add your first") {
 		t.Fatalf("dashboard fragment with a connector configured should not show the empty-state hero:\n%s", body)
 	}
 }
 
-// TestDashboardFragConnectorCardNameFallsBackToIDWhenEmpty is dashboard.go's
+// TestDashboardFragConnectorDAGNameFallsBackToIDWhenEmpty is dashboard.go's
 // analogue of TestConnectorsPageNameFallsBackToIDWhenEmpty (forms_test.go):
-// a source/sink with no Name set renders its raw id on the connector card
-// instead of a blank route line.
-func TestDashboardFragConnectorCardNameFallsBackToIDWhenEmpty(t *testing.T) {
+// a source/sink with no Name set renders its raw id on the graph node
+// instead of a blank title.
+func TestDashboardFragConnectorDAGNameFallsBackToIDWhenEmpty(t *testing.T) {
 	srv, svc, _, _ := newDashboardTestServer(t)
 	ctx := context.Background()
 	must(t, svc.PutSource(ctx, model.Source{ID: "src1", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0"}, true))
@@ -182,7 +189,7 @@ func TestDashboardFragConnectorCardNameFallsBackToIDWhenEmpty(t *testing.T) {
 
 	body := dashboardFrag(t, srv)
 	if !strings.Contains(body, "src1") || !strings.Contains(body, "sink1") {
-		t.Fatalf("dashboard connector card should fall back to the raw id when name is empty:\n%s", body)
+		t.Fatalf("dashboard connector DAG should fall back to the raw id when name is empty:\n%s", body)
 	}
 }
 
@@ -220,9 +227,9 @@ func TestDashboardFragConnectorErrorBadge(t *testing.T) {
 	}
 }
 
-// --- Components health strip: state colors + transient-absence tolerance ---
+// --- Endpoint node states + transient-absence tolerance ---
 
-func TestDashboardFragHealthChipStates(t *testing.T) {
+func TestDashboardFragEndpointNodeStates(t *testing.T) {
 	srv, svc, _, rec := newDashboardTestServer(t)
 	ctx := context.Background()
 	must(t, svc.PutSource(ctx, model.Source{ID: "up-src", Name: "Up Src", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0"}, true))
@@ -230,6 +237,11 @@ func TestDashboardFragHealthChipStates(t *testing.T) {
 	must(t, svc.PutSource(ctx, model.Source{ID: "restarting-src", Name: "Restarting Src", Type: model.SourceSocketCAN, Enabled: true, Interface: "can2"}, true))
 	must(t, svc.PutSource(ctx, model.Source{ID: "off-src", Name: "Off Src", Type: model.SourceSocketCAN, Enabled: false, Interface: "can3"}, true))
 	must(t, svc.PutSink(ctx, model.Sink{ID: "err-sink", Name: "Err Sink", Type: model.SinkTCP, Enabled: true, Address: "127.0.0.1:9001"}, true))
+	for _, id := range []string{"up", "degraded", "restarting", "off"} {
+		must(t, svc.PutConnector(ctx, model.Connector{
+			ID: id + "-conn", Name: id + " connector", SourceID: id + "-src", SinkID: "err-sink", Enabled: true,
+		}, true))
+	}
 
 	// Deliberately omit "restarting-src" (enabled but not yet reported —
 	// e.g. mid hot-apply) and "off-src" (disabled, so the supervisor never
@@ -252,12 +264,34 @@ func TestDashboardFragHealthChipStates(t *testing.T) {
 		{"Off Src", "badge-ghost", "disabled"},
 	}
 	for _, c := range cases {
-		snip := chipSnippet(t, body, c.name)
+		snip := markerSnippet(t, body, c.name)
 		if !strings.Contains(snip, c.wantBadgeClass) {
-			t.Errorf("chip for %q = %q, want it to contain badge class %q", c.name, snip, c.wantBadgeClass)
+			t.Errorf("node for %q = %q, want it to contain badge class %q", c.name, snip, c.wantBadgeClass)
 		}
 		if !strings.Contains(snip, ">"+c.wantText+"<") {
-			t.Errorf("chip for %q = %q, want state text %q", c.name, snip, c.wantText)
+			t.Errorf("node for %q = %q, want state text %q", c.name, snip, c.wantText)
+		}
+	}
+}
+
+func TestDashboardFragMetadataTablesCountEndpointUsage(t *testing.T) {
+	srv, svc, _, _ := newDashboardTestServer(t)
+	ctx := context.Background()
+	must(t, svc.PutSource(ctx, model.Source{ID: "src1", Name: "Used source", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0"}, true))
+	must(t, svc.PutSource(ctx, model.Source{ID: "src2", Name: "Unused source", Type: model.SourceSocketCAN, Enabled: true, Interface: "can1"}, true))
+	must(t, svc.PutSink(ctx, model.Sink{ID: "sink1", Name: "Used sink", Type: model.SinkTCP, Enabled: true, Address: "127.0.0.1:9001"}, true))
+	must(t, svc.PutSink(ctx, model.Sink{ID: "sink2", Name: "Unused sink", Type: model.SinkTCP, Enabled: true, Address: "127.0.0.1:9002"}, true))
+	must(t, svc.PutConnector(ctx, model.Connector{ID: "conn1", Name: "First", SourceID: "src1", SinkID: "sink1", Enabled: true}, true))
+	must(t, svc.PutConnector(ctx, model.Connector{ID: "conn2", Name: "Second", SourceID: "src1", SinkID: "sink1", Enabled: true}, true))
+
+	body := dashboardFrag(t, srv)
+	for _, want := range []string{
+		"metadata-stack", "Sources", "Sinks", "Connectors",
+		"Used source", "2 connectors", "Unused source", "0 connectors",
+		"Used sink", "Unused sink", "usage-dot-used", "usage-dot-unused",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("dashboard metadata tables missing %q:\n%s", want, body)
 		}
 	}
 }
@@ -283,9 +317,9 @@ func TestDashboardPageHostsPollingContainer(t *testing.T) {
 			t.Fatalf("dashboard page missing %q:\n%s", want, body)
 		}
 	}
-	// The dashboard's connector/health content is fetched client-side, not
+	// The dashboard's graph content is fetched client-side, not
 	// server-rendered inline (see dashboard.html's doc comment) — the shell
-	// response itself carries no connector card markup.
+	// response itself carries no graph markup.
 	if strings.Contains(body, "dashboard-content") {
 		t.Fatalf("dashboard page shell should not itself contain fragment markers:\n%s", body)
 	}

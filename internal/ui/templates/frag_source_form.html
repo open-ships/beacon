@@ -1,10 +1,8 @@
-{{/* Data: internal/ui/forms.go's sourceFormViewData. Rendered at GET
-     /ui/frag/source-form (blank or ?id=... for edit) and re-rendered by
-     POST /ui/sources[/{id}] on a validation failure (see writeSource).
-     Field wrappers use daisyUI v5's fieldset/fieldset-legend (v5 dropped
-     the old form-control/label-text pattern); see
-     internal/ui/uisrc/build/daisyui.js for the class list this was
-     confirmed against. */}}
+{{/* Data: internal/ui/forms.go's sourceFormViewData. Rendered by canonical
+     source create/edit pages and re-rendered by POST /ui/sources[/{id}] on
+     a validation failure (see writeSource).
+     Field wrappers use plain fieldset/legend markup; app.css supplies the
+     product theme. */}}
 {{define "source-form"}}
 <form class="card bg-base-200 border border-base-300"
       hx-post="{{if .IsEdit}}/ui/sources/{{.ID}}{{else}}/ui/sources{{end}}"
@@ -39,6 +37,10 @@
         <option value="usbcan" {{if eq .TypeFields.Type "usbcan"}}selected{{end}}>usbcan</option>
         <option value="http_sse" {{if eq .TypeFields.Type "http_sse"}}selected{{end}}>http_sse</option>
         <option value="http_ws" {{if eq .TypeFields.Type "http_ws"}}selected{{end}}>http_ws</option>
+        <option value="mqtt" {{if eq .TypeFields.Type "mqtt"}}selected{{end}}>mqtt</option>
+        <option value="tcp" {{if eq .TypeFields.Type "tcp"}}selected{{end}}>tcp</option>
+        <option value="udp" {{if eq .TypeFields.Type "udp"}}selected{{end}}>udp</option>
+        <option value="file" {{if eq .TypeFields.Type "file"}}selected{{end}}>file</option>
       </select>
     </fieldset>
     <label class="label cursor-pointer justify-start gap-2">
@@ -49,9 +51,7 @@
       {{template "source-type-fields" .TypeFields}}
     </div>
     <div class="card-actions justify-end">
-      <button type="button" class="btn" onclick="document.getElementById('source-form-container').innerHTML=''">
-        Cancel
-      </button>
+      <a class="btn" href="/ui/sources">Cancel</a>
       <button type="submit" class="btn btn-primary">Save</button>
     </div>
   </div>

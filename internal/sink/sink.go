@@ -58,6 +58,10 @@ func New(ctx context.Context, cfg model.Sink, mgr *bus.Manager, ds *DataServer, 
 		return newTCPSink(cfg, log, met)
 	case model.SinkFile:
 		return newFileSink(cfg, log)
+	case model.SinkMQTT:
+		return newMQTTSink(ctx, cfg, log, met)
+	case model.SinkTCPGateway:
+		return newGatewaySink(ctx, cfg, mgr)
 	default:
 		return nil, fmt.Errorf("sink %q: unknown type %q", cfg.ID, cfg.Type)
 	}
@@ -99,3 +103,19 @@ func (s *canSink) Push(ctx context.Context, e *msg.Envelope) error {
 
 func (s *canSink) State() (string, error) { return s.handle.State() }
 func (s *canSink) Stop()                  { s.handle.Release() }
+
+// newGatewaySink transmits onto a remote NMEA-2000 bus through a TCP WiFi
+// gateway (Yacht Devices RAW or Actisense). It reuses canSink: the bus
+// manager's "tcp" endpoint kind gives it the same shared, refcounted n2k
+// client — with address claiming, transport auto-reconnect (n2k
+// WithReconnect), and the manager's reconnect/state machine — that the
+// socketcan/usbcan sinks get, and Handle.Write's re-encode path applies
+// unchanged (UnknownPGN envelopes are skipped via ErrNotEncodable exactly as
+// on CAN hardware).
+func newGatewaySink(ctx context.Context, cfg model.Sink, mgr *bus.Manager) (Runtime, error) {
+	handle, err := mgr.Acquire(ctx, bus.Endpoint{Kind: "tcp", Name: cfg.Address, Format: cfg.Format})
+	if err != nil {
+		return nil, err
+	}
+	return &canSink{id: cfg.ID, handle: handle}, nil
+}

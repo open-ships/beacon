@@ -1,0 +1,81 @@
+{{define "overview-live"}}
+<div id="{{.DOMID}}" class="overview-live"
+     hx-get="{{.RefreshHref}}" hx-trigger="load, every 2s" hx-swap="outerHTML">
+  <div class="overview-grid">
+    <section class="overview-card" aria-label="Status">
+      <div class="section-heading">
+        <h3>Status</h3>
+      </div>
+      <div class="status-line">
+        {{if eq .State "up"}}<span class="badge badge-success">up</span>
+        {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
+        {{else if eq .State "error"}}<span class="badge badge-error">error</span>
+        {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
+        <span><code>{{.ID}}</code></span>
+      </div>
+      <div class="log-list">
+        {{range .Logs}}
+        <div class="log-line log-line-{{.Level}}">
+          <span>{{.Level}}</span>
+          <p>{{.Message}}</p>
+        </div>
+        {{else}}
+        <p class="opacity-70">No recent runtime errors.</p>
+        {{end}}
+      </div>
+    </section>
+
+    <section class="overview-card" aria-label="Statistics">
+      <div class="section-heading">
+        <h3>Statistics</h3>
+      </div>
+      <div class="overview-stats">
+        <div><span>Total messages</span><strong>{{.Snapshot.TotalMessages}}</strong></div>
+        <div><span>Msg/s</span><strong>{{printf "%.2f" .Snapshot.MsgPerSec}}</strong></div>
+        <div><span>Total bytes</span><strong>{{.TotalBytesText}}</strong></div>
+        <div><span>Bytes/s</span><strong>{{.BytesPerSecText}}</strong></div>
+        <div><span>Queue</span><strong>{{.Snapshot.QueueDepth}}</strong></div>
+        <div><span>Queue bytes</span><strong>{{.QueueBytesText}}</strong></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="overview-card" aria-label="Message stream">
+    <div class="section-heading">
+      <h3>Message stream</h3>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="table event-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Stage</th>
+            <th>PGN</th>
+            <th>Source</th>
+            <th>Dest</th>
+            <th>Priority</th>
+            <th>Connector</th>
+            <th>Payload</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Events}}
+          <tr>
+            <td><code>{{.TimeText}}</code></td>
+            <td>{{.Stage}}</td>
+            <td><code>{{.PGN}}</code></td>
+            <td>{{.Source}}</td>
+            <td>{{.Dest}}</td>
+            <td>{{.Priority}}</td>
+            <td>{{if .ConnectorID}}<code>{{.ConnectorID}}</code>{{else}}<span class="opacity-70">-</span>{{end}}</td>
+            <td>{{if .Payload}}<code>{{.Payload}}</code>{{else}}<span class="opacity-70">empty</span>{{end}}</td>
+          </tr>
+          {{else}}
+          <tr><td colspan="8" class="text-center opacity-70">{{.EmptyStream}}</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+{{end}}

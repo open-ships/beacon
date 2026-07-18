@@ -1,21 +1,21 @@
-// Package ui is beacon's offline, server-rendered web UI: an OpenBridge-
-// themed dashboard mounted at /ui/. Every asset it serves (htmx, the
-// OpenBridge web components bundle, the OpenBridge palette CSS, Noto Sans,
-// and the compiled Tailwind/daisyUI stylesheet) is embedded in the binary
-// via go:embed — beacon is an offline gateway appliance, so the UI must
-// render with no network access beyond the browser talking to beacon
-// itself. See assets/README.md for exactly what's vendored and
-// uisrc/README.md for how internal/ui/assets/app.css is built from
-// uisrc/input.css.
+// Package ui is beacon's offline, server-rendered web UI mounted at /ui/.
+// Every asset it serves (htmx and the lightweight Open Ships stylesheet) is
+// embedded in the binary via go:embed — beacon is an offline gateway
+// appliance, so the UI must render with no network access beyond the
+// browser talking to beacon itself. See assets/README.md for exactly what's
+// vendored and internal/ui/assets/app.css for the theme source.
 package ui
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
 
+	"github.com/open-ships/beacon/internal/bus"
 	"github.com/open-ships/beacon/internal/config"
 	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/supervisor"
@@ -33,20 +33,20 @@ var assetsFS embed.FS
 // Connectors pages read and write through svc and read live per-connector
 // counters/rates through reg (see forms.go's "--- Connectors ---" section);
 // the dashboard (see dashboard.go) reads through svc, reg, AND statuses
-// together — its connector cards use reg for rates/queue depth the same way
-// the Connectors page does, its components health strip uses statuses the
-// same way Sources/Sinks do, and a connector card's error badge uses
-// statuses too (a connector has no reg-based error signal of its own).
+// together — its DAG uses reg for rates/queue depth the same way the
+// Connectors page does, its source/sink nodes use statuses the same way
+// Sources/Sinks do, and a connector node's error badge uses statuses too
+// (a connector has no reg-based error signal of its own).
 //
 // version is beacon's own build version (see internal/app.Options.Version).
-// It doubles as every vendored asset URL's "?v=" cache-busting query
-// parameter: assets are served with a one-year immutable Cache-Control (see
-// withImmutableCache), so without a cache-buster a binary upgrade that
+// Release builds use it as every vendored asset URL's "?v=" cache-busting
+// query parameter: assets are served with a one-year immutable Cache-Control
+// (see withImmutableCache), so without a cache-buster a binary upgrade that
 // re-vendors an asset would keep serving browsers their stale cached copy.
-// Tying the cache-buster to the binary version rather than a hand-maintained
-// per-asset constant (contrast internal/api/docsui.go's scalarVersion) means
-// every asset invalidates together on every release, with nothing to
-// remember to bump when re-vendoring.
+// Development builds usually pass "dev", so assetCacheVersion replaces that
+// non-unique value with a hash of the embedded UI assets; otherwise `go run`
+// iterations would keep reusing /ui/assets/app.css?v=dev while the browser
+// quite correctly holds onto its immutable cached copy.
 //
 // A nil log defaults to slog.Default(), the same convention as api.New and
 // config.NewService; render failures are logged through it (see render.go).
@@ -62,10 +62,11 @@ var assetsFS embed.FS
 // exact-path registration for "/ui" already exists at that outer mux.
 // Routes below are registered with the full "/ui/..." path since the mux
 // they're added to isn't stripped.
-func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, version string, log *slog.Logger) http.Handler {
+func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, devices func() []bus.DeviceInfo, version string, log *slog.Logger) http.Handler {
 	if log == nil {
 		log = slog.Default()
 	}
+	assetVersion := assetCacheVersion(version)
 	mux := http.NewServeMux()
 
 	// GET /ui and GET /ui/ both land the operator on the dashboard. Both
@@ -83,41 +84,59 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 	mux.HandleFunc("GET /ui/{$}", redirectToDashboard)
 
 	mux.HandleFunc("GET /ui/dashboard", func(w http.ResponseWriter, r *http.Request) {
-		render(w, log, "dashboard", "Dashboard", version)
+		// The dashboard is where create handlers land the operator via
+		// HX-Redirect, so it consumes the one-shot flash (see flash.go).
+		data := newPageData("Home", assetVersion, "dashboard")
+		data.Flash = takeFlash(w, r)
+		renderPage(w, log, "dashboard", data)
 	})
-	mux.HandleFunc("GET /ui/frag/dashboard", handleDashboardFrag(svc, reg, statuses, log))
+	mux.HandleFunc("GET /ui/frag/dashboard", handleDashboardFrag(svc, reg, statuses, devices, log))
 
 	// Sources: full page, its "add/edit" form + type-fields fragments, and
 	// its create/update/delete write endpoints. See forms.go for every
 	// handler constructor below and the behavior contract in its package
 	// doc comment.
-	mux.HandleFunc("GET /ui/sources", handleSourcesPage(svc, statuses, version, log))
-	mux.HandleFunc("GET /ui/frag/source-form", handleSourceFormFrag(svc, log))
+	mux.HandleFunc("GET /ui/sources", handleSourcesPage(svc, statuses, assetVersion, log))
+	mux.HandleFunc("GET /ui/sources/new", handleSourceNewPage(svc, statuses, assetVersion, log))
+	mux.HandleFunc("GET /ui/sources/{id}/edit", handleSourceEditPage(svc, statuses, assetVersion, log))
+	mux.HandleFunc("GET /ui/sources/{id}", redirectToTrailingSlash)
+	mux.HandleFunc("GET /ui/sources/{id}/{$}", handleSourceOverviewPage(svc, reg, statuses, assetVersion, log))
+	mux.HandleFunc("GET /ui/frag/sources/{id}/overview", handleSourceOverviewFrag(svc, reg, statuses, log))
 	mux.HandleFunc("GET /ui/frag/source-type-fields", handleSourceTypeFieldsFrag(log))
 	mux.HandleFunc("POST /ui/sources", handleSourceCreate(svc, log))
 	mux.HandleFunc("POST /ui/sources/{id}", handleSourceUpdate(svc, log))
 	mux.HandleFunc("POST /ui/sources/{id}/delete", handleSourceDelete(svc, log))
 
 	// Sinks: exactly parallel to sources above.
-	mux.HandleFunc("GET /ui/sinks", handleSinksPage(svc, statuses, version, log))
-	mux.HandleFunc("GET /ui/frag/sink-form", handleSinkFormFrag(svc, log))
+	mux.HandleFunc("GET /ui/sinks", handleSinksPage(svc, statuses, assetVersion, log))
+	mux.HandleFunc("GET /ui/sinks/new", handleSinkNewPage(svc, statuses, assetVersion, log))
+	mux.HandleFunc("GET /ui/sinks/{id}/edit", handleSinkEditPage(svc, statuses, assetVersion, log))
+	mux.HandleFunc("GET /ui/sinks/{id}", redirectToTrailingSlash)
+	mux.HandleFunc("GET /ui/sinks/{id}/{$}", handleSinkOverviewPage(svc, reg, statuses, assetVersion, log))
+	mux.HandleFunc("GET /ui/frag/sinks/{id}/overview", handleSinkOverviewFrag(svc, reg, statuses, log))
 	mux.HandleFunc("GET /ui/frag/sink-type-fields", handleSinkTypeFieldsFrag(log))
 	mux.HandleFunc("POST /ui/sinks", handleSinkCreate(svc, log))
 	mux.HandleFunc("POST /ui/sinks/{id}", handleSinkUpdate(svc, log))
 	mux.HandleFunc("POST /ui/sinks/{id}/delete", handleSinkDelete(svc, log))
 
 	// Connectors: the list/add/edit/delete pages parallel sources/sinks
-	// above, plus a per-connector detail page with live stats (reg) and a
-	// CEL validate-on-blur fragment. See forms.go's "--- Connectors ---"
-	// section for the behavior contract.
-	mux.HandleFunc("GET /ui/connectors", handleConnectorsPage(svc, reg, version, log))
-	mux.HandleFunc("GET /ui/connectors/{id}", handleConnectorDetailPage(svc, version, log))
-	mux.HandleFunc("GET /ui/frag/connector-form", handleConnectorFormFrag(svc, log))
+	// above, plus a per-connector overview page with live stats/streaming
+	// data and a CEL validate-on-blur fragment. See forms.go's
+	// "--- Connectors ---" section for the behavior contract.
+	mux.HandleFunc("GET /ui/connectors", handleConnectorsPage(svc, reg, assetVersion, log))
+	mux.HandleFunc("GET /ui/connectors/new", handleConnectorNewPage(svc, reg, assetVersion, log))
+	mux.HandleFunc("GET /ui/connectors/{id}/edit", handleConnectorEditPage(svc, reg, assetVersion, log))
+	mux.HandleFunc("GET /ui/connectors/{id}", redirectToTrailingSlash)
+	mux.HandleFunc("GET /ui/connectors/{id}/{$}", handleConnectorOverviewPage(svc, reg, statuses, assetVersion, log))
 	mux.HandleFunc("POST /ui/frag/validate-filters", handleValidateFiltersFrag(svc, log))
 	mux.HandleFunc("GET /ui/frag/connectors/{id}/stats", handleConnectorStatsFrag(svc, reg, log))
+	mux.HandleFunc("GET /ui/frag/connectors/{id}/overview", handleConnectorOverviewFrag(svc, reg, statuses, log))
 	mux.HandleFunc("POST /ui/connectors", handleConnectorCreate(svc, reg, log))
 	mux.HandleFunc("POST /ui/connectors/{id}", handleConnectorUpdate(svc, reg, log))
 	mux.HandleFunc("POST /ui/connectors/{id}/delete", handleConnectorDelete(svc, reg, log))
+
+	mux.HandleFunc("GET /ui/config", handleConfigPage(svc, assetVersion, log))
+	mux.HandleFunc("POST /ui/config/import", handleConfigImport(svc, assetVersion, log))
 
 	// Docs: the onboard operator manual — see docspages.go. /ui/docs 302s to
 	// the first page; /ui/docs/{slug} serves one page or 404s for an unknown
@@ -125,7 +144,7 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 	// "/docs/{slug}" paths (mounted on the admin mux, not this one) to these
 	// two routes.
 	mux.HandleFunc("GET /ui/docs", handleDocsIndex())
-	mux.HandleFunc("GET /ui/docs/{slug}", handleDocPage(version, log))
+	mux.HandleFunc("GET /ui/docs/{slug}", handleDocPage(assetVersion, log))
 
 	assets, err := fs.Sub(assetsFS, "assets")
 	if err != nil {
@@ -137,6 +156,31 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 	mux.Handle("GET /ui/assets/", withImmutableCache(fileServer))
 
 	return sameOriginGuard(mux)
+}
+
+func assetCacheVersion(version string) string {
+	if version != "" && version != "dev" {
+		return version
+	}
+	h := sha256.New()
+	err := fs.WalkDir(assetsFS, "assets", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := assetsFS.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		_, _ = h.Write([]byte(path))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write(b)
+		_, _ = h.Write([]byte{0})
+		return nil
+	})
+	if err != nil {
+		return "dev"
+	}
+	return "dev-" + hex.EncodeToString(h.Sum(nil))[:12]
 }
 
 // sameOriginGuard wraps next so every POST request is checked against a

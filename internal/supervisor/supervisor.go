@@ -362,7 +362,7 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 			s.fail("source", id, fmt.Errorf("source %q: type %q requires a CAN bus manager but none is configured", id, want.Type))
 			continue
 		}
-		rt, err := source.New(s.runCtx, want, s.bus, s.log, s.met)
+		rt, err := source.New(s.runCtx, want, s.bus, s.log, s.met, s.reg)
 		if err != nil {
 			s.fail("source", id, err)
 			continue
@@ -427,9 +427,13 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 
 // needsBus reports whether a source/sink type requires a *bus.Manager.
 // model.SourceType and model.SinkType use identical literal values for the
-// CAN variants ("socketcan", "usbcan"), so one check serves both.
+// CAN variants ("socketcan", "usbcan"), so one check serves both. The
+// tcp_gateway sink also acquires from the manager (a full claiming client
+// over TCP); the tcp/udp *sources* deliberately do not — they are passive,
+// read-only listeners via n2k.Receive and never claim an address.
 func needsBus(t string) bool {
-	return t == string(model.SourceSocketCAN) || t == string(model.SourceUSBCAN)
+	return t == string(model.SourceSocketCAN) || t == string(model.SourceUSBCAN) ||
+		t == string(model.SinkTCPGateway)
 }
 
 // unavailableErr describes why a connector's endpoints aren't running,
@@ -482,6 +486,17 @@ func (s *Supervisor) Statuses() []Status {
 	}
 	out = append(out, s.errored...)
 	return out
+}
+
+// BusDevices returns every NMEA-2000 device currently observed across the
+// running CAN endpoints (empty when no CAN bus is configured or connected).
+// n2k v0.2.0's client tracks these automatically from address-claim traffic,
+// so this is a free read once a bus client is up.
+func (s *Supervisor) BusDevices() []bus.DeviceInfo {
+	if s.bus == nil {
+		return nil
+	}
+	return s.bus.Devices()
 }
 
 // Stop stops every running component (connectors, then sinks, then sources)

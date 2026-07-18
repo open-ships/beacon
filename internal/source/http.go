@@ -17,10 +17,13 @@ import (
 	"github.com/open-ships/beacon/internal/metrics"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/msg"
+	"github.com/open-ships/beacon/internal/stats"
 )
 
-// runFunc runs one connection attempt, publishing envelopes until error.
-type runFunc func(ctx context.Context, cfg model.Source, publish func(*msg.Envelope)) error
+// runFunc runs one connection attempt, publishing envelopes until error. It
+// must call connected exactly once, after the endpoint is actually established
+// (dialed and subscribed), so the dialer only then reports "up".
+type runFunc func(ctx context.Context, cfg model.Source, publish func(*msg.Envelope), connected func()) error
 
 // dialerSource maintains a dial-reconnect loop around a runFunc.
 type dialerSource struct {
@@ -33,19 +36,29 @@ type dialerSource struct {
 	lastErr error
 }
 
-func newDialerSource(ctx context.Context, cfg model.Source, log *slog.Logger, met *metrics.Set, run runFunc) (Runtime, error) {
+func newDialerSource(ctx context.Context, cfg model.Source, log *slog.Logger, met *metrics.Set, reg *stats.Registry, run runFunc) (Runtime, error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	s := &dialerSource{id: cfg.ID, hub: newHub(met, cfg.ID), cancel: cancel, state: "degraded"}
 	publish := func(e *msg.Envelope) {
 		e.Seq, e.ConnectorID = 0, "" // upstream identifiers do not survive re-ingest
 		met.SourceMessages(runCtx, cfg.ID, 1)
+		reg.RecordSource(cfg.ID, e)
 		s.hub.publish(e)
 	}
 	go func() {
-		backoff := 250 * time.Millisecond
+		const baseBackoff = 250 * time.Millisecond
+		backoff := baseBackoff
+		// connected is invoked by run once the endpoint is actually
+		// established. The source starts (and stays) "degraded" until then, so
+		// an endpoint that never connects — bad host, missing port — never
+		// flashes "up". Only reached from run() on this goroutine, so the
+		// backoff reset is race-free.
+		connected := func() {
+			s.setState("up", nil)
+			backoff = baseBackoff // a real connection earns a fresh backoff budget
+		}
 		for runCtx.Err() == nil {
-			s.setState("up", nil) // optimistic; run returns on failure
-			err := run(runCtx, cfg, publish)
+			err := run(runCtx, cfg, publish, connected)
 			if runCtx.Err() != nil {
 				return
 			}
@@ -85,7 +98,7 @@ func (s *dialerSource) Stop() {
 }
 
 // runSSE consumes a Server-Sent Events stream of envelope JSON.
-func runSSE(ctx context.Context, cfg model.Source, publish func(*msg.Envelope)) error {
+func runSSE(ctx context.Context, cfg model.Source, publish func(*msg.Envelope), connected func()) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.URL, nil)
 	if err != nil {
 		return err
@@ -102,6 +115,7 @@ func runSSE(ctx context.Context, cfg model.Source, publish func(*msg.Envelope)) 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("sse endpoint returned %s", resp.Status)
 	}
+	connected()
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
@@ -122,7 +136,7 @@ func runSSE(ctx context.Context, cfg model.Source, publish func(*msg.Envelope)) 
 }
 
 // runWS consumes NDJSON text messages from a WebSocket.
-func runWS(ctx context.Context, cfg model.Source, publish func(*msg.Envelope)) error {
+func runWS(ctx context.Context, cfg model.Source, publish func(*msg.Envelope), connected func()) error {
 	opts := &websocket.DialOptions{HTTPHeader: http.Header{}}
 	for k, v := range cfg.Headers {
 		opts.HTTPHeader.Set(k, v)
@@ -132,6 +146,7 @@ func runWS(ctx context.Context, cfg model.Source, publish func(*msg.Envelope)) e
 		return err
 	}
 	defer func() { _ = c.CloseNow() }()
+	connected()
 	c.SetReadLimit(1024 * 1024)
 	for {
 		_, data, err := c.Read(ctx)

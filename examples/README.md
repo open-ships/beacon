@@ -20,9 +20,10 @@ stops validating, that test fails.
 - **`engine-room.json`** — one CAN source feeding *two* connectors, both
   filtered to engine PGNs (`127488`, `127489`, `127493`): one to an SSE
   sink (`/engine`, for a browser dashboard) and one to a `tcp` sink
-  (`0.0.0.0:9090`, for a backend NDJSON consumer). Demonstrates fan-out —
-  multiple connectors sharing one source, each with its own filters and
-  buffer.
+  (`0.0.0.0:9090`, for a backend NDJSON consumer). It also includes disabled
+  MQTT source/sink starter endpoints (`mqtt://broker.local:1883`) for broker
+  integration. Demonstrates fan-out — multiple connectors sharing one
+  source, each with its own filters and buffer.
 - **`beacon-chain.json`** — an `http_sse` *source* pointed at another
   beacon's SSE sink (`http://upstream-beacon.local:8080/events`), feeding
   a local `socketcan` sink. Chains two beacons together: this instance

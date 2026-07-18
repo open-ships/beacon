@@ -1,34 +1,58 @@
-// dashboard.go implements beacon's live dashboard: the connector-card grid
-// plus components health strip templates/frag_dashboard.html renders, and
-// the GET /ui/frag/dashboard handler templates/dashboard.html polls every
-// 2s (hx-trigger="load, every 2s") — see dashboard.html's comment for why
-// it ships an empty container rather than rendering this fragment inline,
-// the same "ships empty, fetches client-side" shape
+// dashboard.go implements beacon's live home view: the source -> connector
+// -> sink DAG templates/frag_dashboard.html renders, and the GET
+// /ui/frag/dashboard handler templates/dashboard.html polls every 2s
+// (hx-trigger="load, every 2s") — see dashboard.html's comment for why it
+// ships an empty container rather than rendering this fragment inline, the
+// same "ships empty, fetches client-side" shape
 // templates/connector_detail.html's live stats block uses (see pages.go's
 // "connector-detail" doc comment).
 package ui
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
+	"github.com/open-ships/beacon/internal/bus"
 	"github.com/open-ships/beacon/internal/config"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/supervisor"
 )
 
-// healthChip is one components-health-strip entry — one per configured
-// source/sink (enabled or not; see healthChipState) — rendered by
-// frag_dashboard.html's "dashboard-content" template.
-type healthChip struct {
-	Kind  string // "source" or "sink"
-	ID    string
-	Name  string
-	State string // "up" | "degraded" | "error" | "restarting" | "disabled"
+// relativeAge renders a timestamp as a compact "Ns/m/h ago" for the live
+// dashboard; the zero time (never seen) becomes an em dash.
+func relativeAge(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	switch d := time.Since(t); {
+	case d < time.Second:
+		return "just now"
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	}
 }
 
-// healthChipState resolves one configured component's chip state:
+// dashboardEndpointNode is one source/sink node rendered in the home DAG
+// and in the metadata tables below it.
+type dashboardEndpointNode struct {
+	Kind           string // "source" or "sink"
+	ID             string
+	Name           string
+	Type           string
+	Detail         string
+	Enabled        bool
+	State          string // "up" | "degraded" | "error" | "restarting" | "disabled"
+	ConnectorCount int
+}
+
+// endpointState resolves one configured component's node state:
 //
 //   - its live supervisor status, if statuses (the reconciler's current
 //     snapshot) currently reports one for (kind, id) — "up"/"degraded"/
@@ -40,8 +64,8 @@ type healthChip struct {
 //     anyway — e.g. between a hot-apply's stop of the old instance and the
 //     new one's start landing in the supervisor's state map. This is the
 //     dashboard's documented tolerance for that window: it renders a
-//     neutral chip, never a crash and never a silently dropped component.
-func healthChipState(statuses []supervisor.Status, kind, id string, enabled bool) string {
+//     neutral node, never a crash and never a silently dropped component.
+func endpointState(statuses []supervisor.Status, kind, id string, enabled bool) string {
 	for _, s := range statuses {
 		if s.Kind == kind && s.ID == id {
 			return s.State
@@ -53,89 +77,170 @@ func healthChipState(statuses []supervisor.Status, kind, id string, enabled bool
 	return "restarting"
 }
 
-// healthChips builds the components-health-strip data: one chip per
-// configured source, then one per configured sink, in list order.
-func healthChips(sources []model.Source, sinks []model.Sink, statuses []supervisor.Status) []healthChip {
-	chips := make([]healthChip, 0, len(sources)+len(sinks))
-	for _, s := range sources {
-		chips = append(chips, healthChip{
-			Kind: "source", ID: s.ID, Name: s.Name,
-			State: healthChipState(statuses, "source", s.ID, s.Enabled),
-		})
+func displayName(name, id string) string {
+	if name != "" {
+		return name
 	}
-	for _, s := range sinks {
-		chips = append(chips, healthChip{
-			Kind: "sink", ID: s.ID, Name: s.Name,
-			State: healthChipState(statuses, "sink", s.ID, s.Enabled),
-		})
-	}
-	return chips
+	return id
 }
 
-// dashboardConnectorCard is one connector-grid card's data: model.Connector
-// plus its live stats.Snapshot (reg.Snapshot — same zero-value-when-absent
-// contract connectorRow in forms.go relies on, so a just-created or idle
-// connector's card renders zero rate/queue tiles rather than needing a
-// presence check here), its live supervisor state (stateFor — "unknown"
-// when statuses doesn't report one, e.g. disabled; the card only acts on
-// "error", rendering an extra error badge alongside the plain
-// enabled/disabled badge every other state leaves untouched), and its
-// source/sink NAMES (nameOrID — forms.go's connectorRow uses the exact
-// same helper for the connectors table's route column).
-type dashboardConnectorCard struct {
+func sourceEndpointNodes(sources []model.Source, statuses []supervisor.Status, connectorCounts map[string]int) []dashboardEndpointNode {
+	nodes := make([]dashboardEndpointNode, len(sources))
+	for i, s := range sources {
+		nodes[i] = dashboardEndpointNode{
+			Kind:           "source",
+			ID:             s.ID,
+			Name:           displayName(s.Name, s.ID),
+			Type:           string(s.Type),
+			Detail:         sourceDetail(s),
+			Enabled:        s.Enabled,
+			State:          endpointState(statuses, "source", s.ID, s.Enabled),
+			ConnectorCount: connectorCounts[s.ID],
+		}
+	}
+	return nodes
+}
+
+func sinkEndpointNodes(sinks []model.Sink, statuses []supervisor.Status, connectorCounts map[string]int) []dashboardEndpointNode {
+	nodes := make([]dashboardEndpointNode, len(sinks))
+	for i, s := range sinks {
+		nodes[i] = dashboardEndpointNode{
+			Kind:           "sink",
+			ID:             s.ID,
+			Name:           displayName(s.Name, s.ID),
+			Type:           string(s.Type),
+			Detail:         sinkDetail(s),
+			Enabled:        s.Enabled,
+			State:          endpointState(statuses, "sink", s.ID, s.Enabled),
+			ConnectorCount: connectorCounts[s.ID],
+		}
+	}
+	return nodes
+}
+
+func endpointConnectorCounts(connectors []model.Connector) (map[string]int, map[string]int) {
+	sourceCounts := map[string]int{}
+	sinkCounts := map[string]int{}
+	for _, c := range connectors {
+		sourceCounts[c.SourceID]++
+		sinkCounts[c.SinkID]++
+	}
+	return sourceCounts, sinkCounts
+}
+
+func endpointNodeMap(nodes []dashboardEndpointNode) map[string]dashboardEndpointNode {
+	m := make(map[string]dashboardEndpointNode, len(nodes))
+	for _, n := range nodes {
+		m[n.ID] = n
+	}
+	return m
+}
+
+func fallbackEndpointNode(kind, id string) dashboardEndpointNode {
+	return dashboardEndpointNode{
+		Kind:  kind,
+		ID:    id,
+		Name:  id,
+		Type:  "missing",
+		State: "unknown",
+	}
+}
+
+// dashboardFlow is one source -> connector -> sink path in the DAG:
+// model.Connector plus its live stats.Snapshot, its live supervisor state,
+// and the resolved source/sink nodes used by the connector.
+type dashboardFlow struct {
 	model.Connector
 	Snapshot        stats.Snapshot
 	State           string
 	BytesPerSecText string
-	SourceName      string
-	SinkName        string
+	Source          dashboardEndpointNode
+	Sink            dashboardEndpointNode
 }
 
-// dashboardConnectorCards builds the connector-grid data in svc.ListConnectors
-// order. srcNames/sinkNamesByID are id->Name lookup maps (forms.go's
-// sourceNames/sinkNames) built by the caller from the same source/sink
-// lists it already fetched for the components health strip (healthChips).
-func dashboardConnectorCards(connectors []model.Connector, reg *stats.Registry, statuses []supervisor.Status, srcNames, sinkNamesByID map[string]string) []dashboardConnectorCard {
-	cards := make([]dashboardConnectorCard, len(connectors))
+// dashboardFlows builds the DAG rows in svc.ListConnectors order. It also
+// resolves the source/sink nodes each connector references.
+func dashboardFlows(connectors []model.Connector, reg *stats.Registry, statuses []supervisor.Status, sources, sinks map[string]dashboardEndpointNode) []dashboardFlow {
+	flows := make([]dashboardFlow, len(connectors))
 	for i, c := range connectors {
 		snap, _ := reg.Snapshot(c.ID)
-		cards[i] = dashboardConnectorCard{
+		src, ok := sources[c.SourceID]
+		if !ok {
+			src = fallbackEndpointNode("source", c.SourceID)
+		}
+		sink, ok := sinks[c.SinkID]
+		if !ok {
+			sink = fallbackEndpointNode("sink", c.SinkID)
+		}
+		flows[i] = dashboardFlow{
 			Connector:       c,
 			Snapshot:        snap,
 			State:           stateFor(statuses, "connector", c.ID),
 			BytesPerSecText: humanizeBytes(snap.BytesPerSec, "/s"),
-			SourceName:      nameOrID(srcNames, c.SourceID),
-			SinkName:        nameOrID(sinkNamesByID, c.SinkID),
+			Source:          src,
+			Sink:            sink,
 		}
 	}
-	return cards
+	return flows
 }
 
 // dashboardData is frag_dashboard.html's "dashboard-content" data. The
-// Empty* fields are populated only when there are zero connectors (see
-// dashboardEmptyState) — frag_dashboard.html renders the connector grid
-// when Connectors is non-empty and this hero otherwise.
+// Empty* fields are populated only when there are zero connector flows (see
+// dashboardEmptyState) — frag_dashboard.html renders the DAG when Flows is
+// non-empty and this setup prompt otherwise.
 type dashboardData struct {
-	Health       []healthChip
-	Connectors   []dashboardConnectorCard
+	Sources      []dashboardEndpointNode
+	Sinks        []dashboardEndpointNode
+	Flows        []dashboardFlow
+	Devices      []busDeviceRow
 	EmptyTitle   string
 	EmptyMessage string
 	EmptyCTA     string
 	EmptyHref    string
 }
 
-// dashboardEmptyState picks the empty-state hero's copy and CTA target for
-// a dashboard with zero connectors configured: point the operator at
-// /ui/sources first if there's nothing to wire up yet, or at /ui/connectors
-// if sources (and presumably sinks) already exist but nothing routes
-// between them yet — the "handle both" cases the behavior contract calls
-// out explicitly, rather than always sending an operator who already has
-// sources/sinks configured back to the sources page.
-func dashboardEmptyState(hasSources bool) (title, message, cta, href string) {
-	if !hasSources {
-		return "Add your first source", "Connect a source to start receiving data.", "Add a source", "/ui/sources"
+// busDeviceRow is one NMEA-2000 device observed on a CAN bus, rendered in the
+// dashboard's "Bus devices" table. Name is formatted as hex so a device is
+// recognizable across address changes.
+type busDeviceRow struct {
+	Endpoint string
+	Address  uint8
+	Name     string
+	Model    string
+	Serial   string
+	LastSeen string
+}
+
+// busDeviceRows adapts the supervisor's device snapshot for the template,
+// formatting the packed NAME as hex and last-seen as a relative age.
+func busDeviceRows(devices []bus.DeviceInfo) []busDeviceRow {
+	rows := make([]busDeviceRow, 0, len(devices))
+	for _, d := range devices {
+		rows = append(rows, busDeviceRow{
+			Endpoint: d.Endpoint,
+			Address:  d.Address,
+			Name:     fmt.Sprintf("0x%016X", d.Name),
+			Model:    d.Model,
+			Serial:   d.Serial,
+			LastSeen: relativeAge(d.LastSeen),
+		})
 	}
-	return "Add your first connector", "Wire a source to a sink with a connector to start routing data.", "Add a connector", "/ui/connectors"
+	return rows
+}
+
+// dashboardEmptyState picks the empty-state hero's copy and CTA target for
+// a dashboard with zero connectors configured: source first, sink second,
+// connector last. That keeps the DAG mental model visible even during
+// setup, instead of sending an operator straight to connectors before both
+// endpoint sides exist.
+func dashboardEmptyState(hasSources, hasSinks bool) (title, message, cta, href string) {
+	if !hasSources {
+		return "Add your first source", "Connect a source to start receiving data.", "Add a source", "/ui/sources/new"
+	}
+	if !hasSinks {
+		return "Add your first sink", "Choose where beacon should deliver routed messages.", "Add a sink", "/ui/sinks/new"
+	}
+	return "Add your first connector", "Wire a source to a sink with a connector to start routing data.", "Add a connector", "/ui/connectors/new"
 }
 
 // handleDashboardFrag serves GET /ui/frag/dashboard: the dashboard page's
@@ -144,10 +249,10 @@ func dashboardEmptyState(hasSources bool) (title, message, cta, href string) {
 // source/sink/connector created or deleted elsewhere in the UI must show up
 // on the dashboard within one poll interval, the same freshness every other
 // live fragment in this package gives — and combines them with one
-// statuses() snapshot (used for both the health strip and each connector
-// card's error badge, so both reflect the exact same instant) and reg's
-// live per-connector counters.
-func handleDashboardFrag(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, log *slog.Logger) http.HandlerFunc {
+// statuses() snapshot (used for endpoint node state and connector error
+// badges, so both reflect the exact same instant) and reg's live
+// per-connector counters.
+func handleDashboardFrag(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, devices func() []bus.DeviceInfo, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sources, err := svc.ListSources(r.Context())
 		if err != nil {
@@ -169,12 +274,25 @@ func handleDashboardFrag(svc *config.Service, reg *stats.Registry, statuses func
 		}
 
 		live := statuses()
+		sourceConnectorCounts, sinkConnectorCounts := endpointConnectorCounts(connectors)
+		sourceNodes := sourceEndpointNodes(sources, live, sourceConnectorCounts)
+		sinkNodes := sinkEndpointNodes(sinks, live, sinkConnectorCounts)
 		data := dashboardData{
-			Health:     healthChips(sources, sinks, live),
-			Connectors: dashboardConnectorCards(connectors, reg, live, sourceNames(sources), sinkNames(sinks)),
+			Sources: sourceNodes,
+			Sinks:   sinkNodes,
+			Flows: dashboardFlows(
+				connectors,
+				reg,
+				live,
+				endpointNodeMap(sourceNodes),
+				endpointNodeMap(sinkNodes),
+			),
 		}
-		if len(data.Connectors) == 0 {
-			data.EmptyTitle, data.EmptyMessage, data.EmptyCTA, data.EmptyHref = dashboardEmptyState(len(sources) > 0)
+		if len(data.Flows) == 0 {
+			data.EmptyTitle, data.EmptyMessage, data.EmptyCTA, data.EmptyHref = dashboardEmptyState(len(sources) > 0, len(sinks) > 0)
+		}
+		if devices != nil {
+			data.Devices = busDeviceRows(devices())
 		}
 		renderFragment(w, log, "dashboard-content", data)
 	}

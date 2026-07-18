@@ -39,7 +39,7 @@ import (
 
 // --- Shared helpers ---
 
-// alertData renders a dismissible daisyUI alert; Kind is "success" or
+// alertData renders a dismissible UI alert; Kind is "success" or
 // "error" (anything else renders with the error styling, in
 // frag_source_table.html/frag_sink_table.html's "*-panel-inner" template).
 type alertData struct {
@@ -199,18 +199,39 @@ func writeFragmentSuccess(w http.ResponseWriter, log *slog.Logger, panelOOBName,
 // --- Sources ---
 
 // sourceRow is one row of the sources table (frag_source_table.html):
-// model.Source plus its live supervisor state.
+// model.Source plus its live supervisor state and type-specific endpoint
+// Detail value.
 type sourceRow struct {
 	model.Source
-	State string
+	State  string
+	Detail string
 }
 
 func sourceRows(sources []model.Source, statuses []supervisor.Status) []sourceRow {
 	rows := make([]sourceRow, len(sources))
 	for i, s := range sources {
-		rows[i] = sourceRow{Source: s, State: stateFor(statuses, "source", s.ID)}
+		rows[i] = sourceRow{Source: s, State: stateFor(statuses, "source", s.ID), Detail: sourceDetail(s)}
 	}
 	return rows
+}
+
+func sourceDetail(s model.Source) string {
+	switch s.Type {
+	case model.SourceSocketCAN:
+		return s.Interface
+	case model.SourceUSBCAN:
+		return s.Port
+	case model.SourceHTTPSSE, model.SourceHTTPWS:
+		return s.URL
+	case model.SourceMQTT:
+		return mqttDetail(s.URL, s.Topic)
+	case model.SourceFile:
+		return s.FilePath
+	case model.SourceTCP, model.SourceUDP:
+		return s.Address
+	default:
+		return ""
+	}
 }
 
 // sourceTableData is frag_source_table.html's "source-panel"/
@@ -229,6 +250,7 @@ type sourceTableData struct {
 type sourcesPageData struct {
 	pageData
 	sourceTableData
+	SourceForm *sourceFormViewData
 }
 
 // sourceTypeFieldsData is frag_source_type_fields.html's data: which type
@@ -249,7 +271,11 @@ type sourceTypeFieldsData struct {
 	Interface     string
 	Port          string
 	URL           string
+	Topic         string
 	HeadersText   string
+	FilePath      string // file
+	Address       string // tcp / udp
+	Format        string // tcp / udp
 	CANInterfaces []string
 	SerialPorts   []string
 }
@@ -270,9 +296,9 @@ type sourceFormViewData struct {
 	Alert      *alertData
 }
 
-// sourceFormViewFromModel builds a source-form view for the edit path (GET
-// /ui/frag/source-form?id=...): every field pre-filled from the stored
-// entity, headers rendered back through formatHeaders.
+// sourceFormViewFromModel builds a source-form view for the canonical edit
+// page: every field pre-filled from the stored entity, headers rendered
+// back through formatHeaders.
 func sourceFormViewFromModel(v model.Source, can, serial []string) sourceFormViewData {
 	return sourceFormViewData{
 		IsEdit:  true,
@@ -284,20 +310,24 @@ func sourceFormViewFromModel(v model.Source, can, serial []string) sourceFormVie
 			Interface:     v.Interface,
 			Port:          v.Port,
 			URL:           v.URL,
+			Topic:         v.Topic,
 			HeadersText:   formatHeaders(v.Headers),
+			FilePath:      v.FilePath,
+			Address:       v.Address,
+			Format:        v.Format,
 			CANInterfaces: can,
 			SerialPorts:   serial,
 		},
 	}
 }
 
-// blankSourceFormView builds a source-form view for the create path (GET
-// /ui/frag/source-form with no id): every field empty, Type defaulted to
-// "socketcan" so the initial render already shows its matching field
-// (interface) instead of no type-specific field at all — the type select's
-// first <option> is socketcan too (see frag_source_form.html), so this
-// keeps the dropdown and the fields it controls in sync before any
-// hx-get-driven change event ever fires.
+// blankSourceFormView builds a source-form view for the canonical create
+// page: every field empty, Type defaulted to "socketcan" so the initial
+// render already shows its matching field (interface) instead of no
+// type-specific field at all — the type select's first <option> is
+// socketcan too (see frag_source_form.html), so this keeps the dropdown and
+// the fields it controls in sync before any hx-get-driven change event ever
+// fires.
 func blankSourceFormView(can, serial []string) sourceFormViewData {
 	return sourceFormViewData{
 		TypeFields: sourceTypeFieldsData{
@@ -323,7 +353,11 @@ func sourceFormViewFromRequest(r *http.Request, isEdit bool, can, serial []strin
 			Interface:     r.PostFormValue("interface"),
 			Port:          r.PostFormValue("port"),
 			URL:           r.PostFormValue("url"),
+			Topic:         r.PostFormValue("topic"),
 			HeadersText:   r.PostFormValue("headers"),
+			FilePath:      r.PostFormValue("file_path"),
+			Address:       r.PostFormValue("address"),
+			Format:        r.PostFormValue("format"),
 			CANInterfaces: can,
 			SerialPorts:   serial,
 		},
@@ -350,49 +384,72 @@ func (f sourceFormViewData) toModel() (model.Source, error) {
 		Interface: f.TypeFields.Interface,
 		Port:      f.TypeFields.Port,
 		URL:       f.TypeFields.URL,
+		Topic:     f.TypeFields.Topic,
 		Headers:   headers,
+		FilePath:  f.TypeFields.FilePath,
+		Address:   f.TypeFields.Address,
+		Format:    f.TypeFields.Format,
 	}, nil
 }
 
-// handleSourcesPage serves GET /ui/sources: the full page, table populated
-// from svc.ListSources + the reconciler's live statuses.
+func renderSourcesPage(w http.ResponseWriter, r *http.Request, svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger, form *sourceFormViewData) {
+	sources, err := svc.ListSources(r.Context())
+	if err != nil {
+		log.Error("ui: list sources failed", "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	page := newPageData("Sources", version, "sources")
+	if form != nil {
+		current := "Add source"
+		if form.IsEdit {
+			current = "Edit " + form.ID
+		}
+		page = page.withBreadcrumbs(
+			breadcrumbItem{Label: "Sources", Href: "/ui/sources"},
+			breadcrumbItem{Label: current},
+		)
+	}
+	data := sourcesPageData{
+		pageData:        page,
+		sourceTableData: sourceTableData{Sources: sourceRows(sources, statuses())},
+		SourceForm:      form,
+	}
+	renderPage(w, log, "sources", data)
+}
+
+// handleSourcesPage serves GET /ui/sources: the full list page.
 func handleSourcesPage(svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sources, err := svc.ListSources(r.Context())
-		if err != nil {
-			log.Error("ui: list sources failed", "err", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		data := sourcesPageData{
-			pageData:        newPageData("Sources", version, "sources"),
-			sourceTableData: sourceTableData{Sources: sourceRows(sources, statuses())},
-		}
-		renderPage(w, log, "sources", data)
+		renderSourcesPage(w, r, svc, statuses, version, log, nil)
 	}
 }
 
-// handleSourceFormFrag serves GET /ui/frag/source-form (blank, create
-// mode) and GET /ui/frag/source-form?id=<id> (edit mode).
-func handleSourceFormFrag(svc *config.Service, log *slog.Logger) http.HandlerFunc {
+// handleSourceNewPage serves GET /ui/sources/new: the canonical create page.
+func handleSourceNewPage(svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		can, serial := discoverHardware()
-		id := r.URL.Query().Get("id")
-		if id == "" {
-			renderFragment(w, log, "source-form", blankSourceFormView(can, serial))
-			return
-		}
-		v, err := svc.GetSource(r.Context(), id)
+		form := blankSourceFormView(can, serial)
+		renderSourcesPage(w, r, svc, statuses, version, log, &form)
+	}
+}
+
+// handleSourceEditPage serves GET /ui/sources/{id}/edit: the canonical edit page.
+func handleSourceEditPage(svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		can, serial := discoverHardware()
+		v, err := svc.GetSource(r.Context(), r.PathValue("id"))
 		if err != nil {
 			if errors.Is(err, config.ErrNotFound) {
-				http.Error(w, "source not found", http.StatusNotFound)
+				http.NotFound(w, r)
 				return
 			}
 			log.Error("ui: get source failed", "err", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		renderFragment(w, log, "source-form", sourceFormViewFromModel(v, can, serial))
+		form := sourceFormViewFromModel(v, can, serial)
+		renderSourcesPage(w, r, svc, statuses, version, log, &form)
 	}
 }
 
@@ -413,6 +470,7 @@ func handleSourceTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
 			Interface:     q.Get("interface"),
 			Port:          q.Get("port"),
 			URL:           q.Get("url"),
+			Topic:         q.Get("topic"),
 			HeadersText:   q.Get("headers"),
 			CANInterfaces: can,
 			SerialPorts:   serial,
@@ -471,6 +529,10 @@ func writeSource(w http.ResponseWriter, r *http.Request, svc *config.Service, lo
 		}
 		view.Alert = &alertData{Kind: "error", Message: entityWriteErrorMessage(err, "source", v.ID)}
 		renderFragment(w, log, "source-form", view)
+		return
+	}
+	if isCreate {
+		flashRedirect(w, fmt.Sprintf("Source %q created", v.ID), "/ui/dashboard")
 		return
 	}
 	sources, err := svc.ListSources(r.Context())
@@ -555,9 +617,9 @@ func handleSourceDelete(svc *config.Service, log *slog.Logger) http.HandlerFunc 
 //
 // Exactly parallel to the Sources section above; see its comments for
 // rationale not repeated here. The only structural differences: sinks have
-// a fifth type (tcp, carrying Address) and a sixth (file, carrying
-// FilePath/Format/MaxFileBytes/MaxFiles), and their http_sse/http_ws type
-// carries a Path rather than a URL+Headers pair.
+// tcp (Address), file (FilePath/Format/MaxFileBytes/MaxFiles), and mqtt
+// (URL/Topic) sink types; their http_sse/http_ws type carries a Path
+// rather than a URL+Headers pair.
 
 // sinkRow is one row of the sinks table (frag_sink_table.html):
 // model.Sink plus its live supervisor state and its type-specific Detail
@@ -580,7 +642,8 @@ func sinkRows(sinks []model.Sink, statuses []supervisor.Status) []sinkRow {
 // actually says WHERE a sink writes to (or reads a push from), matching
 // whichever field frag_sink_type_fields.html shows as that sink's primary
 // input for its type — Interface for socketcan, Port for usbcan, Path for
-// http_sse/http_ws, Address for tcp, FilePath for file.
+// http_sse/http_ws, Address for tcp, FilePath for file, and broker/topic
+// for mqtt.
 func sinkDetail(s model.Sink) string {
 	switch s.Type {
 	case model.SinkSocketCAN:
@@ -593,9 +656,23 @@ func sinkDetail(s model.Sink) string {
 		return s.Address
 	case model.SinkFile:
 		return s.FilePath
+	case model.SinkMQTT:
+		return mqttDetail(s.URL, s.Topic)
+	case model.SinkTCPGateway:
+		return s.Address
 	default:
 		return ""
 	}
+}
+
+func mqttDetail(broker, topic string) string {
+	if broker == "" {
+		return topic
+	}
+	if topic == "" {
+		return broker
+	}
+	return broker + " / " + topic
 }
 
 // sinkTableData is frag_sink_table.html's "sink-panel"/"sink-panel-oob"
@@ -609,9 +686,11 @@ type sinkTableData struct {
 type sinksPageData struct {
 	pageData
 	sinkTableData
+	SinkForm *sinkFormViewData
 }
 
-// sinkTypeFieldsData is frag_sink_type_fields.html's data. FilePath/Format/
+// sinkTypeFieldsData is frag_sink_type_fields.html's data. URL/Topic back
+// mqtt sinks. FilePath/Format/
 // MaxFileBytes/MaxFiles back the file type's fields (model.Sink's
 // file_path/format/max_file_bytes/max_files); MaxFileBytes and MaxFiles are
 // plain strings for the same empty-string-means-unset reason
@@ -628,6 +707,8 @@ type sinkTypeFieldsData struct {
 	Port                string
 	Path                string
 	Address             string
+	URL                 string
+	Topic               string
 	FilePath            string
 	Format              string
 	MaxFileBytes        string
@@ -671,6 +752,8 @@ func sinkFormViewFromModel(v model.Sink, can, serial []string) sinkFormViewData 
 			Port:                v.Port,
 			Path:                v.Path,
 			Address:             v.Address,
+			URL:                 v.URL,
+			Topic:               v.Topic,
 			FilePath:            v.FilePath,
 			Format:              v.Format,
 			MaxFileBytes:        formatOptionalInt64(v.MaxFileBytes),
@@ -709,6 +792,8 @@ func sinkFormViewFromRequest(r *http.Request, isEdit bool, can, serial []string)
 			Port:                r.PostFormValue("port"),
 			Path:                r.PostFormValue("path"),
 			Address:             r.PostFormValue("address"),
+			URL:                 r.PostFormValue("url"),
+			Topic:               r.PostFormValue("topic"),
 			FilePath:            r.PostFormValue("file_path"),
 			Format:              r.PostFormValue("format"),
 			MaxFileBytes:        r.PostFormValue("max_file_bytes"),
@@ -748,6 +833,8 @@ func (f sinkFormViewData) toModel() (model.Sink, error) {
 		Port:         f.TypeFields.Port,
 		Path:         f.TypeFields.Path,
 		Address:      f.TypeFields.Address,
+		URL:          f.TypeFields.URL,
+		Topic:        f.TypeFields.Topic,
 		FilePath:     f.TypeFields.FilePath,
 		Format:       f.TypeFields.Format,
 		MaxFileBytes: maxFileBytes,
@@ -755,44 +842,64 @@ func (f sinkFormViewData) toModel() (model.Sink, error) {
 	}, nil
 }
 
-// handleSinksPage serves GET /ui/sinks.
+func renderSinksPage(w http.ResponseWriter, r *http.Request, svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger, form *sinkFormViewData) {
+	sinks, err := svc.ListSinks(r.Context())
+	if err != nil {
+		log.Error("ui: list sinks failed", "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	page := newPageData("Sinks", version, "sinks")
+	if form != nil {
+		current := "Add sink"
+		if form.IsEdit {
+			current = "Edit " + form.ID
+		}
+		page = page.withBreadcrumbs(
+			breadcrumbItem{Label: "Sinks", Href: "/ui/sinks"},
+			breadcrumbItem{Label: current},
+		)
+	}
+	data := sinksPageData{
+		pageData:      page,
+		sinkTableData: sinkTableData{Sinks: sinkRows(sinks, statuses())},
+		SinkForm:      form,
+	}
+	renderPage(w, log, "sinks", data)
+}
+
+// handleSinksPage serves GET /ui/sinks: the full list page.
 func handleSinksPage(svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sinks, err := svc.ListSinks(r.Context())
-		if err != nil {
-			log.Error("ui: list sinks failed", "err", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		data := sinksPageData{
-			pageData:      newPageData("Sinks", version, "sinks"),
-			sinkTableData: sinkTableData{Sinks: sinkRows(sinks, statuses())},
-		}
-		renderPage(w, log, "sinks", data)
+		renderSinksPage(w, r, svc, statuses, version, log, nil)
 	}
 }
 
-// handleSinkFormFrag serves GET /ui/frag/sink-form (blank, create mode)
-// and GET /ui/frag/sink-form?id=<id> (edit mode).
-func handleSinkFormFrag(svc *config.Service, log *slog.Logger) http.HandlerFunc {
+// handleSinkNewPage serves GET /ui/sinks/new: the canonical create page.
+func handleSinkNewPage(svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		can, serial := discoverHardware()
-		id := r.URL.Query().Get("id")
-		if id == "" {
-			renderFragment(w, log, "sink-form", blankSinkFormView(can, serial))
-			return
-		}
-		v, err := svc.GetSink(r.Context(), id)
+		form := blankSinkFormView(can, serial)
+		renderSinksPage(w, r, svc, statuses, version, log, &form)
+	}
+}
+
+// handleSinkEditPage serves GET /ui/sinks/{id}/edit: the canonical edit page.
+func handleSinkEditPage(svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		can, serial := discoverHardware()
+		v, err := svc.GetSink(r.Context(), r.PathValue("id"))
 		if err != nil {
 			if errors.Is(err, config.ErrNotFound) {
-				http.Error(w, "sink not found", http.StatusNotFound)
+				http.NotFound(w, r)
 				return
 			}
 			log.Error("ui: get sink failed", "err", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		renderFragment(w, log, "sink-form", sinkFormViewFromModel(v, can, serial))
+		form := sinkFormViewFromModel(v, can, serial)
+		renderSinksPage(w, r, svc, statuses, version, log, &form)
 	}
 }
 
@@ -810,6 +917,8 @@ func handleSinkTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
 			Port:                q.Get("port"),
 			Path:                q.Get("path"),
 			Address:             q.Get("address"),
+			URL:                 q.Get("url"),
+			Topic:               q.Get("topic"),
 			FilePath:            q.Get("file_path"),
 			Format:              q.Get("format"),
 			MaxFileBytes:        q.Get("max_file_bytes"),
@@ -865,6 +974,10 @@ func writeSink(w http.ResponseWriter, r *http.Request, svc *config.Service, log 
 		}
 		view.Alert = &alertData{Kind: "error", Message: entityWriteErrorMessage(err, "sink", v.ID)}
 		renderFragment(w, log, "sink-form", view)
+		return
+	}
+	if isCreate {
+		flashRedirect(w, fmt.Sprintf("Sink %q created", v.ID), "/ui/dashboard")
 		return
 	}
 	sinks, err := svc.ListSinks(r.Context())
@@ -976,6 +1089,7 @@ type connectorTableData struct {
 type connectorsPageData struct {
 	pageData
 	connectorTableData
+	ConnectorForm *connectorFormViewData
 }
 
 // connectorFormViewData is frag_connector_form.html's data — the
@@ -1103,9 +1217,8 @@ func parseMaxAge(s string) (model.Duration, error) {
 	return model.Duration(d), nil
 }
 
-// connectorFormViewFromModel builds a connector-form view for the edit path
-// (GET /ui/frag/connector-form?id=...): every field pre-filled from the
-// stored entity.
+// connectorFormViewFromModel builds a connector-form view for the canonical
+// edit page: every field pre-filled from the stored entity.
 func connectorFormViewFromModel(v model.Connector, sources []model.Source, sinks []model.Sink) connectorFormViewData {
 	return connectorFormViewData{
 		IsEdit:      true,
@@ -1123,9 +1236,9 @@ func connectorFormViewFromModel(v model.Connector, sources []model.Source, sinks
 	}
 }
 
-// blankConnectorFormView builds a connector-form view for the create path
-// (GET /ui/frag/connector-form with no id): every field empty except the
-// source/sink lists the <select>s need to populate their <option>s.
+// blankConnectorFormView builds a connector-form view for the canonical
+// create page: every field empty except the source/sink lists the <select>s
+// need to populate their <option>s.
 func blankConnectorFormView(sources []model.Source, sinks []model.Sink) connectorFormViewData {
 	return connectorFormViewData{Sources: sources, Sinks: sinks}
 }
@@ -1201,35 +1314,47 @@ func listSourcesAndSinks(ctx context.Context, svc *config.Service) ([]model.Sour
 	return sources, sinks, nil
 }
 
-// handleConnectorsPage serves GET /ui/connectors: the full page, table
-// populated from svc.ListConnectors + reg's live per-connector snapshots,
-// with source/sink NAMES resolved through listSourcesAndSinks (see
-// connectorRows).
+func renderConnectorsPage(w http.ResponseWriter, r *http.Request, svc *config.Service, reg *stats.Registry, version string, log *slog.Logger, form *connectorFormViewData) {
+	connectors, err := svc.ListConnectors(r.Context())
+	if err != nil {
+		log.Error("ui: list connectors failed", "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	sources, sinks, err := listSourcesAndSinks(r.Context(), svc)
+	if err != nil {
+		log.Error("ui: list sources/sinks failed", "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	page := newPageData("Connectors", version, "connectors")
+	if form != nil {
+		current := "Add connector"
+		if form.IsEdit {
+			current = "Edit " + form.ID
+		}
+		page = page.withBreadcrumbs(
+			breadcrumbItem{Label: "Connectors", Href: "/ui/connectors"},
+			breadcrumbItem{Label: current},
+		)
+	}
+	data := connectorsPageData{
+		pageData:           page,
+		connectorTableData: connectorTableData{Connectors: connectorRows(connectors, reg, sourceNames(sources), sinkNames(sinks))},
+		ConnectorForm:      form,
+	}
+	renderPage(w, log, "connectors", data)
+}
+
+// handleConnectorsPage serves GET /ui/connectors: the full list page.
 func handleConnectorsPage(svc *config.Service, reg *stats.Registry, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		connectors, err := svc.ListConnectors(r.Context())
-		if err != nil {
-			log.Error("ui: list connectors failed", "err", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		sources, sinks, err := listSourcesAndSinks(r.Context(), svc)
-		if err != nil {
-			log.Error("ui: list sources/sinks failed", "err", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		data := connectorsPageData{
-			pageData:           newPageData("Connectors", version, "connectors"),
-			connectorTableData: connectorTableData{Connectors: connectorRows(connectors, reg, sourceNames(sources), sinkNames(sinks))},
-		}
-		renderPage(w, log, "connectors", data)
+		renderConnectorsPage(w, r, svc, reg, version, log, nil)
 	}
 }
 
-// handleConnectorFormFrag serves GET /ui/frag/connector-form (blank,
-// create mode) and GET /ui/frag/connector-form?id=<id> (edit mode).
-func handleConnectorFormFrag(svc *config.Service, log *slog.Logger) http.HandlerFunc {
+// handleConnectorNewPage serves GET /ui/connectors/new: the canonical create page.
+func handleConnectorNewPage(svc *config.Service, reg *stats.Registry, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sources, sinks, err := listSourcesAndSinks(r.Context(), svc)
 		if err != nil {
@@ -1237,22 +1362,32 @@ func handleConnectorFormFrag(svc *config.Service, log *slog.Logger) http.Handler
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		id := r.URL.Query().Get("id")
-		if id == "" {
-			renderFragment(w, log, "connector-form", blankConnectorFormView(sources, sinks))
+		form := blankConnectorFormView(sources, sinks)
+		renderConnectorsPage(w, r, svc, reg, version, log, &form)
+	}
+}
+
+// handleConnectorEditPage serves GET /ui/connectors/{id}/edit: the canonical edit page.
+func handleConnectorEditPage(svc *config.Service, reg *stats.Registry, version string, log *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sources, sinks, err := listSourcesAndSinks(r.Context(), svc)
+		if err != nil {
+			log.Error("ui: list sources/sinks failed", "err", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		v, err := svc.GetConnector(r.Context(), id)
+		v, err := svc.GetConnector(r.Context(), r.PathValue("id"))
 		if err != nil {
 			if errors.Is(err, config.ErrNotFound) {
-				http.Error(w, "connector not found", http.StatusNotFound)
+				http.NotFound(w, r)
 				return
 			}
 			log.Error("ui: get connector failed", "err", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		renderFragment(w, log, "connector-form", connectorFormViewFromModel(v, sources, sinks))
+		form := connectorFormViewFromModel(v, sources, sinks)
+		renderConnectorsPage(w, r, svc, reg, version, log, &form)
 	}
 }
 
@@ -1337,6 +1472,10 @@ func writeConnector(w http.ResponseWriter, r *http.Request, svc *config.Service,
 		renderFragment(w, log, "connector-form", view)
 		return
 	}
+	if isCreate {
+		flashRedirect(w, fmt.Sprintf("Connector %q created", v.ID), "/ui/dashboard")
+		return
+	}
 	connectors, err := svc.ListConnectors(r.Context())
 	if err != nil {
 		log.Error("ui: list connectors failed", "err", err)
@@ -1418,7 +1557,10 @@ func handleConnectorDetailPage(svc *config.Service, version string, log *slog.Lo
 			return
 		}
 		data := connectorDetailData{
-			pageData:   newPageData(v.Name, version, "connectors"),
+			pageData: newPageData(v.Name, version, "connectors").withBreadcrumbs(
+				breadcrumbItem{Label: "Connectors", Href: "/ui/connectors"},
+				breadcrumbItem{Label: v.Name},
+			),
 			Connector:  v,
 			MaxAgeText: formatMaxAge(v.Buffer.MaxAge),
 		}

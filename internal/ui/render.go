@@ -6,16 +6,6 @@ import (
 	"net/http"
 )
 
-// render executes the page registered under name (a pages key) with the
-// bare pageData a title/nav-only page needs (currently just the
-// dashboard), wrapping it in layout.html, and writes it to w. For pages
-// that need more than that (sources/sinks — see forms.go's
-// sourcesPageData/sinksPageData), handlers call renderPage directly with
-// their own data value instead.
-func render(w http.ResponseWriter, log *slog.Logger, name, title, assetVersion string) {
-	renderPage(w, log, name, newPageData(title, assetVersion, name))
-}
-
 // renderPage executes the page registered under name against data (which
 // must supply every field templates/layout.html and that page's own
 // content template reference — see pageData and e.g. sourcesPageData),

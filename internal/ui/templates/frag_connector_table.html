@@ -33,8 +33,8 @@
     </thead>
     <tbody>
       {{range .Connectors}}
-      <tr>
-        <td><a class="link" href="/ui/connectors/{{.ID}}">{{.Name}}</a></td>
+      <tr data-href="/ui/connectors/{{.ID}}/">
+        <td><a class="link" href="/ui/connectors/{{.ID}}/">{{.Name}}</a></td>
         <td>{{.SourceName}} &rarr; {{.SinkName}}</td>
         <td>{{len .Filters}}</td>
         <td>
@@ -44,10 +44,7 @@
         <td>{{.Snapshot.QueueDepth}}</td>
         <td>{{printf "%.2f" .Snapshot.MsgPerSec}}</td>
         <td class="flex gap-2 justify-end">
-          <button type="button" class="btn btn-sm"
-                  hx-get="/ui/frag/connector-form?id={{.ID}}" hx-target="#connector-form-container" hx-swap="innerHTML">
-            Edit
-          </button>
+          <a class="btn btn-sm" href="/ui/connectors/{{.ID}}/edit">Edit</a>
           <button type="button" class="btn btn-sm btn-error"
                   hx-post="/ui/connectors/{{.ID}}/delete" hx-target="#connector-panel" hx-swap="outerHTML"
                   hx-confirm="Delete connector &quot;{{.ID}}&quot;?">

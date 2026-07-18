@@ -34,22 +34,38 @@ func mustPage(files ...string) *template.Template {
 }
 
 // pages maps a page's nav key to its pre-parsed, self-contained template.
-// Sources/sinks/connectors pages additionally parse in their table fragment
-// template so "content" can render the same "source-panel"/"sink-panel"/
-// "connector-panel" markup that POST handlers also re-render standalone via
-// fragTemplates below — keeping the initial page load and every htmx-driven
-// update using identical markup. connector-detail and dashboard need no such
-// fragment: their live blocks are never part of the initial server render —
-// each page ships an empty container with hx-trigger="load, every 2s" that
-// fetches "connector-stats" (frag_connector_stats.html) or "dashboard-content"
-// (frag_dashboard.html), both part of fragTemplates, client-side immediately
-// after load.
+// Sources/sinks/connectors pages additionally parse their table and form
+// fragment templates so "content" can render the same source-/sink-/
+// connector-panel and *-form markup that POST handlers also re-render
+// standalone via fragTemplates below — keeping canonical page loads and
+// every htmx-driven update using identical markup. connector-detail and
+// dashboard need no such fragment: their live blocks are never part of the
+// initial server render — each page ships an empty container with
+// hx-trigger="load, every 2s" that fetches "connector-stats"
+// (frag_connector_stats.html) or "dashboard-content" (frag_dashboard.html),
+// both part of fragTemplates, client-side immediately after load.
 var pages = map[string]*template.Template{
-	"dashboard":        mustPage("dashboard.html"),
-	"sources":          mustPage("sources.html", "frag_source_table.html"),
-	"sinks":            mustPage("sinks.html", "frag_sink_table.html"),
-	"connectors":       mustPage("connectors.html", "frag_connector_table.html"),
+	"dashboard": mustPage("dashboard.html"),
+	"sources": mustPage(
+		"sources.html",
+		"frag_source_table.html",
+		"frag_source_form.html",
+		"frag_source_type_fields.html",
+	),
+	"sinks": mustPage(
+		"sinks.html",
+		"frag_sink_table.html",
+		"frag_sink_form.html",
+		"frag_sink_type_fields.html",
+	),
+	"connectors": mustPage(
+		"connectors.html",
+		"frag_connector_table.html",
+		"frag_connector_form.html",
+	),
 	"connector-detail": mustPage("connector_detail.html"),
+	"overview":         mustPage("overview.html"),
+	"config":           mustPage("config.html"),
 	"docs":             mustPage("docs.html"),
 }
 
@@ -65,31 +81,24 @@ var pages = map[string]*template.Template{
 // renderFragment (render.go) executes a template from this set by name.
 var fragTemplates = template.Must(template.ParseFS(templatesFS, "templates/frag_*.html"))
 
-// navItem is one entry in the sidebar nav rendered by layout.html.
-type navItem struct {
-	Key   string // matches pageData.Active to highlight the current page
-	Label string
-	Href  string
-}
-
-// navItems is the fixed sidebar nav.
-var navItems = []navItem{
-	{Key: "dashboard", Label: "Dashboard", Href: "/ui/dashboard"},
-	{Key: "sources", Label: "Sources", Href: "/ui/sources"},
-	{Key: "sinks", Label: "Sinks", Href: "/ui/sinks"},
-	{Key: "connectors", Label: "Connectors", Href: "/ui/connectors"},
-	{Key: "docs", Label: "Docs", Href: "/ui/docs"},
-}
-
 // pageData is layout.html's template data; every page's own data embeds
 // this (see sourcesPageData/sinksPageData in forms.go) so ExecuteTemplate
-// against "layout.html" always finds Title/AssetVersion/Active/Nav
-// regardless of what other fields that page's data type adds.
+// against "layout.html" always finds Title/AssetVersion/Active regardless
+// of what other fields that page's data type adds.
 type pageData struct {
 	Title        string
 	AssetVersion string
 	Active       string
-	Nav          []navItem
+	// Flash is a one-shot success banner shown once on a full page load,
+	// carried across a create handler's HX-Redirect by the flash cookie (see
+	// flash.go). Empty on every page that isn't the redirect destination.
+	Flash       string
+	Breadcrumbs []breadcrumbItem
+}
+
+type breadcrumbItem struct {
+	Label string
+	Href  string
 }
 
 // newPageData builds the pageData common to every full-page render. active
@@ -99,6 +108,10 @@ func newPageData(title, assetVersion, active string) pageData {
 		Title:        title,
 		AssetVersion: assetVersion,
 		Active:       active,
-		Nav:          navItems,
 	}
+}
+
+func (d pageData) withBreadcrumbs(items ...breadcrumbItem) pageData {
+	d.Breadcrumbs = items
+	return d
 }
