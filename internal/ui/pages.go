@@ -38,12 +38,9 @@ func mustPage(files ...string) *template.Template {
 // fragment templates so "content" can render the same source-/sink-/
 // connector-panel and *-form markup that POST handlers also re-render
 // standalone via fragTemplates below — keeping canonical page loads and
-// every htmx-driven update using identical markup. connector-detail and
-// dashboard need no such fragment: their live blocks are never part of the
-// initial server render — each page ships an empty container with
-// hx-trigger="load, every 2s" that fetches "connector-stats"
-// (frag_connector_stats.html) or "dashboard-content" (frag_dashboard.html),
-// both part of fragTemplates, client-side immediately after load.
+// every htmx-driven update using identical markup. Dashboard and overview
+// pages need no such form fragments. Their empty polling containers fetch
+// live fragments from fragTemplates immediately after page load.
 var pages = map[string]*template.Template{
 	"dashboard": mustPage("dashboard.html"),
 	"sources": mustPage(
@@ -63,10 +60,9 @@ var pages = map[string]*template.Template{
 		"frag_connector_table.html",
 		"frag_connector_form.html",
 	),
-	"connector-detail": mustPage("connector_detail.html"),
-	"overview":         mustPage("overview.html"),
-	"config":           mustPage("config.html"),
-	"docs":             mustPage("docs.html"),
+	"overview": mustPage("overview.html"),
+	"config":   mustPage("config.html"),
+	"docs":     mustPage("docs.html"),
 }
 
 // fragTemplates holds every frag_*.html file parsed into ONE shared

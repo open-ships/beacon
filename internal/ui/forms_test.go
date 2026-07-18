@@ -369,6 +369,36 @@ func TestSourceTypeFieldsFragmentPerType(t *testing.T) {
 	if !strings.Contains(body, `value="can5"`) {
 		t.Fatalf("type-fields fragment did not preserve interface value:\n%s", body)
 	}
+
+	resp, err = http.Get(srv.URL + "/ui/frag/source-type-fields?type=udp&address=0.0.0.0%3A1457&format=actisense")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = mustBody(t, resp)
+	for _, want := range []string{`value="0.0.0.0:1457"`, `option value="actisense" selected`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("gateway source fragment did not preserve %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestSourceOverviewShowsGatewayConfiguration(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	must(t, svc.PutSource(context.Background(), model.Source{
+		ID: "gateway-in", Name: "Gateway input", Type: model.SourceUDP,
+		Address: "0.0.0.0:1457", Format: model.StreamFormatActisense,
+	}, true))
+
+	resp, err := http.Get(srv.URL + "/ui/sources/gateway-in/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := mustBody(t, resp)
+	for _, want := range []string{"Address", "<code>0.0.0.0:1457</code>", "Format", "<code>actisense</code>"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("source overview missing %q:\n%s", want, body)
+		}
+	}
 }
 
 func TestSinkTypeFieldsFragmentPerType(t *testing.T) {

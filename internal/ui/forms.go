@@ -472,6 +472,9 @@ func handleSourceTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
 			URL:           q.Get("url"),
 			Topic:         q.Get("topic"),
 			HeadersText:   q.Get("headers"),
+			FilePath:      q.Get("file_path"),
+			Address:       q.Get("address"),
+			Format:        q.Get("format"),
 			CANInterfaces: can,
 			SerialPorts:   serial,
 		}
@@ -1524,57 +1527,9 @@ func handleConnectorDelete(svc *config.Service, reg *stats.Registry, log *slog.L
 	}
 }
 
-// connectorDetailData is templates/connector_detail.html's data: the
-// config summary card's fields. MaxAgeText is pre-formatted in Go
-// (formatMaxAge) rather than in the template — model.Duration is a plain
-// `type Duration time.Duration` with no String method of its own (Go
-// doesn't inherit time.Duration's method set through a type definition),
-// so printing .Connector.Buffer.MaxAge directly in the template would
-// render raw nanoseconds instead of "24h0m0s". The live stats block below
-// the config summary is NOT part of this data — see the "connectors" pages
-// map entry's doc comment in pages.go for why it's fetched client-side
-// instead.
-type connectorDetailData struct {
-	pageData
-	Connector  model.Connector
-	MaxAgeText string
-}
-
-// handleConnectorDetailPage serves GET /ui/connectors/{id}: the config
-// summary + live stats detail page. http.NotFound for an unknown id, per
-// the behavior contract.
-func handleConnectorDetailPage(svc *config.Service, version string, log *slog.Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		v, err := svc.GetConnector(r.Context(), id)
-		if err != nil {
-			if errors.Is(err, config.ErrNotFound) {
-				http.NotFound(w, r)
-				return
-			}
-			log.Error("ui: get connector failed", "err", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		data := connectorDetailData{
-			pageData: newPageData(v.Name, version, "connectors").withBreadcrumbs(
-				breadcrumbItem{Label: "Connectors", Href: "/ui/connectors"},
-				breadcrumbItem{Label: v.Name},
-			),
-			Connector:  v,
-			MaxAgeText: formatMaxAge(v.Buffer.MaxAge),
-		}
-		renderPage(w, log, "connector-detail", data)
-	}
-}
-
-// connectorStatsData is frag_connector_stats.html's "connector-stats" data:
-// a stats.Snapshot plus its two byte-count fields pre-humanized in Go (see
-// humanizeBytes) — the same "format in Go, not in the template" choice
-// connectorDetailData makes for MaxAgeText, avoiding a template FuncMap
-// entirely. ConnectorID re-supplies the polling target URL: the template
-// renders its own hx-get/hx-trigger wrapper (see its comment for why), so
-// it needs the id the request came in on.
+// connectorStatsData is frag_connector_stats.html's "connector-stats" data.
+// Byte counts are pre-humanized in Go, avoiding a template FuncMap.
+// ConnectorID supplies the stable polling target URL.
 type connectorStatsData struct {
 	ConnectorID     string
 	Snapshot        stats.Snapshot
@@ -1583,10 +1538,9 @@ type connectorStatsData struct {
 	SparkPoints     string
 }
 
-// handleConnectorStatsFrag serves GET /ui/frag/connectors/{id}/stats: the
-// detail page's hx-trigger="load, every 2s" polling target (hx-swap=
-// "outerHTML" — see connector_detail.html/frag_connector_stats.html's
-// comments). A known connector reg has never recorded (not yet started, or
+// handleConnectorStatsFrag serves GET /ui/frag/connectors/{id}/stats, an
+// hx-trigger="load, every 2s" polling target using hx-swap="outerHTML".
+// A known connector that has never recorded (not yet started, or
 // idle since boot) renders zero-valued tiles rather than a notice —
 // reg.Snapshot's "ok" bool is deliberately ignored here for the same reason
 // connectorRows ignores it.

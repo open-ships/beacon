@@ -135,6 +135,9 @@ func sourceConfigRows(s model.Source) []configRow {
 	add("Port", s.Port, true)
 	add("URL", s.URL, true)
 	add("Topic", s.Topic, true)
+	add("File path", s.FilePath, true)
+	add("Address", s.Address, true)
+	add("Format", s.Format, true)
 	if len(s.Headers) > 0 {
 		rows = append(rows, configRow{"Headers", strconv.Itoa(len(s.Headers)), false})
 	}

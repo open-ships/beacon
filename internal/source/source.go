@@ -108,6 +108,8 @@ type canSource struct {
 	handle *bus.Handle
 	hub    *hub
 	cancel context.CancelFunc
+	wg     sync.WaitGroup
+	stop   sync.Once
 }
 
 func newCANSource(ctx context.Context, cfg model.Source, mgr *bus.Manager, log *slog.Logger, met *metrics.Set, reg *stats.Registry) (Runtime, error) {
@@ -122,7 +124,9 @@ func newCANSource(ctx context.Context, cfg model.Source, mgr *bus.Manager, log *
 	runCtx, cancel := context.WithCancel(ctx)
 	s := &canSource{id: cfg.ID, handle: handle, hub: newHub(met, cfg.ID), cancel: cancel}
 	ch, unsub := handle.Subscribe(256)
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		defer unsub()
 		for {
 			select {
@@ -147,7 +151,10 @@ func (s *canSource) Subscribe(buf int) (<-chan *msg.Envelope, func()) {
 }
 func (s *canSource) State() (string, error) { return s.handle.State() }
 func (s *canSource) Stop() {
-	s.cancel()
-	s.hub.closeAll()
-	s.handle.Release()
+	s.stop.Do(func() {
+		s.cancel()
+		s.wg.Wait()
+		s.hub.closeAll()
+		s.handle.Release()
+	})
 }

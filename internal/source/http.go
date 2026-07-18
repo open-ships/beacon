@@ -34,6 +34,8 @@ type dialerSource struct {
 	mu      sync.Mutex
 	state   string
 	lastErr error
+	wg      sync.WaitGroup
+	stop    sync.Once
 }
 
 func newDialerSource(ctx context.Context, cfg model.Source, log *slog.Logger, met *metrics.Set, reg *stats.Registry, run runFunc) (Runtime, error) {
@@ -45,7 +47,9 @@ func newDialerSource(ctx context.Context, cfg model.Source, log *slog.Logger, me
 		reg.RecordSource(cfg.ID, e)
 		s.hub.publish(e)
 	}
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		const baseBackoff = 250 * time.Millisecond
 		backoff := baseBackoff
 		// connected is invoked by run once the endpoint is actually
@@ -93,8 +97,11 @@ func (s *dialerSource) State() (string, error) {
 	return s.state, s.lastErr
 }
 func (s *dialerSource) Stop() {
-	s.cancel()
-	s.hub.closeAll()
+	s.stop.Do(func() {
+		s.cancel()
+		s.wg.Wait()
+		s.hub.closeAll()
+	})
 }
 
 // runSSE consumes a Server-Sent Events stream of envelope JSON.

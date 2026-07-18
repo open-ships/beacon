@@ -13,14 +13,15 @@ API and web UI, with durable buffering and replay for reconnecting clients.
 source --> [connector: CEL filters + durable buffer] --> sink
 ```
 
-- **Sources** decode NMEA 2000 messages onto beacon: a SocketCAN interface
-  (`socketcan`), a USB-CAN adapter (`usbcan`), an HTTP stream, or an MQTT topic from
-  somewhere else (`http_sse` / `http_ws` — including another beacon's own
-  sink, for chaining gateways; `mqtt` for broker ingest).
+- **Sources** decode NMEA 2000 messages onto beacon: SocketCAN (`socketcan`),
+  USB-CAN (`usbcan`), HTTP (`http_sse` / `http_ws`), MQTT (`mqtt`), a capture
+  replay (`file`), or a passive Yacht Devices/Actisense gateway stream
+  (`tcp` / `udp`).
 - **Sinks** deliver messages somewhere: back onto a CAN bus (`socketcan` /
   `usbcan`, push-confirmed with retry), or out over HTTP (`http_sse` /
   `http_ws`, with replay for reconnecting clients), a plain `tcp` NDJSON
-  feed (live-only), or an MQTT topic (`mqtt`, live-only).
+  feed (live-only), an MQTT topic (`mqtt`, live-only), or onto a remote NMEA
+  2000 bus through a TCP gateway (`tcp_gateway`).
 - **Connectors** are the only thing that moves data — each names exactly
   one source and one sink, an optional list of CEL filter expressions, and
   its own durable SQLite-backed buffer that absorbs a slow or disconnected
@@ -124,6 +125,25 @@ and replay semantics, and a CEL cookbook, see `/ui/docs` (or
 [`internal/ui/docs/`](internal/ui/docs/)) and `/api/docs`; for ready-to-use
 starting points, see [`examples/`](examples/).
 
+Gateway and replay source examples:
+
+```json
+{"id":"replay","name":"Capture replay","type":"file","enabled":true,"file_path":"/data/capture.log"}
+{"id":"yd-in","name":"YD gateway input","type":"tcp","enabled":true,"address":"192.168.4.1:1457","format":"ydraw"}
+{"id":"actisense-in","name":"Actisense broadcast","type":"udp","enabled":true,"address":"0.0.0.0:2000","format":"actisense"}
+```
+
+A writable gateway is a sink instead:
+
+```json
+{"id":"yd-out","name":"YD gateway output","type":"tcp_gateway","enabled":true,"address":"192.168.4.1:1457","format":"ydraw"}
+```
+
+When upgrading from the pre-v0.2 n2k dependency, note that repeating PGN
+groups now decode as arrays and NMEA null sentinels decode as JSON `null`.
+Existing CEL filters that referenced flattened repeating-group fields may
+need updating.
+
 ## Development
 
 Common tasks are managed with [just](https://just.systems):
@@ -131,7 +151,7 @@ Common tasks are managed with [just](https://just.systems):
 ```bash
 just build        # compile binary locally (CGO_ENABLED=0)
 just test         # run all tests
-just test-race    # race detector, for the packages not blocked by an upstream n2k/pgn compiler bug
+just test-race    # run the full suite with the race detector
 just run          # go run (pass args after --)
 just fmt          # gofmt
 just vet          # go vet
@@ -154,12 +174,9 @@ go build ./cmd/beacon
 go test ./...
 ```
 
-`just test-race` (and the CI `race` job) runs only
-`internal/bus/busfake`, `internal/metrics`, `internal/model`,
-`internal/stats`, `internal/store`, and `internal/sysinfo`: every other
-package pulls in `n2k/pgn` transitively, which ICEs the Go compiler under
-`-race` (an upstream bug, not beacon's). Those packages are still covered
-by the regular (non-race) test suite.
+`just test-race` and the CI `race` job both run `go test -race ./...`.
+n2k v0.2.0's chunked generated PGN definitions keep the full repository
+within the compiler's race-build limits.
 
 ### Virtual CAN (no hardware needed)
 

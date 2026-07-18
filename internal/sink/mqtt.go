@@ -34,6 +34,8 @@ type mqttSink struct {
 	mu      sync.Mutex
 	state   string
 	lastErr error
+	wg      sync.WaitGroup
+	stop    sync.Once
 }
 
 func newMQTTSink(ctx context.Context, cfg model.Sink, log *slog.Logger, _ *metrics.Set) (Runtime, error) {
@@ -61,15 +63,19 @@ func newMQTTSink(ctx context.Context, cfg model.Sink, log *slog.Logger, _ *metri
 	})
 
 	s.client = mqtt.NewClient(opts)
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		if err := waitMQTTToken(runCtx, s.client.Connect()); err != nil && runCtx.Err() == nil {
 			s.setState("degraded", err)
 			log.Warn("mqtt sink connect failed; reconnecting", "sink", cfg.ID, "err", err)
 		}
 		<-runCtx.Done()
-		if s.client.IsConnected() {
-			s.client.Disconnect(mqttDisconnectMsec)
-		}
+		// Disconnect even when the initial connection has not completed.
+		// ConnectRetry is owned by Paho rather than runCtx; without an explicit
+		// Disconnect an unreachable broker keeps its retry goroutine alive after
+		// this sink has been deleted or replaced.
+		s.client.Disconnect(mqttDisconnectMsec)
 	}()
 	return s, nil
 }
@@ -112,7 +118,10 @@ func (s *mqttSink) Broadcast(entries []queue.Entry) {
 }
 
 func (s *mqttSink) Stop() {
-	s.cancel()
+	s.stop.Do(func() {
+		s.cancel()
+		s.wg.Wait()
+	})
 }
 
 func waitMQTTToken(ctx context.Context, token mqtt.Token) error {

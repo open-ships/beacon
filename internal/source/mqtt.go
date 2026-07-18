@@ -33,10 +33,13 @@ func runMQTT(ctx context.Context, cfg model.Source, publish func(*msg.Envelope),
 	})
 
 	client := mqtt.NewClient(opts)
+	// Disconnect also aborts an in-progress Connect. Register cleanup before
+	// waiting so cancellation cannot return from waitMQTTToken while Paho keeps
+	// an unowned dial alive (or completes it after this source has stopped).
+	defer client.Disconnect(250)
 	if err := waitMQTTToken(ctx, client.Connect()); err != nil {
 		return err
 	}
-	defer client.Disconnect(250)
 
 	handler := func(_ mqtt.Client, m mqtt.Message) {
 		var e msg.Envelope

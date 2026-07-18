@@ -14,14 +14,15 @@ source --> [connector: CEL filters] --> sink
 ```
 
 - **Sources** read decoded NMEA 2000 messages onto beacon: a physical CAN
-  interface (`socketcan`), a USB-CAN adapter (`usbcan`), an HTTP stream
-  (`http_sse` / `http_ws` — including another beacon's own SSE/WS sink,
-  useful for chaining gateways), or an MQTT topic (`mqtt`).
+  interface (`socketcan`), USB-CAN adapter (`usbcan`), HTTP stream
+  (`http_sse` / `http_ws`), MQTT topic (`mqtt`), capture file (`file`), or a
+  passive Yacht Devices/Actisense gateway stream (`tcp` / `udp`).
 - **Sinks** deliver messages somewhere: back onto a CAN bus (`socketcan` /
   `usbcan`, confirmed at-least-once delivery), or out over HTTP
   (`http_sse` / `http_ws`, with replay for reconnecting clients), a plain
   `tcp` NDJSON feed (live-only, no replay), or an MQTT topic (`mqtt`,
-  live-only).
+  live-only), or a remote NMEA 2000 bus through a claiming TCP gateway client
+  (`tcp_gateway`).
 - **Connectors** wire one source to one sink, with an optional list of CEL
   filter expressions (see the filters page) and a durable per-connector
   buffer (see the concepts page) that survives a restart and absorbs a slow
@@ -29,6 +30,13 @@ source --> [connector: CEL filters] --> sink
 
 Nothing flows until all three exist: a source and a sink alone deliver
 nothing — a connector has to name both.
+
+Gateway streams use an `address` in `host:port` form and a `format` of
+`ydraw` or `actisense`. A `tcp`/`udp` source is passive and never claims an
+NMEA 2000 address; a `tcp_gateway` sink is writable, claims an address, and
+participates on the remote bus. A `file` source takes an absolute
+`file_path`, replays its capture once at the recorded timing, then remains
+up and idle.
 
 ## Running beacon
 

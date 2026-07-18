@@ -147,7 +147,9 @@ func headingEnvelope() *msg.Envelope {
 
 func waitUp(t *testing.T, h *Handle) {
 	t.Helper()
-	waitState(t, h, "up")
+	if err := waitState(t, h, "up"); err != nil {
+		t.Fatalf("unexpected state err: %v", err)
+	}
 }
 
 func waitState(t *testing.T, h *Handle, want string) error {

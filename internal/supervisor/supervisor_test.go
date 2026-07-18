@@ -266,6 +266,49 @@ func TestDeletedConnectorStatsAreRemoved(t *testing.T) {
 	}
 }
 
+func TestDeletedSourceAndSinkStatsAreRemoved(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ds := sink.NewDataServer("127.0.0.1:0", slog.Default())
+	if err := ds.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ds.Stop(context.Background()) })
+	reg := stats.NewRegistry()
+	sup := New(st, nil, ds, slog.Default(), nil, reg)
+	t.Cleanup(sup.Stop)
+
+	ctx := context.Background()
+	if err := st.ReplaceConfig(ctx, baseConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if err := sup.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	e := &msg.Envelope{PGN: 127250}
+	reg.RecordSource("up", e)
+	reg.RecordSink("out", "link", e)
+
+	if err := st.ReplaceConfig(ctx, model.Config{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sup.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.SourceSnapshot("up"); ok {
+		t.Fatal("deleted source stats still present")
+	}
+	if _, ok := reg.SinkSnapshot("out"); ok {
+		t.Fatal("deleted sink stats still present")
+	}
+	if len(reg.Recent("source", "up", 10)) != 0 || len(reg.Recent("sink", "out", 10)) != 0 {
+		t.Fatal("deleted source/sink events still present")
+	}
+}
+
 // An idle connector — one that never delivered a message and so has no
 // queue/checkpoint rows at all — is invisible to the KnownConnectorIDs purge
 // sweep (it only unions the queue and checkpoints tables). Its prune loop

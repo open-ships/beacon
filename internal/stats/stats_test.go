@@ -3,6 +3,8 @@ package stats
 import (
 	"testing"
 	"time"
+
+	"github.com/open-ships/beacon/internal/msg"
 )
 
 func TestNilRegistrySafe(t *testing.T) {
@@ -11,11 +13,41 @@ func TestNilRegistrySafe(t *testing.T) {
 	r.SetQueue("c", 1, 10)
 	r.Touch("c")
 	r.Remove("c")
+	r.RemoveSource("s")
+	r.RemoveSink("s")
 	if _, ok := r.Snapshot("c"); ok {
 		t.Fatal("nil registry returned a snapshot")
 	}
 	if len(r.All()) != 0 {
 		t.Fatal("nil registry All() non-empty")
+	}
+}
+
+func TestRemoveDropsComponentCountersAndEvents(t *testing.T) {
+	r := NewRegistry()
+	e := &msg.Envelope{PGN: 127250}
+	r.RecordSource("in", e)
+	r.RecordSink("out", "route", e)
+	r.Record("route", 1, 10)
+	r.RecordConnectorEvent("route", "received", e)
+
+	r.RemoveSource("in")
+	r.RemoveSink("out")
+	r.Remove("route")
+
+	if _, ok := r.SourceSnapshot("in"); ok {
+		t.Fatal("removed source still has snapshot")
+	}
+	if _, ok := r.SinkSnapshot("out"); ok {
+		t.Fatal("removed sink still has snapshot")
+	}
+	if _, ok := r.Snapshot("route"); ok {
+		t.Fatal("removed connector still has snapshot")
+	}
+	for _, key := range []struct{ kind, id string }{{"source", "in"}, {"sink", "out"}, {"connector", "route"}} {
+		if events := r.Recent(key.kind, key.id, 10); len(events) != 0 {
+			t.Fatalf("removed %s %q still has events: %+v", key.kind, key.id, events)
+		}
 	}
 }
 

@@ -432,9 +432,9 @@ func (r *Registry) Touch(connector string) {
 	r.get(connector).zeroQueue()
 }
 
-// Remove drops a connector's stats (deleted connectors), including its
-// queue-depth history ring — the whole *counters entry (totals, rate
-// buckets, and depth ring alike) is deleted as one unit, so there's no
+// Remove drops a connector's stats and recent events (deleted connectors),
+// including its queue-depth history ring — the whole *counters entry (totals,
+// rate buckets, and depth ring alike) is deleted as one unit, so there's no
 // separate ring-eviction step to keep in sync with this method.
 //
 // Ordering contract: callers must ensure the connector's pipeline is fully
@@ -454,6 +454,31 @@ func (r *Registry) Remove(connector string) {
 	}
 	r.mu.Lock()
 	delete(r.conn, connector)
+	delete(r.events, "connector:"+connector)
+	r.mu.Unlock()
+}
+
+// RemoveSource and RemoveSink drop process-local counters and recent payload
+// events for an entity deleted from config. Disabled or hot-restarted entities
+// deliberately keep their history; the supervisor calls these only after it
+// observes the configured id disappear entirely.
+func (r *Registry) RemoveSource(source string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	delete(r.source, source)
+	delete(r.events, "source:"+source)
+	r.mu.Unlock()
+}
+
+func (r *Registry) RemoveSink(sink string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	delete(r.sink, sink)
+	delete(r.events, "sink:"+sink)
 	r.mu.Unlock()
 }
 

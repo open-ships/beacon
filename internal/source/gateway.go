@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"sync"
 
 	n2k "github.com/open-ships/n2k"
 
@@ -18,19 +19,36 @@ import (
 // source "up" and idle instead of flapping it through a replay-reconnect loop.
 // When hold is false (a live gateway), returning lets the dialer reconnect.
 func runReceive(ctx context.Context, publish func(*msg.Envelope), connected func(), hold bool, src n2k.Option) error {
-	connected()
+	var connectedOnce sync.Once
+	markConnected := func() { connectedOnce.Do(connected) }
 	for m, err := range n2k.Receive(ctx, src, n2k.IncludeUnknown()) {
 		if err != nil {
-			continue
+			// Receive reports a source's terminal open/read error as the final
+			// iterator value. Returning it is what gives the dialer a useful
+			// lastErr and, for live sources, triggers reconnect backoff. In
+			// particular, a missing replay file must not be mistaken for a clean
+			// EOF and parked forever in the hold path below.
+			return err
 		}
+		// n2k.Receive does not currently expose a transport-open callback. The
+		// first decoded message is therefore the first reliable proof that a
+		// live TCP/UDP source is usable; do not report "up" merely because the
+		// lazy iterator was constructed. Empty files are handled as a successful
+		// clean EOF below.
+		markConnected()
 		e, err := msg.FromPGN(m)
 		if err != nil {
 			continue
 		}
 		publish(e)
 	}
-	if hold && ctx.Err() == nil {
-		<-ctx.Done()
+	if hold {
+		// A clean EOF means the replay file opened and was consumed
+		// successfully, even when it contained no decodable frames.
+		markConnected()
+		if ctx.Err() == nil {
+			<-ctx.Done()
+		}
 	}
 	return ctx.Err()
 }

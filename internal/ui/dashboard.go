@@ -3,9 +3,7 @@
 // /ui/frag/dashboard handler templates/dashboard.html polls every 2s
 // (hx-trigger="load, every 2s") — see dashboard.html's comment for why it
 // ships an empty container rather than rendering this fragment inline, the
-// same "ships empty, fetches client-side" shape
-// templates/connector_detail.html's live stats block uses (see pages.go's
-// "connector-detail" doc comment).
+// same "ships empty, fetches client-side" shape the overview pages use.
 package ui
 
 import (

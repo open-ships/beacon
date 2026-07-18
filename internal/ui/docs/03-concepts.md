@@ -3,10 +3,12 @@
 ## Sources, sinks, connectors
 
 - A **source** decodes NMEA 2000 messages onto beacon from one endpoint: a
-  CAN interface, a USB-CAN adapter, an HTTP stream, or an MQTT topic.
+  CAN interface, USB-CAN adapter, HTTP stream, MQTT topic, capture file, or
+  passive TCP/UDP NMEA 2000 gateway stream.
 - A **sink** delivers messages somewhere: back onto a CAN bus, out over
   HTTP/TCP/MQTT to clients and brokers, or appended to a local file
-  (`ndjson` or `candump` format).
+  (`ndjson` or `candump` format), or onto a remote bus through a writable
+  `tcp_gateway` sink.
 - A **connector** is the only thing that actually moves data — it names
   exactly one source and one sink, an optional list of CEL filter
   expressions (see the filters page), and its own durable buffer. A source

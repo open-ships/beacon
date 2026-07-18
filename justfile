@@ -19,19 +19,9 @@ test:
 test-v:
     go test -v ./...
 
-# run tests with the race detector, restricted to the packages that don't
-# transitively import n2k/pgn: that package ICEs the Go compiler under -race
-# (upstream bug, not beacon's — see internal/msg for the import boundary that
-# contains it). `go list -deps -test` confirms this exact set; re-verify it
-# whenever a package's imports change.
+# run the full test suite with the race detector
 test-race:
-    go test -race \
-        ./internal/bus/busfake \
-        ./internal/metrics \
-        ./internal/model \
-        ./internal/stats \
-        ./internal/store \
-        ./internal/sysinfo
+    go test -race ./...
 
 # run the binary (pass args after --)
 run *args:
