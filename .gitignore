@@ -22,6 +22,12 @@ profile.cov
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
+node_modules/
+
+# Playwright browser-test artifacts
+playwright-report/
+test-results/
+blob-report/
 
 # Go workspace file
 go.work
