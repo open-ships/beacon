@@ -129,7 +129,9 @@ Common tasks are managed with [just](https://just.systems):
 
 ```bash
 just build        # compile binary locally (CGO_ENABLED=0)
-just test         # run all tests
+just test         # run all Go tests
+just test-browser # run browser end-to-end tests with Playwright
+just test-browser-ui # run browser tests in Playwright's interactive UI
 just test-race    # race detector, for the packages not blocked by an upstream n2k/pgn compiler bug
 just run          # go run (pass args after --)
 just ui-css       # rebuild internal/ui/assets/app.css from internal/ui/uisrc/input.css
@@ -152,6 +154,16 @@ git clone git@github.com:open-ships/beacon.git
 cd beacon
 go build ./cmd/beacon
 go test ./...
+```
+
+Browser end-to-end tests use Playwright and start beacon automatically with
+an in-memory database. Install the Node dependencies and Chromium once, then
+run the suite:
+
+```bash
+npm ci
+npx playwright install chromium
+just test-browser
 ```
 
 `just test-race` (and the CI `race` job) runs only
