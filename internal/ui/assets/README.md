@@ -22,6 +22,17 @@ Used for progressive-enhancement navigation (`hx-boost`) and form fragments.
 Plain links and server-rendered pages still work without it; htmx only avoids
 full page reloads and handles the fragment swaps.
 
+## app.js
+
+Hand-authored progressive enhancement for the connector form's CEL filter
+textarea. It supplies accessible, keyboard-driven typeahead for envelope
+fields, CEL helpers, PGN numbers, and decoded payload keys. The schema-backed
+items are fetched from `/ui/cel-completions`; a small built-in fallback keeps
+the core interaction useful if that request fails. It also debounces CEL
+compilation while the operator types and overlays compiler error ranges as red
+wavy underlines. No configuration write depends on this script, and filters
+are still validated server-side on Save.
+
 ## app.css
 
 `app.css` is hand-authored source, not a compiled Tailwind/daisyUI artifact.

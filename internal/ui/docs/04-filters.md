@@ -151,6 +151,7 @@ already arrive as CEL doubles.)
 
 `POST /api/v1/filters/validate` CEL-compiles a list of expressions without
 persisting anything (see the API page) — the same check the UI's connector
-form runs on blur. A syntactically invalid expression is caught here (or by
-the same check embedded in a connector `PUT`, which 422s) before it can
-ever reach a running connector.
+form runs automatically as you type. Compile errors are shown below the
+editor and the offending token is underlined in red. The same check is also
+embedded in a connector `PUT` (which 422s), so an invalid expression cannot
+reach a running connector even if client-side validation is unavailable.

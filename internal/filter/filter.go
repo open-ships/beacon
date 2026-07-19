@@ -19,7 +19,7 @@ type Chain struct {
 }
 
 func Compile(exprs []string) (*Chain, error) {
-	env, err := cel.NewEnv(cel.Variable("msg", cel.MapType(cel.StringType, cel.DynType)))
+	env, err := newEnvironment()
 	if err != nil {
 		return nil, err
 	}
@@ -36,6 +36,10 @@ func Compile(exprs []string) (*Chain, error) {
 		c.progs = append(c.progs, prg)
 	}
 	return c, nil
+}
+
+func newEnvironment() (*cel.Env, error) {
+	return cel.NewEnv(cel.Variable("msg", cel.MapType(cel.StringType, cel.DynType)))
 }
 
 // Match evaluates all expressions (AND). Returns an error if any

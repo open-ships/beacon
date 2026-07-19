@@ -1,9 +1,10 @@
 // Package ui is beacon's offline, server-rendered web UI mounted at /ui/.
-// Every asset it serves (htmx and the lightweight Open Ships stylesheet) is
-// embedded in the binary via go:embed — beacon is an offline gateway
-// appliance, so the UI must render with no network access beyond the
-// browser talking to beacon itself. See assets/README.md for exactly what's
-// vendored and internal/ui/assets/app.css for the theme source.
+// Every asset it serves (htmx, the CEL autocomplete enhancement, and the
+// lightweight Open Ships stylesheet) is embedded in the binary via go:embed —
+// beacon is an offline gateway appliance, so the UI must render with no
+// network access beyond the browser talking to beacon itself. See
+// assets/README.md for the asset inventory and internal/ui/assets/app.css for
+// the theme source.
 package ui
 
 import (
@@ -121,13 +122,14 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 
 	// Connectors: the list/add/edit/delete pages parallel sources/sinks
 	// above, plus a per-connector overview page with live stats/streaming
-	// data and a CEL validate-on-blur fragment. See forms.go's
+	// data and live CEL validation diagnostics. See forms.go's
 	// "--- Connectors ---" section for the behavior contract.
 	mux.HandleFunc("GET /ui/connectors", handleConnectorsPage(svc, reg, assetVersion, log))
 	mux.HandleFunc("GET /ui/connectors/new", handleConnectorNewPage(svc, reg, assetVersion, log))
 	mux.HandleFunc("GET /ui/connectors/{id}/edit", handleConnectorEditPage(svc, reg, assetVersion, log))
 	mux.HandleFunc("GET /ui/connectors/{id}", redirectToTrailingSlash)
 	mux.HandleFunc("GET /ui/connectors/{id}/{$}", handleConnectorOverviewPage(svc, reg, statuses, assetVersion, log))
+	mux.HandleFunc("GET /ui/cel-completions", handleCELCompletions)
 	mux.HandleFunc("POST /ui/frag/validate-filters", handleValidateFiltersFrag(svc, log))
 	mux.HandleFunc("GET /ui/frag/connectors/{id}/stats", handleConnectorStatsFrag(svc, reg, log))
 	mux.HandleFunc("GET /ui/frag/connectors/{id}/overview", handleConnectorOverviewFrag(svc, reg, statuses, log))

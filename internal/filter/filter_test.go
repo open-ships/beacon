@@ -80,3 +80,27 @@ func TestEmptyChainMatchesAll(t *testing.T) {
 		t.Fatal("empty chain must pass everything")
 	}
 }
+
+func TestDiagnoseReturnsOffendingTokenRanges(t *testing.T) {
+	exprs := []string{"msg.pgn == 127250", "msg.source == @", "msg.priority ==", "unknown2 == true"}
+	diagnostics, err := Diagnose(exprs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnostics) != 3 {
+		t.Fatalf("diagnostics = %+v, want three errors", diagnostics)
+	}
+
+	at := diagnostics[0]
+	if at.Expression != 1 || at.Line != 1 || exprs[1][at.Column:at.EndColumn] != "@" {
+		t.Fatalf("unexpected-character diagnostic = %+v, range %q", at, exprs[1][at.Column:at.EndColumn])
+	}
+	dangling := diagnostics[1]
+	if dangling.Expression != 2 || exprs[2][dangling.Column:dangling.EndColumn] != "==" {
+		t.Fatalf("EOF diagnostic = %+v, range %q; want dangling operator", dangling, exprs[2][dangling.Column:dangling.EndColumn])
+	}
+	unknown := diagnostics[2]
+	if unknown.Expression != 3 || exprs[3][unknown.Column:unknown.EndColumn] != "unknown2" {
+		t.Fatalf("unknown-identifier diagnostic = %+v, range %q", unknown, exprs[3][unknown.Column:unknown.EndColumn])
+	}
+}

@@ -57,10 +57,23 @@
     </fieldset>
     <fieldset class="fieldset">
       <legend class="fieldset-legend">Filters (one CEL expression per line)</legend>
-      <textarea id="conn-filters" name="filters" class="textarea w-full" rows="4"
-                hx-post="/ui/frag/validate-filters" hx-trigger="blur changed"
-                hx-target="#filter-feedback" hx-include="closest form">{{.FiltersText}}</textarea>
-      <div id="filter-feedback"></div>
+      <div class="cel-autocomplete" data-cel-autocomplete>
+        <div class="cel-filter-editor">
+          <pre class="cel-filter-highlight" data-cel-highlight aria-hidden="true">{{.FiltersText}}</pre>
+          <textarea id="conn-filters" name="filters" class="textarea cel-filter-input w-full" rows="4"
+                    role="combobox" aria-autocomplete="list" aria-haspopup="listbox"
+                    aria-controls="cel-completions" aria-expanded="false"
+                    aria-describedby="conn-filters-help cel-completion-status"
+                    aria-errormessage="filter-feedback" aria-keyshortcuts="Control+Space"
+                    autocomplete="off" spellcheck="false">{{.FiltersText}}</textarea>
+        </div>
+        <div id="cel-completions" class="cel-completions" role="listbox"
+             aria-label="CEL completions" hidden></div>
+        <span id="cel-completion-status" class="visually-hidden" data-cel-completion-status
+              role="status" aria-live="polite"></span>
+      </div>
+      <p id="conn-filters-help" class="field-help">Filters are checked as you type. Start with <code>msg.</code> or press <kbd>Ctrl</kbd>+<kbd>Space</kbd>; use arrow keys and Enter to complete.</p>
+      <div id="filter-feedback" class="filter-validation-feedback" data-cel-validation-feedback aria-live="polite"></div>
     </fieldset>
     <fieldset class="fieldset">
       <legend class="fieldset-legend">Max messages</legend>
