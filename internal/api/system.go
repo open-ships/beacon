@@ -63,6 +63,7 @@ type systemOutput struct {
 		CANDetails    []sysinfo.CANInterface `json:"can_details" doc:"SocketCAN controller state, bitrate, counters, and sampled bus load."`
 		Identity      identity.Appliance     `json:"n2k_identity" doc:"Beacon's persistent ISO 11783/NMEA 2000 appliance identity."`
 		Devices       []bus.DeviceInfo       `json:"n2k_devices" doc:"Devices currently observed on attached NMEA 2000 networks."`
+		Buses         []bus.EndpointStatus   `json:"n2k_buses" doc:"NMEA 2000 client lifecycle, address claim, bounded write queue, and receive subscriber state."`
 	}
 }
 
@@ -90,6 +91,11 @@ func registerSystemInfoRoutes(api huma.API, version string, runtime RuntimeInfo)
 			out.Body.Devices = runtime.Devices()
 		} else {
 			out.Body.Devices = []bus.DeviceInfo{}
+		}
+		if runtime.Buses != nil {
+			out.Body.Buses = runtime.Buses()
+		} else {
+			out.Body.Buses = []bus.EndpointStatus{}
 		}
 		return out, nil
 	})
@@ -120,6 +126,7 @@ type commissioningOutput struct {
 		CANInterfaces []sysinfo.CANInterface    `json:"can_interfaces"`
 		Devices       []inventory.Record        `json:"devices"`
 		Components    []supervisor.Status       `json:"components"`
+		Buses         []bus.EndpointStatus      `json:"buses"`
 		Connectors    map[string]stats.Snapshot `json:"connectors"`
 	}
 }
@@ -185,6 +192,11 @@ func registerCommissioningRoutes(api huma.API, runtime RuntimeInfo, reg *stats.R
 				out.Body.Components = runtime.Statuses()
 			} else {
 				out.Body.Components = []supervisor.Status{}
+			}
+			if runtime.Buses != nil {
+				out.Body.Buses = runtime.Buses()
+			} else {
+				out.Body.Buses = []bus.EndpointStatus{}
 			}
 			return out, nil
 		})

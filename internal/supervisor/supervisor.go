@@ -521,13 +521,22 @@ func (s *Supervisor) Statuses() []Status {
 
 // BusDevices returns every NMEA-2000 device currently observed across the
 // running CAN endpoints (empty when no CAN bus is configured or connected).
-// n2k v0.2.0's client tracks these automatically from address-claim traffic,
+// n2k v0.3.0's client tracks these automatically from address-claim traffic,
 // so this is a free read once a bus client is up.
 func (s *Supervisor) BusDevices() []bus.DeviceInfo {
 	if s.bus == nil {
 		return nil
 	}
 	return s.bus.Devices()
+}
+
+// BusStatuses returns bounded queue, subscription, lifecycle, and address-
+// claim state for every running shared n2k client.
+func (s *Supervisor) BusStatuses() []bus.EndpointStatus {
+	if s.bus == nil {
+		return []bus.EndpointStatus{}
+	}
+	return s.bus.Statuses()
 }
 
 // Stop stops every running component (connectors, then sinks, then sources)

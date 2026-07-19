@@ -56,13 +56,16 @@ func LoadOrCreate(ctx context.Context, st *store.Store) (Appliance, error) {
 	if err != nil {
 		return Appliance{}, fmt.Errorf("load appliance identity: %w", err)
 	}
+	if number < 1 || number > 0x1FFFFF {
+		return Appliance{}, fmt.Errorf("load appliance identity: identity_number %d is outside the 21-bit range", number)
+	}
 	return build(uint32(number), time.Unix(0, created).UTC()), nil
 }
 
 func random21Bit() uint32 {
 	var b [4]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return nonzero21Bit(uint32(time.Now().UnixNano()))
+		return nonzero21Bit(uint32(time.Now().UnixNano() & 0x1FFFFF))
 	}
 	return nonzero21Bit(binary.LittleEndian.Uint32(b[:]))
 }

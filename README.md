@@ -1,6 +1,6 @@
 # beacon
 
-[![Tests](https://github.com/open-ships/beacon/actions/workflows/test.yml/badge.svg)](https://github.com/open-ships/beacon/actions/workflows/test.yml)
+[![CI](https://github.com/open-ships/beacon/actions/workflows/test.yaml/badge.svg)](https://github.com/open-ships/beacon/actions/workflows/test.yaml)
 [![Go version](https://img.shields.io/github/go-mod/go-version/open-ships/beacon)](go.mod)
 
 An offline NMEA 2000 gateway: read CAN/USB-CAN/HTTP/MQTT sources, filter with CEL
@@ -164,6 +164,7 @@ need updating.
 Common tasks are managed with [just](https://just.systems):
 
 ```bash
+just setup        # install pinned lint and security tools
 just build        # compile binary locally (CGO_ENABLED=0)
 just test         # run all Go tests
 just test-browser # run browser end-to-end tests with Playwright
@@ -173,6 +174,7 @@ just run          # go run (pass args after --)
 just fmt          # gofmt
 just vet          # go vet
 just lint         # golangci-lint
+just secure       # govulncheck + gosec
 just clean        # remove build artifacts
 just build-arm64  # cross-compile for Raspberry Pi (linux/arm64)
 just build-amd64  # cross-compile for linux/amd64
@@ -202,8 +204,10 @@ just test-browser
 ```
 
 `just test-race` and the CI `race` job both run `go test -race ./...`.
-n2k v0.2.0's chunked generated PGN definitions keep the full repository
-within the compiler's race-build limits.
+n2k v0.3.0 keeps receive subscriptions and writes bounded, reports terminal
+bus failures through Beacon's system and commissioning APIs, and retains the
+chunked generated PGN definitions that keep the full repository within the
+compiler's race-build limits.
 
 ### Virtual CAN (no hardware needed)
 
@@ -247,11 +251,12 @@ examples/       importable starter configs
 
 ### Release
 
-The `Release` workflow runs after `Test` succeeds on `main` (i.e. on every
-merge) and:
+The `Release` workflow runs after every CI gate succeeds on the current
+`main` commit. `VERSION` sets the next deliberate semantic-version baseline;
+later releases increment its patch version. The workflow:
 
-1. Tags the commit `YYYY.MM.DD` (incrementing to `YYYY.MM.DD-2` etc. if
-   multiple merges land the same day)
-2. Creates a GitHub Release with pre-built `linux/amd64` and `linux/arm64`
-   binaries (`CGO_ENABLED=0`, version-stamped via `-ldflags`)
-3. Publishes `ghcr.io/open-ships/beacon:<tag>` and `:latest`
+1. Publishes `ghcr.io/open-ships/beacon:<tag>` and `:latest`; a registry failure
+   stops the release before any immutable Git tag is created
+2. Tags the tested commit with a `vMAJOR.MINOR.PATCH` tag
+3. Creates a GitHub Release with checksummed archives for Linux, macOS, and
+   Windows on amd64 and arm64 (`CGO_ENABLED=0`, version-stamped via `-ldflags`)

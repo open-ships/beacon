@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // DataServer hosts serve-mode sink endpoints with dynamically managed routes.
@@ -27,7 +28,7 @@ func NewDataServer(addr string, log *slog.Logger) *DataServer {
 	// hang on active streams until its ctx expired.
 	baseCtx, cancel := context.WithCancel(context.Background())
 	d.cancel = cancel
-	d.srv = &http.Server{Addr: addr, Handler: http.HandlerFunc(d.route),
+	d.srv = &http.Server{Addr: addr, Handler: http.HandlerFunc(d.route), ReadHeaderTimeout: 10 * time.Second,
 		BaseContext: func(net.Listener) context.Context { return baseCtx }}
 	return d
 }

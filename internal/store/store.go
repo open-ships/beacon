@@ -100,7 +100,8 @@ func put[T any](ctx context.Context, db *sql.DB, table, id string, v T) error {
 		return err
 	}
 	_, err = db.ExecContext(ctx,
-		`INSERT INTO `+table+` (id, doc) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET doc = excluded.doc`, id, string(doc))
+		`INSERT INTO `+table+` (id, doc) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET doc = excluded.doc`, // #nosec G202 -- table is selected only by the typed store methods below.
+		id, string(doc))
 	return err
 }
 
@@ -109,7 +110,7 @@ func put[T any](ctx context.Context, db *sql.DB, table, id string, v T) error {
 // table has no rows — so callers built on it (LoadConfig, in turn
 // config.Service's ListX/Export) marshal to JSON "[]" rather than "null".
 func list[T any](ctx context.Context, db *sql.DB, table string) ([]T, error) {
-	rows, err := db.QueryContext(ctx, `SELECT doc FROM `+table+` ORDER BY id`)
+	rows, err := db.QueryContext(ctx, `SELECT doc FROM `+table+` ORDER BY id`) // #nosec G202 -- table is selected only by the typed store methods below.
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +147,7 @@ func (s *Store) DeleteConnector(ctx context.Context, id string) error {
 }
 
 func (s *Store) del(ctx context.Context, table, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM `+table+` WHERE id = ?`, id)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM `+table+` WHERE id = ?`, id) // #nosec G202 -- table is selected only by the typed store methods above.
 	return err
 }
 
@@ -193,7 +194,7 @@ func (s *Store) ReplaceConfig(ctx context.Context, cfg model.Config) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	for _, table := range []string{"sources", "sinks", "connectors"} {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table); err != nil { // #nosec G202 -- table comes from the fixed literal slice above.
 			return err
 		}
 	}
@@ -202,7 +203,7 @@ func (s *Store) ReplaceConfig(ctx context.Context, cfg model.Config) error {
 		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO `+table+` (id, doc) VALUES (?, ?)`, id, string(doc))
+		_, err = tx.ExecContext(ctx, `INSERT INTO `+table+` (id, doc) VALUES (?, ?)`, id, string(doc)) // #nosec G202 -- table is supplied only by fixed literals below.
 		return err
 	}
 	for _, v := range cfg.Sources {

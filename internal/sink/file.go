@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -53,14 +54,14 @@ func newFileSink(cfg model.Sink, log *slog.Logger) (Runtime, error) {
 	default:
 		return nil, fmt.Errorf("sink %q: unknown file format %q", cfg.ID, cfg.Format)
 	}
-	if !strings.HasPrefix(cfg.FilePath, "/") {
+	if !filepath.IsAbs(cfg.FilePath) && !strings.HasPrefix(cfg.FilePath, "/") {
 		return nil, fmt.Errorf("sink %q: file_path must be an absolute path", cfg.ID)
 	}
 	if cfg.MaxFileBytes < 0 || cfg.MaxFiles < 0 {
 		return nil, fmt.Errorf("sink %q: max_file_bytes and max_files must not be negative", cfg.ID)
 	}
 
-	f, err := os.OpenFile(cfg.FilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(cfg.FilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("sink %q: open %s: %w", cfg.ID, cfg.FilePath, err)
 	}
@@ -279,7 +280,7 @@ func (s *fileSink) rotate() error {
 		setErr(os.Remove(s.path))
 	}
 
-	f, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		if rotErr == nil {
 			rotErr = err

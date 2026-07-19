@@ -163,9 +163,9 @@ func renderDoc(p docPage) template.HTML {
 	// bytes.Buffer.Write never fails, so err is unreachable here in
 	// practice. Checked anyway rather than silently discarded.
 	if err := docsMarkdown.Convert(p.source, &buf); err != nil {
-		return template.HTML("<p>failed to render this page.</p>") //nolint:gosec // static, no user input
+		return template.HTML("<p>failed to render this page.</p>") // #nosec G203 -- static fallback with no user input.
 	}
-	rendered := template.HTML(buf.String()) //nolint:gosec // goldmark output; raw HTML passthrough is off, see docsMarkdown
+	rendered := template.HTML(buf.String()) // #nosec G203 -- embedded Markdown rendered with raw HTML passthrough disabled.
 	actual, _ := renderedDocs.LoadOrStore(p.filename, rendered)
 	return actual.(template.HTML)
 }

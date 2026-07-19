@@ -43,7 +43,7 @@ var (
 	serialRoot = "/dev"
 	hostGOOS   = runtime.GOOS
 	runIP      = func(name string) ([]byte, error) {
-		return exec.Command("ip", "-details", "-statistics", "-json", "link", "show", "dev", name).Output()
+		return exec.Command("ip", "-details", "-statistics", "-json", "link", "show", "dev", name).Output() // #nosec G204 -- name comes from /sys/class/net and is passed as one argument.
 	}
 )
 
@@ -74,7 +74,7 @@ func DiscoverCAN() []string {
 	}
 	out := []string{}
 	for _, e := range entries {
-		typ, err := os.ReadFile(filepath.Join(canRoot, e.Name(), "type"))
+		typ, err := os.ReadFile(filepath.Join(canRoot, e.Name(), "type")) // #nosec G304 -- e is an entry read from the trusted sysfs directory.
 		if err != nil {
 			continue
 		}
@@ -87,7 +87,7 @@ func DiscoverCAN() []string {
 }
 
 func readUint(path string) uint64 {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- callers construct paths beneath the trusted sysfs CAN interface directory.
 	if err != nil {
 		return 0
 	}
@@ -102,7 +102,7 @@ func DiscoverCANDetails() []CANInterface {
 	out := make([]CANInterface, 0, len(interfaces))
 	for _, name := range interfaces {
 		root := filepath.Join(canRoot, name)
-		oper, _ := os.ReadFile(filepath.Join(root, "operstate"))
+		oper, _ := os.ReadFile(filepath.Join(root, "operstate")) // #nosec G304 -- name came from the trusted sysfs directory listing.
 		info := CANInterface{Name: name, OperationalState: strings.TrimSpace(string(oper))}
 		stats := filepath.Join(root, "statistics")
 		info.RXPackets = readUint(filepath.Join(stats, "rx_packets"))

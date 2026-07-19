@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -21,8 +22,8 @@ import (
 
 func testManager(t *testing.T, fake *busfake.FakeBus) *Manager {
 	t.Helper()
-	return NewManager(slog.Default(), nil,
-		n2k.WithBus(fake), n2k.WithClaimTimeout(50*time.Millisecond))
+	return NewManagerWithBus(slog.Default(), nil, fake,
+		n2k.WithClaimTimeout(50*time.Millisecond))
 }
 
 func TestSubscribeReceivesDecodedEnvelope(t *testing.T) {
@@ -40,8 +41,8 @@ func TestSubscribeReceivesDecodedEnvelope(t *testing.T) {
 	ch, unsub := h.Subscribe(16)
 	defer unsub()
 
-	// give the client's read loop a moment, then inject
-	time.Sleep(200 * time.Millisecond)
+	waitUp(t, h)
+	waitReceiveSubscriber(t, m)
 	fake.Inject(busfake.VesselHeadingFrame())
 
 	select {
@@ -87,11 +88,11 @@ func TestRecordSupportedPGNsKeepsBothSortedLists(t *testing.T) {
 	bc := &busClient{supported: map[uint64]SupportedPGNs{}}
 	name := uint64(0xFEDCBA9876543210)
 	tx, rx := uint64(pgn.TransmitPGNList), uint64(pgn.ReceivePGNList)
-	p127250, p126992, duplicate := uint64(127250), uint64(126992), uint64(127250)
+	p127250, p126992, duplicate, outOfRange := uint64(127250), uint64(126992), uint64(127250), uint64(0x40000)
 	bc.recordSupportedPGNs(name, &pgn.ParameterGroupNumberListTransmitAndReceive{
 		FunctionCode: &tx,
 		Repeating1: []pgn.ParameterGroupNumberListTransmitAndReceiveRepeating1{
-			{Pgn: &p127250}, {Pgn: &p126992}, {Pgn: &duplicate},
+			{Pgn: &p127250}, {Pgn: &p126992}, {Pgn: &duplicate}, {Pgn: &outOfRange},
 		},
 	})
 	p59904 := uint64(59904)
@@ -125,7 +126,8 @@ func TestWriteEncodesToBus(t *testing.T) {
 	defer src.Release()
 	ch, unsub := src.Subscribe(1)
 	defer unsub()
-	time.Sleep(200 * time.Millisecond)
+	waitUp(t, src)
+	waitReceiveSubscriber(t, m)
 	fake.Inject(busfake.VesselHeadingFrame())
 	e := <-ch
 
@@ -179,6 +181,19 @@ func waitUp(t *testing.T, h *Handle) {
 	}
 }
 
+func waitReceiveSubscriber(t *testing.T, m *Manager) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		statuses := m.Statuses()
+		if len(statuses) == 1 && statuses[0].ReceiveSubscribers == 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("bus statuses = %+v, want one active n2k receive subscriber", m.Statuses())
+}
+
 func waitState(t *testing.T, h *Handle, want string) error {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -211,14 +226,10 @@ func TestUSBCANMissingPortReportsError(t *testing.T) {
 }
 
 // writeFailBus is a Bus whose frame writes always fail, simulating a bus that
-// cannot transmit the initial NMEA address claim. n2k v0.2.0 performs claiming
+// cannot transmit the initial NMEA address claim. n2k v0.3.0 performs claiming
 // during NewClient and returns the write error ("n2k: starting address
 // claim: ..."), which the manager must surface as an "error" state rather than
-// hang or crash. (Before v0.2.0 the equivalent test used a bus that *panicked*
-// on write; v0.2.0 runs the claim on an n2k-owned goroutine that does not
-// recover panics — an upstream robustness gap — so a panicking bus now crashes
-// the process and can no longer be exercised here. Real socketcan/usbcan buses
-// return errors, not panics, so this covers the production path.)
+// hang or crash.
 type writeFailBus struct{}
 
 func (writeFailBus) Run(ctx context.Context, _ func(can.Frame)) error {
@@ -233,8 +244,7 @@ func (writeFailBus) WriteFrame(can.Frame) error {
 func (writeFailBus) Close() error { return nil }
 
 func TestClientStartupWriteFailureReportsError(t *testing.T) {
-	m := NewManager(slog.Default(), nil,
-		n2k.WithBus(writeFailBus{}),
+	m := NewManagerWithBus(slog.Default(), nil, writeFailBus{},
 		n2k.WithClaimTimeout(10*time.Millisecond))
 	h, err := m.Acquire(context.Background(), Endpoint{Kind: "socketcan", Name: "can0"})
 	if err != nil {
@@ -246,6 +256,68 @@ func TestClientStartupWriteFailureReportsError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "starting address claim") ||
 		!strings.Contains(err.Error(), "claim write failed") {
 		t.Fatalf("state err = %v, want surfaced claim write failure", err)
+	}
+}
+
+type writePanicBus struct{}
+
+func (writePanicBus) Run(ctx context.Context, _ func(can.Frame)) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (writePanicBus) WriteFrame(can.Frame) error { panic("claim write panic") }
+func (writePanicBus) Close() error               { return nil }
+
+func TestClientStartupWritePanicReportsError(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := NewManagerWithBus(log, nil, writePanicBus{},
+		n2k.WithClaimTimeout(10*time.Millisecond))
+	h, err := m.Acquire(context.Background(), Endpoint{Kind: "socketcan", Name: "can0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Release()
+
+	err = waitState(t, h, "error")
+	if err == nil || !strings.Contains(err.Error(), "panic during address claim") ||
+		!strings.Contains(err.Error(), "claim write panic") {
+		t.Fatalf("state err = %v, want recovered claim-write panic", err)
+	}
+}
+
+func TestStatusesExposeBoundedN2KRuntime(t *testing.T) {
+	fake := busfake.New()
+	m := NewManagerWithBus(slog.Default(), nil, fake,
+		n2k.WithClaimTimeout(50*time.Millisecond),
+		n2k.WithReceiveBuffer(7),
+		n2k.WithWriteQueue(5))
+	h, err := m.Acquire(context.Background(), Endpoint{Kind: "socketcan", Name: "can0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Release()
+	waitUp(t, h)
+
+	deadline := time.Now().Add(2 * time.Second)
+	var status EndpointStatus
+	for time.Now().Before(deadline) {
+		statuses := m.Statuses()
+		if len(statuses) == 1 && statuses[0].ReceiveSubscribers == 1 {
+			status = statuses[0]
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if status.Endpoint != "socketcan:can0" || status.Kind != "socketcan" || status.Name != "can0" {
+		t.Fatalf("endpoint status = %+v", status)
+	}
+	if status.State != "up" || !status.AddressClaimed || status.Closed {
+		t.Fatalf("lifecycle status = %+v, want claimed and up", status)
+	}
+	if status.WriteQueueCapacity != 5 || status.WriteQueueDepth < 0 ||
+		status.WriteQueueDepth > status.WriteQueueCapacity || status.ReceiveSubscribers != 1 {
+		t.Fatalf("bounded runtime status = %+v, want write depth within capacity 5 and one receiver", status)
 	}
 }
 
@@ -298,8 +370,8 @@ func TestWriteUncatalogedPGNReturnsErrNotEncodable(t *testing.T) {
 // under a handle and asserts Write surfaces an error rather than panicking.
 // (The exact n2k panic window — Close landing between client.Write's closed
 // check and its channel send — cannot be forced deterministically without
-// hooks into n2k; this exercises the closed-client path, and Handle.Write's
-// recover covers the racy window.)
+// hooks into n2k; this exercises the closed-client path, while n2k v0.3.0's
+// synchronized close/write admission covers the racy window.)
 func TestWriteToConcurrentlyClosedClient(t *testing.T) {
 	fake := busfake.New()
 	m := testManager(t, fake)
@@ -330,8 +402,8 @@ func TestWriteToConcurrentlyClosedClient(t *testing.T) {
 // promptly with context.Canceled instead of blocking on Wait.
 func TestWriteReturnsOnCtxCancel(t *testing.T) {
 	sb := newStallBus()
-	m := NewManager(slog.Default(), nil,
-		n2k.WithBus(sb), n2k.WithClaimTimeout(50*time.Millisecond))
+	m := NewManagerWithBus(slog.Default(), nil, sb,
+		n2k.WithClaimTimeout(50*time.Millisecond))
 
 	h, err := m.Acquire(context.Background(), Endpoint{Kind: "socketcan", Name: "can0"})
 	if err != nil {

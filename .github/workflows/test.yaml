@@ -1,0 +1,154 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: 1.25.x
+          check-latest: true
+
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: |
+          fmt="$(gofmt -l .)"
+          if [ -n "$fmt" ]; then
+            echo "gofmt needs to be run on:"
+            echo "$fmt"
+            exit 1
+          fi
+
+      - name: Vet
+        if: runner.os == 'Linux'
+        run: go vet ./...
+
+      - name: Build
+        if: runner.os == 'Linux'
+        run: CGO_ENABLED=0 go build ./...
+
+      - name: Test
+        run: go test ./... -timeout 300s
+
+  browser:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: 1.25.x
+          check-latest: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser tests
+        run: npm test
+
+  race:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: 1.25.x
+          check-latest: true
+
+      - name: Race detector
+        run: go test -race ./... -timeout 300s
+
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: 1.25.x
+          check-latest: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.0
+
+  secure:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: 1.25.x
+          check-latest: true
+
+      - name: Run govulncheck
+        env:
+          GOTOOLCHAIN: go1.25.12
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.5.0
+          govulncheck ./...
+
+      - name: Run gosec
+        env:
+          GOTOOLCHAIN: go1.25.12
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1
+          gosec -exclude-generated -exclude-dir=.claude ./...
+
+  release-gate:
+    if: ${{ always() }}
+    needs: [test, browser, race, lint, secure]
+    runs-on: ubuntu-latest
+    env:
+      TEST_RESULT: ${{ needs.test.result }}
+      BROWSER_RESULT: ${{ needs.browser.result }}
+      RACE_RESULT: ${{ needs.race.result }}
+      LINT_RESULT: ${{ needs.lint.result }}
+      SECURE_RESULT: ${{ needs.secure.result }}
+
+    steps:
+      - name: Require every release gate
+        run: |
+          test "$TEST_RESULT" = success
+          test "$BROWSER_RESULT" = success
+          test "$RACE_RESULT" = success
+          test "$LINT_RESULT" = success
+          test "$SECURE_RESULT" = success

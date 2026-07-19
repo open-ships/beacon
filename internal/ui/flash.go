@@ -25,7 +25,7 @@ func flashRedirect(w http.ResponseWriter, msg, dest string) {
 }
 
 func setFlash(w http.ResponseWriter, msg string) {
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- Beacon supports local HTTP; HttpOnly and SameSite protect this non-sensitive flash value.
 		Name:     flashCookie,
 		Value:    base64.URLEncoding.EncodeToString([]byte(msg)),
 		Path:     "/ui",
@@ -43,7 +43,7 @@ func takeFlash(w http.ResponseWriter, r *http.Request) string {
 	if err != nil || c.Value == "" {
 		return ""
 	}
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- must match the local-HTTP-compatible cookie being cleared.
 		Name:     flashCookie,
 		Value:    "",
 		Path:     "/ui",

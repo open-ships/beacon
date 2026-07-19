@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/open-ships/beacon/internal/model"
 )
@@ -23,6 +24,13 @@ func startTestApp(t *testing.T) *App {
 	}
 	t.Cleanup(func() { _ = a.Close(context.Background()) })
 	return a
+}
+
+func TestAdminServerSetsReadHeaderTimeout(t *testing.T) {
+	a := startTestApp(t)
+	if a.adminSrv.ReadHeaderTimeout != 10*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %s, want 10s", a.adminSrv.ReadHeaderTimeout)
+	}
 }
 
 func getHealth(t *testing.T, a *App) map[string]any {

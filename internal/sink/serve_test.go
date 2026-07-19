@@ -67,6 +67,13 @@ func startSSE(t *testing.T) (*DataServer, Runtime) {
 	return ds, rt
 }
 
+func TestDataServerSetsReadHeaderTimeout(t *testing.T) {
+	ds := NewDataServer("127.0.0.1:0", slog.Default())
+	if ds.srv.ReadHeaderTimeout != 10*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %s, want 10s", ds.srv.ReadHeaderTimeout)
+	}
+}
+
 func readSSEEvents(t *testing.T, resp *http.Response, n int, timeout time.Duration) []map[string]any {
 	t.Helper()
 	var out []map[string]any

@@ -121,7 +121,7 @@ for scraping/alerting rather than point queries.
 
 ```
 GET /api/v1/health   {"status": "ok"|"degraded", "components": [...]}
-GET /api/v1/system   version, persistent N2K identity, live devices, CAN/serial discovery and CAN diagnostics
+GET /api/v1/system   version, N2K identity/client queue health/live devices, CAN/serial discovery and diagnostics
 ```
 
 `/api/v1/health` mirrors the admin server's top-level `GET /health`

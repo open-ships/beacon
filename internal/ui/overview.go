@@ -504,5 +504,5 @@ func renderConfigPageWithJSON(w http.ResponseWriter, _ *http.Request, _ *config.
 }
 
 func redirectToTrailingSlash(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
+	http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently) // #nosec G710 -- the target is the same-origin request path with a slash appended.
 }

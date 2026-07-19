@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -33,8 +34,8 @@ import (
 )
 
 // Options configures a Run. DBPath, DataAddr, and AdminAddr are required;
-// SeedPath, Version, and ExtraN2KOpts (test injection: fake bus, claim
-// timeout) are optional.
+// SeedPath, Version, N2KBus (simulation/embedding), and ExtraN2KOpts are
+// optional.
 type Options struct {
 	DBPath       string
 	DataAddr     string
@@ -42,6 +43,7 @@ type Options struct {
 	SeedPath     string
 	Version      string // embedded in the config API's OpenAPI document; defaults to "dev"
 	Log          *slog.Logger
+	N2KBus       n2k.Bus
 	ExtraN2KOpts []n2k.Option
 }
 
@@ -104,9 +106,15 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 		return nil, err
 	}
 
-	// Identity options go first so any caller-supplied ExtraN2KOpts (tests use
-	// WithBus/WithClaimTimeout) still override.
-	busMgr := bus.NewManager(log, met, append(appliance.Options(version), opts.ExtraN2KOpts...)...)
+	// Identity options go first so caller-supplied configuration (tests use a
+	// shorter claim timeout) can override it.
+	n2kOpts := append(appliance.Options(version), opts.ExtraN2KOpts...)
+	var busMgr *bus.Manager
+	if opts.N2KBus != nil {
+		busMgr = bus.NewManagerWithBus(log, met, opts.N2KBus, n2kOpts...)
+	} else {
+		busMgr = bus.NewManager(log, met, n2kOpts...)
+	}
 	busMgr.SetStatsRegistry(reg)
 	ds := sink.NewDataServer(opts.DataAddr, log)
 	if err := ds.Start(); err != nil {
@@ -148,7 +156,7 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 	}()
 
 	apiHandler, _ := api.New(cfgSvc, reg, version, log, api.RuntimeInfo{
-		Identity: appliance, Devices: sup.BusDevices, Inventory: inv, Statuses: sup.Statuses,
+		Identity: appliance, Devices: sup.BusDevices, Buses: sup.BusStatuses, Inventory: inv, Statuses: sup.Statuses,
 	})
 	uiHandler := ui.Handler(cfgSvc, reg, sup.Statuses, sup.BusDevices, version, log, ui.RuntimeInfo{
 		Inventory: inv, CANDetails: sysinfo.DiscoverCANDetails,
@@ -171,12 +179,12 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 		http.Redirect(w, r, "/ui/docs", http.StatusMovedPermanently)
 	})
 	mux.HandleFunc("GET /docs/{slug}", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/ui/docs/"+r.PathValue("slug"), http.StatusMovedPermanently)
+		http.Redirect(w, r, "/ui/docs/"+url.PathEscape(r.PathValue("slug")), http.StatusMovedPermanently)
 	})
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ui/dashboard", http.StatusFound)
 	})
-	a.adminSrv = &http.Server{Handler: mux}
+	a.adminSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	ln, err := net.Listen("tcp", opts.AdminAddr)
 	if err != nil {
 		_ = a.Close(ctx)
@@ -207,7 +215,7 @@ func seed(ctx context.Context, st *store.Store, path string, log *slog.Logger) e
 		log.Info("store not empty; ignoring seed file", "seed", path)
 		return nil
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) // #nosec G304 -- path is the operator-selected seed file.
 	if err != nil {
 		return fmt.Errorf("read seed: %w", err)
 	}

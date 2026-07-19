@@ -30,10 +30,37 @@ import (
 // skippable rather than a transient write failure worth retrying forever.
 var ErrNotEncodable = errors.New("envelope cannot be encoded for CAN transmission")
 
+const (
+	// n2k subscriptions and writes are bounded in v0.3. Keep Beacon's budgets
+	// explicit: a larger receive window absorbs short CAN bursts while the
+	// manager converts messages, and the write queue retains n2k's conservative
+	// default backpressure bound. extraOpts are appended after these defaults so
+	// tests and specialized deployments can override either value.
+	clientReceiveBuffer = 256
+	clientWriteQueue    = 64
+)
+
 type Endpoint struct {
 	Kind   string // "socketcan" | "usbcan" | "tcp" (NMEA-2000 gateway)
 	Name   string // interface name, serial port path, or gateway host:port
 	Format string // tcp only: model.StreamFormatYDRaw / model.StreamFormatActisense
+}
+
+// EndpointStatus is a point-in-time health snapshot for one shared n2k
+// client. Queue and subscriber fields come directly from n2k.Client.Status;
+// they make bounded-runtime pressure visible without performing bus I/O.
+type EndpointStatus struct {
+	Endpoint           string `json:"endpoint"`
+	Kind               string `json:"kind"`
+	Name               string `json:"name"`
+	State              string `json:"state"`
+	Err                string `json:"err,omitempty"`
+	Address            uint8  `json:"address"`
+	AddressClaimed     bool   `json:"address_claimed"`
+	Closed             bool   `json:"closed"`
+	WriteQueueDepth    int    `json:"write_queue_depth"`
+	WriteQueueCapacity int    `json:"write_queue_capacity"`
+	ReceiveSubscribers int    `json:"receive_subscribers"`
 }
 
 // StreamFormat maps beacon's config stream-format string to n2k's enum,
@@ -92,6 +119,7 @@ type Manager struct {
 	log       *slog.Logger
 	met       *metrics.Set
 	extraOpts []n2k.Option
+	customBus n2k.Bus
 	st        *stats.Registry
 
 	mu      sync.Mutex
@@ -102,6 +130,17 @@ func (m *Manager) SetStatsRegistry(st *stats.Registry) { m.st = st }
 
 func NewManager(log *slog.Logger, met *metrics.Set, extraOpts ...n2k.Option) *Manager {
 	return &Manager{log: log, met: met, extraOpts: extraOpts, clients: map[Endpoint]*busClient{}}
+}
+
+// NewManagerWithBus builds a manager over a caller-supplied n2k Bus. It is
+// useful for deterministic simulations and embedded transports; unlike a
+// physical endpoint, n2k v0.3.0 does not permit WithBus to be combined with
+// CAN/USB/TCP source options.
+func NewManagerWithBus(log *slog.Logger, met *metrics.Set, customBus n2k.Bus, extraOpts ...n2k.Option) *Manager {
+	return &Manager{
+		log: log, met: met, extraOpts: extraOpts, customBus: customBus,
+		clients: map[Endpoint]*busClient{},
+	}
 }
 
 func (m *Manager) clientCount() int {
@@ -195,7 +234,18 @@ func (bc *busClient) run(ctx context.Context) {
 			}
 			continue
 		}
-		opts := append(append([]n2k.Option{}, bc.opts...), n2k.IncludeUnknown(), n2k.WithLogger(bc.mgr.log))
+		var opts []n2k.Option
+		if bc.mgr.customBus != nil {
+			opts = append(opts, n2k.WithBus(bc.mgr.customBus))
+		} else {
+			opts = append(opts, bc.opts...)
+		}
+		opts = append(opts,
+			n2k.IncludeUnknown(),
+			n2k.WithLogger(bc.mgr.log),
+			n2k.WithReceiveBuffer(clientReceiveBuffer),
+			n2k.WithWriteQueue(clientWriteQueue),
+		)
 		opts = append(opts, bc.mgr.extraOpts...)
 		client, err := bc.newClient(ctx, opts...)
 		if err != nil {
@@ -233,10 +283,12 @@ func (bc *busClient) run(ctx context.Context) {
 			}
 		}()
 
+		var receiveErr error
 		for m, err := range client.Receive() {
 			if err != nil {
+				receiveErr = err
 				bc.mgr.log.Debug("n2k receive error", "endpoint", bc.ep.Name, "err", err)
-				continue
+				break
 			}
 			e, err := msg.FromPGN(m)
 			if err != nil {
@@ -256,6 +308,9 @@ func (bc *busClient) run(ctx context.Context) {
 			bc.maybeRequestPGNList(ctx, client, e.Source)
 			bc.broadcast(ctx, e)
 		}
+		if receiveErr == nil {
+			receiveErr = client.Err()
+		}
 		bc.requestWG.Wait()
 		// Receive ended: client dead or ctx cancelled.
 		_ = client.Close()
@@ -264,7 +319,11 @@ func (bc *busClient) run(ctx context.Context) {
 		bc.client = nil
 		bc.mu.Unlock()
 		if ctx.Err() == nil {
-			bc.setState("degraded", errors.New("receive loop ended; reconnecting"))
+			err := errors.New("receive loop ended; reconnecting")
+			if receiveErr != nil {
+				err = fmt.Errorf("receive loop ended; reconnecting: %w", receiveErr)
+			}
+			bc.setState("degraded", err)
 			select {
 			case <-ctx.Done():
 				return
@@ -331,7 +390,7 @@ func (bc *busClient) setState(state string, err error) {
 	bc.mgr.met.SetComponentState("bus", bc.ep.Kind+":"+bc.ep.Name, v)
 }
 
-// DeviceInfo is one device observed on a CAN endpoint's bus. n2k v0.2.0's
+// DeviceInfo is one device observed on a CAN endpoint's bus. n2k v0.3.0's
 // client tracks every claimed NAME automatically (from address-claim traffic),
 // so this data comes for free once a bus client is running.
 type DeviceInfo struct {
@@ -384,6 +443,9 @@ func (bc *busClient) recordSupportedPGNs(name uint64, resp *pgn.ParameterGroupNu
 	values := make([]uint32, 0, len(resp.Repeating1))
 	for _, item := range resp.Repeating1 {
 		if item.Pgn == nil {
+			continue
+		}
+		if *item.Pgn > 0x3FFFF {
 			continue
 		}
 		value := uint32(*item.Pgn)
@@ -509,6 +571,70 @@ func (m *Manager) Devices() []DeviceInfo {
 	return out
 }
 
+// Statuses returns a stable, sorted snapshot of every shared n2k client.
+// It exposes the bounded runtime state added in n2k v0.3.0 and is safe to
+// call concurrently with endpoint acquisition, reconnect, and release.
+func (m *Manager) Statuses() []EndpointStatus {
+	m.mu.Lock()
+	clients := make([]*busClient, 0, len(m.clients))
+	for _, bc := range m.clients {
+		clients = append(clients, bc)
+	}
+	m.mu.Unlock()
+
+	out := make([]EndpointStatus, 0, len(clients))
+	for _, bc := range clients {
+		status, _ := bc.snapshotStatus()
+		out = append(out, status)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Endpoint < out[j].Endpoint })
+	return out
+}
+
+func (bc *busClient) snapshotStatus() (EndpointStatus, error) {
+	bc.mu.Lock()
+	client := bc.client
+	state := bc.state
+	lastErr := bc.lastErr
+	ep := bc.ep
+	bc.mu.Unlock()
+
+	out := EndpointStatus{
+		Endpoint: ep.Kind + ":" + ep.Name,
+		Kind:     ep.Kind,
+		Name:     ep.Name,
+		State:    state,
+	}
+	if client != nil {
+		status := client.Status()
+		out.Address = status.Address
+		out.AddressClaimed = status.AddressClaimed
+		out.Closed = status.Closed
+		out.WriteQueueDepth = status.WriteQueueDepth
+		out.WriteQueueCapacity = status.WriteQueueCapacity
+		out.ReceiveSubscribers = status.ReceiveSubscribers
+
+		switch {
+		case status.TerminalError != nil:
+			out.State = "error"
+			lastErr = status.TerminalError
+		case status.Closed && out.State == "up":
+			out.State = "degraded"
+			lastErr = n2k.ErrClientClosed
+		case !status.AddressClaimed && out.State == "up":
+			out.State = "degraded"
+			lastErr = errors.New("n2k address claim incomplete")
+		case status.WriteQueueCapacity > 0 && status.WriteQueueDepth >= status.WriteQueueCapacity && out.State == "up":
+			out.State = "degraded"
+			lastErr = n2k.ErrWriteQueueFull
+		}
+	}
+	if lastErr != nil {
+		out.Err = lastErr.Error()
+	}
+	return out, lastErr
+}
+
 type Handle struct {
 	bc       *busClient
 	released sync.Once
@@ -560,7 +686,7 @@ func (h *Handle) Write(ctx context.Context, e *msg.Envelope) error {
 	}
 
 	// client may be concurrently Closed by run()'s reconnect path after we
-	// captured it above. As of n2k v0.2.0 that is safe: Client.Write registers
+	// captured it above. As of n2k v0.3.0 that is safe: Client.Write registers
 	// as an in-flight sender under the same lock Close takes, and Close drains
 	// those senders before closing its write channel, so the old "send on
 	// closed channel" panic can no longer occur (a write racing Close simply
@@ -580,9 +706,8 @@ func (h *Handle) Write(ctx context.Context, e *msg.Envelope) error {
 // State reports the shared client's current connection state ("up",
 // "degraded", or "error") and the last error observed, if any.
 func (h *Handle) State() (state string, lastErr error) {
-	h.bc.mu.Lock()
-	defer h.bc.mu.Unlock()
-	return h.bc.state, h.bc.lastErr
+	status, err := h.bc.snapshotStatus()
+	return status.State, err
 }
 
 // Release decrements the handle's reference on the shared client. The last
