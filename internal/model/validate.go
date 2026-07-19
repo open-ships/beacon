@@ -45,7 +45,7 @@ func (s Source) Validate() error {
 			return fmt.Errorf("source %q: mqtt requires topic", s.ID)
 		}
 	case SourceFile:
-		if !filepath.IsAbs(s.FilePath) {
+		if !filepath.IsAbs(s.FilePath) && !strings.HasPrefix(s.FilePath, "/") {
 			return fmt.Errorf("source %q: file_path must be an absolute path", s.ID)
 		}
 	case SourceTCP, SourceUDP:
@@ -95,7 +95,7 @@ func (s Sink) Validate() error {
 			return fmt.Errorf("sink %q: format must be %q or %q", s.ID, StreamFormatYDRaw, StreamFormatActisense)
 		}
 	case SinkFile:
-		if !filepath.IsAbs(s.FilePath) {
+		if !filepath.IsAbs(s.FilePath) && !strings.HasPrefix(s.FilePath, "/") {
 			return fmt.Errorf("sink %q: file_path must be an absolute path", s.ID)
 		}
 		if s.Format != FileFormatNDJSON && s.Format != FileFormatCANDump {

@@ -54,7 +54,7 @@ func newFileSink(cfg model.Sink, log *slog.Logger) (Runtime, error) {
 	default:
 		return nil, fmt.Errorf("sink %q: unknown file format %q", cfg.ID, cfg.Format)
 	}
-	if !filepath.IsAbs(cfg.FilePath) {
+	if !filepath.IsAbs(cfg.FilePath) && !strings.HasPrefix(cfg.FilePath, "/") {
 		return nil, fmt.Errorf("sink %q: file_path must be an absolute path", cfg.ID)
 	}
 	if cfg.MaxFileBytes < 0 || cfg.MaxFiles < 0 {
