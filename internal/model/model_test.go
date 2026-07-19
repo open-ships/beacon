@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -58,7 +59,7 @@ func TestTransparentBridgeRequiresSocketCANSink(t *testing.T) {
 func TestValidateFileSinkOK(t *testing.T) {
 	cfg := validConfig()
 	cfg.Sinks = append(cfg.Sinks, Sink{ID: "log", Name: "Log", Type: SinkFile, Enabled: true,
-		FilePath: "/var/log/beacon/nav.jsonl", Format: FileFormatNDJSON})
+		FilePath: filepath.Join(t.TempDir(), "nav.jsonl"), Format: FileFormatNDJSON})
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid file sink rejected: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestValidateMQTTSourceAndSinkOK(t *testing.T) {
 func TestValidateFileAndGatewaySourcesOK(t *testing.T) {
 	cfg := validConfig()
 	cfg.Sources = append(cfg.Sources,
-		Source{ID: "replay", Name: "Capture replay", Type: SourceFile, Enabled: true, FilePath: "/data/capture.log"},
+		Source{ID: "replay", Name: "Capture replay", Type: SourceFile, Enabled: true, FilePath: filepath.Join(t.TempDir(), "capture.log")},
 		Source{ID: "gw-tcp", Name: "YD gateway", Type: SourceTCP, Enabled: true, Address: "192.168.4.1:1457", Format: StreamFormatYDRaw},
 		Source{ID: "gw-udp", Name: "Actisense UDP", Type: SourceUDP, Enabled: true, Address: "0.0.0.0:2000", Format: StreamFormatActisense},
 	)
@@ -99,6 +100,7 @@ func TestValidateFileAndGatewaySourcesOK(t *testing.T) {
 }
 
 func TestValidateRejects(t *testing.T) {
+	absoluteFilePath := filepath.Join(t.TempDir(), "beacon.log")
 	cases := []struct {
 		name   string
 		mutate func(*Config)
@@ -151,15 +153,15 @@ func TestValidateRejects(t *testing.T) {
 		}},
 		{"file sink bad format", func(c *Config) {
 			c.Sinks = append(c.Sinks, Sink{ID: "log", Name: "Log", Type: SinkFile, Enabled: true,
-				FilePath: "/var/log/beacon.log", Format: "xml"})
+				FilePath: absoluteFilePath, Format: "xml"})
 		}},
 		{"file sink negative max_file_bytes", func(c *Config) {
 			c.Sinks = append(c.Sinks, Sink{ID: "log", Name: "Log", Type: SinkFile, Enabled: true,
-				FilePath: "/var/log/beacon.log", Format: FileFormatNDJSON, MaxFileBytes: -1})
+				FilePath: absoluteFilePath, Format: FileFormatNDJSON, MaxFileBytes: -1})
 		}},
 		{"file sink negative max_files", func(c *Config) {
 			c.Sinks = append(c.Sinks, Sink{ID: "log", Name: "Log", Type: SinkFile, Enabled: true,
-				FilePath: "/var/log/beacon.log", Format: FileFormatNDJSON, MaxFiles: -1})
+				FilePath: absoluteFilePath, Format: FileFormatNDJSON, MaxFiles: -1})
 		}},
 		{"mqtt sink without broker", func(c *Config) {
 			c.Sinks = append(c.Sinks, Sink{ID: "mqtt-out", Name: "MQTT", Type: SinkMQTT, Enabled: true, Topic: "vessels/main/engine/json"})

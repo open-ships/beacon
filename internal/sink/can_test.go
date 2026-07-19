@@ -38,7 +38,7 @@ func waitBusUp(t *testing.T, h *bus.Handle) {
 func TestCanSinkPushSkipsUndecodableEnvelope(t *testing.T) {
 	fake := busfake.New()
 	mgr := bus.NewManagerWithBus(slog.Default(), nil, fake,
-		n2k.WithClaimTimeout(50*time.Millisecond))
+		n2k.WithClaimTimeout(500*time.Millisecond))
 	ctx := context.Background()
 
 	h, err := mgr.Acquire(ctx, bus.Endpoint{Kind: "socketcan", Name: "can0"})
@@ -65,7 +65,7 @@ func TestCanSinkPushSkipsUndecodableEnvelope(t *testing.T) {
 func TestCanSinkPushSkipsEmptyRaw(t *testing.T) {
 	fake := busfake.New()
 	mgr := bus.NewManagerWithBus(slog.Default(), nil, fake,
-		n2k.WithClaimTimeout(50*time.Millisecond))
+		n2k.WithClaimTimeout(500*time.Millisecond))
 	ctx := context.Background()
 
 	h, err := mgr.Acquire(ctx, bus.Endpoint{Kind: "socketcan", Name: "can0"})

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -53,7 +54,7 @@ func newFileSink(cfg model.Sink, log *slog.Logger) (Runtime, error) {
 	default:
 		return nil, fmt.Errorf("sink %q: unknown file format %q", cfg.ID, cfg.Format)
 	}
-	if !strings.HasPrefix(cfg.FilePath, "/") {
+	if !filepath.IsAbs(cfg.FilePath) {
 		return nil, fmt.Errorf("sink %q: file_path must be an absolute path", cfg.ID)
 	}
 	if cfg.MaxFileBytes < 0 || cfg.MaxFiles < 0 {
