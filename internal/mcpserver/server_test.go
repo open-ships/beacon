@@ -17,6 +17,7 @@ import (
 
 	"github.com/open-ships/beacon/internal/config"
 	"github.com/open-ships/beacon/internal/model"
+	"github.com/open-ships/beacon/internal/msg"
 	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/store"
 	"github.com/open-ships/beacon/internal/supervisor"
@@ -65,6 +66,10 @@ func newTestMCP(t *testing.T) testMCP {
 	}}
 	svc := config.NewService(st, rec, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	reg := stats.NewRegistry()
+	if err := reg.AttachSourceMetricPersistence(context.Background(), st.DB()); err != nil {
+		_ = st.Close()
+		t.Fatal(err)
+	}
 	server := NewServer(svc, reg, "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	clientTransport, serverTransport := sdkmcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
@@ -82,6 +87,7 @@ func newTestMCP(t *testing.T) testMCP {
 	t.Cleanup(func() {
 		_ = clientSession.Close()
 		_ = serverSession.Close()
+		_ = reg.CloseSourceMetricPersistence(context.Background())
 		_ = st.Close()
 	})
 	return testMCP{svc: svc, stats: reg, client: clientSession, server: serverSession, store: st, rec: rec}
@@ -232,6 +238,87 @@ func TestConfigureInspectAndDeleteThroughTools(t *testing.T) {
 	}
 	if len(stored.Sources)+len(stored.Sinks)+len(stored.Connectors) != 0 {
 		t.Fatalf("config after deletes = %+v", stored)
+	}
+}
+
+func TestGetSourceMetricsReturnsAndFiltersSharedPGNStore(t *testing.T) {
+	tm := newTestMCP(t)
+	mustPutSource := model.Source{ID: "can0", Name: "CAN", Type: model.SourceSocketCAN, Interface: "can0"}
+	if err := tm.svc.PutSource(context.Background(), mustPutSource, true); err != nil {
+		t.Fatal(err)
+	}
+	tm.stats.RecordSource("can0", &msg.Envelope{
+		PGN: 127250, PGNName: "Vessel Heading", Source: 12,
+		Raw: []byte{1, 2, 3, 4, 5, 6, 7, 8}, Payload: json.RawMessage(`{"heading":1.5}`),
+	})
+	tm.stats.RecordSource("can0", &msg.Envelope{PGN: 128259, Source: 44, Raw: []byte{1, 2}})
+
+	result := callTool(t, tm.client, "get_source_metrics", map[string]any{
+		"source_id": "can0", "pgn": 127250, "source_address": 12,
+	})
+	if result.IsError {
+		t.Fatalf("get_source_metrics: %s", toolErrorText(result))
+	}
+	out := decodeStructured[sourceMetricsOutput](t, result)
+	streams, ok := out.Sources["can0"]
+	if !ok || len(streams) != 1 {
+		t.Fatalf("source metrics = %+v", out)
+	}
+	stream := streams[0]
+	if stream.PGN != 127250 || stream.SourceAddress != 12 || stream.PayloadBytesLast != 8 || stream.Messages != 1 {
+		t.Fatalf("filtered stream = %+v", stream)
+	}
+	if out.GeneratedAt.IsZero() {
+		t.Fatal("generated_at was not populated")
+	}
+
+	result = callTool(t, tm.client, "get_source_metrics", map[string]any{"source_id": "missing"})
+	if !result.IsError || !strings.Contains(toolErrorText(result), config.ErrNotFound.Error()) {
+		t.Fatalf("unknown source result = isError %v, content %q", result.IsError, toolErrorText(result))
+	}
+}
+
+func TestSourceTrafficBaselineToolsPersistAndReportEvents(t *testing.T) {
+	tm := newTestMCP(t)
+	if err := tm.svc.PutSource(context.Background(), model.Source{
+		ID: "can0", Name: "CAN", Type: model.SourceSocketCAN, Interface: "can0",
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		tm.stats.RecordSource("can0", &msg.Envelope{
+			PGN: 127250, PGNName: "Vessel Heading", Source: 12, Dest: 255, Priority: 2,
+			Raw: []byte{1, 2, 3, byte(i)}, Decode: msg.DecodeInfo{Status: "decoded", Complete: true},
+		})
+	}
+
+	result := callTool(t, tm.client, "commit_source_traffic_baseline", map[string]any{"source_id": "can0"})
+	if result.IsError {
+		t.Fatalf("commit baseline: %s", toolErrorText(result))
+	}
+	committed := decodeStructured[sourceTrafficBaselineOutput](t, result)
+	if len(committed.Baselines) != 1 || committed.Baselines[0].PGN != 127250 {
+		t.Fatalf("committed baseline = %+v", committed)
+	}
+
+	result = callTool(t, tm.client, "get_source_metrics", map[string]any{"source_id": "can0", "event_limit": 10})
+	if result.IsError {
+		t.Fatalf("get metrics after baseline: %s", toolErrorText(result))
+	}
+	out := decodeStructured[sourceMetricsOutput](t, result)
+	if len(out.Baselines["can0"]) != 1 || len(out.Events["can0"]) == 0 {
+		t.Fatalf("baseline/event output = %+v", out)
+	}
+	if got := out.Sources["can0"][0].BaselineStatus; got != "matching" {
+		t.Fatalf("baseline status = %q, want matching", got)
+	}
+
+	result = callTool(t, tm.client, "clear_source_traffic_baseline", map[string]any{"source_id": "can0"})
+	if result.IsError {
+		t.Fatalf("clear baseline: %s", toolErrorText(result))
+	}
+	if baselines := tm.stats.SourceTrafficBaselines("can0"); len(baselines) != 0 {
+		t.Fatalf("baselines after clear = %+v", baselines)
 	}
 }
 

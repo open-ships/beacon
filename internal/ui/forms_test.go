@@ -60,6 +60,10 @@ func newUIServerWithServiceAndRegistry(t *testing.T) (*httptest.Server, *config.
 	t.Cleanup(func() { _ = st.Close() })
 	svc := config.NewService(st, fakeReconciler{}, nil)
 	reg := stats.NewRegistry()
+	if err := reg.AttachSourceMetricPersistence(context.Background(), st.DB()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reg.CloseSourceMetricPersistence(context.Background()) })
 	handler := ui.Handler(svc, reg, fakeReconciler{}.Statuses, nil, "test", nil)
 
 	mux := http.NewServeMux()
@@ -1643,7 +1647,7 @@ func TestOverviewFragmentsRenderStatsAndMessageStreams(t *testing.T) {
 		path  string
 		wants []string
 	}{
-		{"/ui/frag/sources/src1/overview", []string{"source-overview-live", "Status", "Statistics", "Message stream", "Total messages", "127250", "heading", "received"}},
+		{"/ui/frag/sources/src1/overview", []string{"source-overview-live", "Status", "Statistics", "PGN traffic", "Rate / jitter", "Last seen / gaps", "Values / raw wire", "decoded fields", "Traffic changes", "Approve current traffic", "Message stream", "Total messages", "127250", "heading", "received"}},
 		{"/ui/frag/sinks/sink1/overview", []string{"sink-overview-live", "Status", "Statistics", "Message stream", "Total messages", "127250", "heading", "sent", "conn1"}},
 		{"/ui/frag/connectors/conn1/overview", []string{"connector-overview-live", "Status", "Statistics", "Message stream", "Total messages", "127250", "heading", "received", "conn1"}},
 	} {
@@ -1660,6 +1664,35 @@ func TestOverviewFragmentsRenderStatsAndMessageStreams(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSourceTrafficBaselineFormActions(t *testing.T) {
+	srv, svc, reg := newUIServerWithServiceAndRegistry(t)
+	must(t, svc.PutSource(context.Background(), model.Source{
+		ID: "src1", Name: "Source One", Type: model.SourceSocketCAN, Interface: "can0",
+	}, true))
+	reg.RecordSource("src1", &msg.Envelope{
+		PGN: 127250, Source: 12, Dest: 255, Priority: 2, Raw: []byte{1, 2, 3, 4},
+	})
+
+	resp := postForm(t, srv, "/ui/sources/src1/traffic-baseline", url.Values{})
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	for _, want := range []string{"baseline matched", "Clear baseline", "baseline_committed"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("baseline commit response missing %q:\n%s", want, body)
+		}
+	}
+	if len(reg.SourceTrafficBaselines("src1")) != 1 {
+		t.Fatalf("baseline was not stored: %+v", reg.SourceTrafficBaselines("src1"))
+	}
+
+	resp = postForm(t, srv, "/ui/sources/src1/traffic-baseline/clear", url.Values{})
+	mustStatus(t, resp, http.StatusOK)
+	body = mustBody(t, resp)
+	if !strings.Contains(body, "Approve current traffic") || len(reg.SourceTrafficBaselines("src1")) != 0 {
+		t.Fatalf("baseline clear response/state = %s / %+v", body, reg.SourceTrafficBaselines("src1"))
 	}
 }
 

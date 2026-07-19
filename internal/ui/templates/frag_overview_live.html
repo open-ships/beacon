@@ -45,6 +45,133 @@
     </section>
   </div>
 
+  {{if eq .Kind "source"}}
+  <section class="overview-card" aria-label="PGN traffic">
+    <div class="section-heading source-metrics-heading">
+      <div>
+        <h3>PGN traffic</h3>
+        <p>One row per sender and PGN, including unknown wire payloads. Timing and value distributions use bounded recent windows.</p>
+      </div>
+      <div class="source-baseline-actions">
+        <span class="badge badge-ghost">{{len .SourcePGNs}} streams</span>
+        {{if .BaselineCount}}<span class="badge badge-success">{{.BaselineCount}} expected</span>{{end}}
+        <button class="btn btn-sm" type="button" hx-post="/ui/sources/{{.ID}}/traffic-baseline"
+                hx-target="#source-overview-live" hx-swap="outerHTML"
+                hx-confirm="Approve the currently observed PGN traffic as the expected baseline?">Approve current traffic</button>
+        {{if .BaselineCount}}
+        <button class="btn btn-sm" type="button" hx-post="/ui/sources/{{.ID}}/traffic-baseline/clear"
+                hx-target="#source-overview-live" hx-swap="outerHTML"
+                hx-confirm="Clear the expected traffic baseline for this source?">Clear baseline</button>
+        {{end}}
+      </div>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="table source-metrics-table">
+        <thead>
+          <tr>
+            <th>Health</th>
+            <th>PGN / decode</th>
+            <th>Device / sender</th>
+            <th>Destination / priority</th>
+            <th>Rate / jitter</th>
+            <th>Last seen / gaps</th>
+            <th>Traffic / payload</th>
+            <th>Values / raw wire</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .SourcePGNs}}
+          <tr class="source-stream-{{.Status}}">
+            <td>
+              {{if eq .Status "gap"}}<span class="badge badge-error">gap</span>
+              {{else if eq .Status "missing"}}<span class="badge badge-error">missing</span>
+              {{else if eq .Status "anomaly"}}<span class="badge badge-warning">anomaly</span>
+              {{else if eq .Status "changed"}}<span class="badge badge-warning">changed</span>
+              {{else if eq .Status "awaiting"}}<span class="badge badge-ghost">awaiting</span>
+              {{else if eq .Status "warming"}}<span class="badge badge-ghost">learning</span>
+              {{else}}<span class="badge badge-success">active</span>{{end}}
+              {{if eq .BaselineStatus "matching"}}<span class="source-baseline-state">baseline matched</span>
+              {{else if eq .BaselineStatus "not_baselined"}}<span class="source-baseline-state">not baselined</span>{{end}}
+              {{range .BaselineIssues}}<span class="source-anomaly-note" title="{{.}}">{{.}}</span>{{end}}
+              {{if .AnomalyText}}<span class="source-anomaly-note" title="{{.AnomalyText}}">{{.AnomalyText}}</span>{{end}}
+            </td>
+            <td><code>{{.PGN}}</code>{{if .PGNName}}<br><span class="opacity-70">{{.PGNName}}</span>{{end}}<br>
+                {{if eq .DecodeStatus "unknown"}}<span class="badge badge-warning">unknown</span>
+                {{else if eq .DecodeStatus "decoded"}}<span class="badge badge-success">decoded</span>
+                {{else}}<span class="badge badge-ghost">{{.DecodeStatus}}</span>{{end}}
+                {{if .DecodeMetadata}}<br><small>{{.DecodeMetadata}}</small>{{end}}
+                <br><small>{{.DecodeDetail}}</small></td>
+            <td><strong>{{.SourceAddress}}</strong>{{if .DeviceNameHex}}<br><code title="Device NAME">{{.DeviceNameHex}}</code>{{end}}</td>
+            <td><span>dest {{.Destinations}}</span><br><span class="opacity-70">priority {{.Priorities}}</span></td>
+            <td><strong>{{.FrequencyText}}</strong><br><span class="opacity-70">{{.PeriodText}}</span><br><small>{{.RateDetail}}</small></td>
+            <td><time datetime="{{.LastSeenTitle}}" title="{{.LastSeenTitle}}">{{.LastSeenText}}</time><br>
+                <span class="{{if eq .Status "gap"}}source-gap-text{{else}}opacity-70{{end}}">{{.GapText}}</span></td>
+            <td><strong>{{.TrafficText}}</strong><br><span class="opacity-70">{{.TrafficDetail}}</span><br>
+                <span>{{.PayloadText}}</span><br><small>{{.PayloadDetail}}</small></td>
+            <td>
+              <details class="source-values">
+                <summary>{{len .Fields}} decoded fields{{if .Raw}} · {{.Raw.DistinctPayloads}} raw payloads{{end}}</summary>
+                <div class="source-value-list">
+                  {{if .Fields}}
+                  <h4>Decoded value distributions</h4>
+                  {{range .Fields}}
+                  <div class="source-value-row {{if .Anomalous}}source-value-anomaly{{end}}">
+                    <div><code>{{.Name}}</code>{{if .Anomalous}} <span class="badge badge-warning">changed</span>{{end}}</div>
+                    <span>{{.Summary}}</span>
+                    <small>{{.Samples}} samples · {{.AvailabilityText}}{{if .Anomalies}} · {{.Anomalies}} anomalies{{end}}</small>
+                    <small>{{.QualityText}}</small>
+                  </div>
+                  {{end}}
+                  {{else}}<p class="opacity-70">No decoded fields are available for this PGN.</p>{{end}}
+
+                  {{if .Raw}}
+                  <h4>Raw wire payload</h4>
+                  <dl class="source-raw-summary">
+                    <dt>Last payload</dt><dd><code>{{.Raw.LastHex}}</code></dd>
+                    <dt>Fingerprint</dt><dd><code>{{.Raw.LastFingerprint}}</code></dd>
+                    <dt>Lengths</dt><dd>{{range $length, $count := .Raw.LengthCounts}}<code>{{$length}} B</code> × {{$count}} &nbsp;{{end}}</dd>
+                    <dt>Unchanged</dt><dd>{{printf "%.1f" .Raw.UnchangedSeconds}} s</dd>
+                    <dt>Hamming distance</dt><dd>mean {{printf "%.1f" .Raw.HammingDistanceMean}} bits · p95 {{printf "%.1f" .Raw.HammingDistanceP95}} bits</dd>
+                    <dt>Last changed bytes</dt><dd>{{if .Raw.LastChangedBytes}}{{.Raw.LastChangedBytes}}{{else}}none{{end}}</dd>
+                  </dl>
+                  {{if .RawFingerprints}}
+                  <h4>Top payload fingerprints</h4>
+                  <div class="source-fingerprint-list">{{range .RawFingerprints}}<code>{{.Fingerprint}}</code> {{.Count}}× ({{.Share}}) · {{.Length}} B<br>{{end}}</div>
+                  {{end}}
+                  {{if .RawBytes}}
+                  <h4>Byte-position analysis</h4>
+                  <div class="overflow-x-auto"><table class="table source-byte-table"><thead><tr><th>Byte</th><th>Range</th><th>Mode</th><th>Entropy</th><th>Changed</th><th>Bit mask</th></tr></thead><tbody>
+                    {{range .RawBytes}}<tr><td>{{.Offset}}</td><td><code>{{.Range}}</code></td><td><code>{{.Mode}}</code></td><td>{{.Entropy}}</td><td>{{.Changed}}</td><td><code>{{.BitMask}}</code></td></tr>{{end}}
+                  </tbody></table></div>
+                  {{end}}
+                  {{if .RawSamples}}
+                  <h4>Recent changed payloads</h4>
+                  <div class="source-raw-samples">{{range .RawSamples}}<div><time>{{.Time}}</time> <code>{{.Hex}}</code> <small>{{.Length}} B · {{.Fingerprint}}</small></div>{{end}}</div>
+                  {{end}}
+                  {{end}}
+                </div>
+              </details>
+            </td>
+          </tr>
+          {{else}}
+          <tr><td colspan="8" class="text-center opacity-70">No PGNs have been observed on this source in this process.</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="overview-card" aria-label="Traffic changes">
+    <div class="section-heading"><h3>Traffic changes</h3></div>
+    <div class="overflow-x-auto">
+      <table class="table source-event-table"><thead><tr><th>Time</th><th>Severity</th><th>Change</th><th>PGN</th><th>Sender</th></tr></thead><tbody>
+      {{range .SourceEvents}}<tr><td><code>{{.Time}}</code></td><td><span class="badge {{if eq .Severity "error"}}badge-error{{else if eq .Severity "warning"}}badge-warning{{else}}badge-ghost{{end}}">{{.Severity}}</span></td><td><strong>{{.Kind}}</strong><br><span>{{.Summary}}</span></td><td>{{if .PGN}}<code>{{.PGN}}</code>{{else}}-{{end}}</td><td>{{.SourceAddress}}</td></tr>
+      {{else}}<tr><td colspan="5" class="text-center opacity-70">No source traffic changes have been recorded.</td></tr>{{end}}
+      </tbody></table>
+    </div>
+  </section>
+  {{end}}
+
   <section class="overview-card" aria-label="Message stream">
     <div class="section-heading">
       <h3>Message stream</h3>

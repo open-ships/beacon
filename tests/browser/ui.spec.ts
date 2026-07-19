@@ -88,6 +88,8 @@ test('MCP reference is available from the header and stays local', async ({ page
   await expect(page.getByText('.vscode/mcp.json', { exact: true })).toBeVisible();
   await expect(page.getByText('/mcp', { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('table').getByText('get_delivery_statistics', { exact: true })).toBeVisible();
+  await expect(page.getByRole('table').getByText('get_source_metrics', { exact: true })).toBeVisible();
+  await expect(page.getByRole('table').getByText('commit_source_traffic_baseline', { exact: true })).toBeVisible();
   await expect(page.getByText('offline ready', { exact: true })).toBeVisible();
   expect([...requestedOrigins]).toEqual(['http://127.0.0.1:32112']);
 });

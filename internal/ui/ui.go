@@ -151,6 +151,8 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 	mux.HandleFunc("GET /ui/sources/{id}", redirectToTrailingSlash)
 	mux.HandleFunc("GET /ui/sources/{id}/{$}", handleSourceOverviewPage(svc, reg, statuses, assetVersion, log))
 	mux.HandleFunc("GET /ui/frag/sources/{id}/overview", handleSourceOverviewFrag(svc, reg, statuses, log))
+	mux.HandleFunc("POST /ui/sources/{id}/traffic-baseline", handleSourceTrafficBaselineCommit(svc, reg, statuses, log))
+	mux.HandleFunc("POST /ui/sources/{id}/traffic-baseline/clear", handleSourceTrafficBaselineClear(svc, reg, statuses, log))
 	mux.HandleFunc("GET /ui/frag/source-type-fields", handleSourceTypeFieldsFrag(log))
 	mux.HandleFunc("POST /ui/sources", handleSourceCreate(svc, log))
 	mux.HandleFunc("POST /ui/sources/{id}", handleSourceUpdate(svc, log))

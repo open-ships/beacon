@@ -20,6 +20,20 @@ Work from the source outward:
    everything, or no connector wired to this source at all). If it's flat
    at zero, nothing is reaching beacon from the interface.
 
+For one missing sensor or PGN on an otherwise busy bus, open that source's
+overview and check **PGN traffic**. Gap rows are sorted first and show last-seen
+age versus the stream's learned period. The equivalent Prometheus signal is
+`beacon_source_pgn_gap_active`; agents can query the same store with the MCP
+`get_source_metrics` tool.
+
+After the source has run under normal conditions, use **Approve current
+traffic** to save the observed senders, PGNs, rates, payload shapes, decode
+metadata, addressing, and field ranges as the expected baseline. The overview
+will then surface a PGN that never returns after startup, frequency drift, new
+payload lengths or destinations, Device NAME/address changes, and values outside
+the approved range. Baselines can also be managed with the MCP
+`commit_source_traffic_baseline` and `clear_source_traffic_baseline` tools.
+
 ## CAN write failures
 
 A `socketcan`/`usbcan` sink confirms every push; on failure the connector

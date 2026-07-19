@@ -635,6 +635,164 @@ code {
   min-width: 920px;
 }
 
+.source-metrics-heading {
+  align-items: start;
+}
+
+.source-baseline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.source-metrics-heading > div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.source-metrics-heading p {
+  margin: 0;
+  color: #666;
+  font-size: 0.84rem;
+}
+
+.source-metrics-table {
+  min-width: 1280px;
+}
+
+.source-metrics-table td {
+  vertical-align: top;
+}
+
+.source-stream-gap td {
+  background: rgba(180, 35, 24, 0.055);
+}
+
+.source-stream-anomaly td {
+  background: rgba(166, 95, 0, 0.06);
+}
+
+.source-stream-changed td,
+.source-stream-awaiting td {
+  background: rgba(166, 95, 0, 0.04);
+}
+
+.source-stream-missing td {
+  background: rgba(180, 35, 24, 0.075);
+}
+
+.source-gap-text {
+  color: var(--error);
+  font-weight: 800;
+}
+
+.source-anomaly-note {
+  display: block;
+  max-width: 11rem;
+  margin-top: 0.35rem;
+  overflow: hidden;
+  color: var(--warning);
+  font-size: 0.75rem;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-baseline-state {
+  display: block;
+  margin-top: 0.32rem;
+  color: #666;
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.source-values {
+  min-width: 19rem;
+}
+
+.source-values summary {
+  color: var(--accent-dark);
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.source-value-list {
+  display: grid;
+  gap: 0.55rem;
+  width: min(42rem, 70vw);
+  margin-top: 0.65rem;
+}
+
+.source-value-list h4 {
+  margin: 0.65rem 0 0;
+  color: var(--black);
+  font-size: 0.86rem;
+}
+
+.source-raw-summary {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.3rem 0.7rem;
+  margin: 0;
+}
+
+.source-raw-summary dt {
+  color: #666;
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.source-raw-summary dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.source-byte-table {
+  min-width: 640px;
+  font-size: 0.78rem;
+}
+
+.source-fingerprint-list,
+.source-raw-samples {
+  color: #555;
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+.source-raw-samples {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.source-raw-samples div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.source-event-table {
+  min-width: 900px;
+}
+
+.source-value-row {
+  display: grid;
+  gap: 0.15rem;
+  border-left: 3px solid var(--border);
+  padding-left: 0.55rem;
+}
+
+.source-value-row > span,
+.source-value-row > small {
+  color: #666;
+  line-height: 1.35;
+}
+
+.source-value-anomaly {
+  border-left-color: var(--warning);
+}
+
 .event-table td:last-child code {
   white-space: normal;
 }
