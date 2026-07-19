@@ -31,6 +31,28 @@ func TestValidateOK(t *testing.T) {
 	}
 }
 
+func TestTransparentBridgeValidation(t *testing.T) {
+	cfg := validConfig()
+	cfg.Connectors[0].SinkID = "can2"
+	cfg.Connectors[0].Mode = BridgeTransparent
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid transparent bridge rejected: %v", err)
+	}
+
+	cfg.Sinks[1].Interface = "can0"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("same-interface transparent loop accepted")
+	}
+}
+
+func TestTransparentBridgeRequiresSocketCANSink(t *testing.T) {
+	cfg := validConfig()
+	cfg.Connectors[0].Mode = BridgeTransparent
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("transparent bridge to SSE accepted")
+	}
+}
+
 // A file sink with zero MaxFileBytes/MaxFiles (meaning "use defaults") must
 // validate cleanly — zero is not the same as negative.
 func TestValidateFileSinkOK(t *testing.T) {

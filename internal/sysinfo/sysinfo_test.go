@@ -70,6 +70,33 @@ func TestDiscoverCANMissingRoot(t *testing.T) {
 	}
 }
 
+func TestDiscoverCANDetailsCombinesSysfsAndIP(t *testing.T) {
+	root := t.TempDir()
+	writeIface(t, root, "can0", "280")
+	if err := os.WriteFile(filepath.Join(root, "can0", "operstate"), []byte("up\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stats := filepath.Join(root, "can0", "statistics")
+	if err := os.MkdirAll(stats, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"rx_packets": "12", "tx_packets": "4", "rx_errors": "2", "tx_errors": "1"} {
+		if err := os.WriteFile(filepath.Join(stats, name), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	withRoots(t, root, "", "linux")
+	original := runIP
+	runIP = func(string) ([]byte, error) {
+		return []byte(`[{"linkinfo":{"info_data":{"state":"ERROR-ACTIVE","restart_ms":100,"bittiming":{"bitrate":250000}}}}]`), nil
+	}
+	t.Cleanup(func() { runIP = original })
+	got := DiscoverCANDetails()
+	if len(got) != 1 || got[0].OperationalState != "up" || got[0].CANState != "ERROR-ACTIVE" || got[0].Bitrate != 250000 || got[0].RXPackets != 12 || got[0].TXErrors != 1 {
+		t.Fatalf("details = %+v", got)
+	}
+}
+
 func TestDiscoverSerialGlobsKnownPatterns(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"ttyUSB0", "ttyACM0", "tty.usbserial-A1", "tty.usbmodem14201", "ttyS0", "randomfile"} {

@@ -507,8 +507,13 @@ func (s *Supervisor) Statuses() []Status {
 		}
 		out = append(out, st)
 	}
-	for id := range s.connectors {
-		out = append(out, Status{Kind: "connector", ID: id, State: "up"})
+	for id, r := range s.connectors {
+		state, err := r.c.State()
+		st := Status{Kind: "connector", ID: id, State: state}
+		if err != nil {
+			st.Err = err.Error()
+		}
+		out = append(out, st)
 	}
 	out = append(out, s.errored...)
 	return out

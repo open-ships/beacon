@@ -48,13 +48,38 @@ func (c *Chain) Match(e *msg.Envelope) (bool, error) {
 	if len(c.progs) == 0 {
 		return true, nil
 	}
+	physical := make(map[string]any, len(e.Physical))
+	for name, field := range e.Physical {
+		physical[name] = map[string]any{
+			"value": field.Value, "unit": field.Unit,
+			"physical_quantity": field.PhysicalQuantity,
+		}
+	}
+	deviceName := uint64(0)
+	if e.DeviceName != nil {
+		deviceName = *e.DeviceName
+	}
+	manufacturer := uint16(0)
+	if e.ManufacturerCode != nil {
+		manufacturer = *e.ManufacturerCode
+	}
 	in := map[string]any{"msg": map[string]any{
-		"pgn":       int64(e.PGN),
-		"source":    int64(e.Source),
-		"dest":      int64(e.Dest),
-		"priority":  int64(e.Priority),
-		"timestamp": e.Timestamp.Format(time.RFC3339Nano),
-		"payload":   e.PayloadMap(),
+		"pgn":               int64(e.PGN),
+		"source":            int64(e.Source),
+		"dest":              int64(e.Dest),
+		"priority":          int64(e.Priority),
+		"timestamp":         e.Timestamp.Format(time.RFC3339Nano),
+		"payload":           e.PayloadMap(),
+		"observed_at":       e.ObservedAt.Format(time.RFC3339Nano),
+		"ingress":           e.Ingress,
+		"origin_ingress":    e.OriginIngress,
+		"device_name":       deviceName,
+		"device_name_hex":   e.DeviceNameHex,
+		"pgn_name":          e.PGNName,
+		"variant":           e.Variant,
+		"manufacturer_code": int64(manufacturer),
+		"decode_status":     e.Decode.Status,
+		"physical":          physical,
 	}}
 	for i, prg := range c.progs {
 		out, _, err := prg.Eval(in)

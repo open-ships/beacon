@@ -4,31 +4,19 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 	"sync"
 
-	"github.com/open-ships/n2k/pgn"
+	"github.com/brutella/can"
 
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/msg"
+	"github.com/open-ships/beacon/internal/n2kwire"
 )
-
-// maxFastPacketPayload is the largest payload the NMEA 2000 fast-packet
-// protocol can carry: 6 bytes in frame 0 plus 31 continuation frames of 7
-// bytes each (the frame counter is 5 bits, so at most 32 frames per
-// sequence). Mirrors n2k's internal/framer.maxFastPacketPayload.
-const maxFastPacketPayload = 6 + 31*7
-
-// fpKey identifies one fast-packet stream. NMEA 2000 multiplexes concurrent
-// fast-packet transmissions by (PGN, source address); the sequence counter
-// in the frame header only needs to be unique within a stream.
-type fpKey struct {
-	pgn    uint32
-	source uint8
-}
 
 // canFrame is one 8-byte CAN data frame with its 29-bit extended ID, the
 // unit the candump format writes one text line per.
@@ -51,12 +39,12 @@ type fileSink struct {
 	maxFiles     int
 	log          *slog.Logger
 
-	mu      sync.Mutex
-	f       *os.File
-	bw      *bufio.Writer
-	size    int64
-	lastErr error
-	fpSeq   map[fpKey]uint8
+	mu       sync.Mutex
+	f        *os.File
+	bw       *bufio.Writer
+	size     int64
+	lastErr  error
+	fragment *n2kwire.Fragmenter
 }
 
 func newFileSink(cfg model.Sink, log *slog.Logger) (Runtime, error) {
@@ -95,11 +83,12 @@ func newFileSink(cfg model.Sink, log *slog.Logger) (Runtime, error) {
 		id: cfg.ID, format: cfg.Format, path: cfg.FilePath,
 		maxFileBytes: maxBytes, maxFiles: maxFiles, log: log,
 		f: f, bw: bufio.NewWriter(f), size: info.Size(),
-		fpSeq: map[fpKey]uint8{},
+		fragment: n2kwire.NewFragmenter(),
 	}, nil
 }
 
-func (s *fileSink) ID() string { return s.id }
+func (s *fileSink) ID() string                   { return s.id }
+func (s *fileSink) DeliveryClass() DeliveryClass { return DeliveryConfirmed }
 
 func (s *fileSink) State() (string, error) {
 	s.mu.Lock()
@@ -208,7 +197,7 @@ func (s *fileSink) encodeCANDump(e *msg.Envelope) ([]byte, error) {
 	usec := e.Timestamp.Nanosecond() / 1000
 	var buf strings.Builder
 	for _, fr := range frames {
-		fmt.Fprintf(&buf, "(%d.%06d) %s %08X#%X\n", sec, usec, e.ConnectorID, fr.id, fr.data)
+		fmt.Fprintf(&buf, "(%d.%06d) %s %08X#%X\n", sec, usec, e.ConnectorID, fr.ID, fr.Data[:fr.Length])
 	}
 	return []byte(buf.String()), nil
 }
@@ -217,32 +206,16 @@ func (s *fileSink) encodeCANDump(e *msg.Envelope) ([]byte, error) {
 // Single frame if the payload fits in 8 bytes AND the PGN is not
 // fast-packet; otherwise fast-packet framing. Must be called with s.mu held
 // (it consumes the per-stream fast-packet sequence counter).
-func (s *fileSink) fragmentCAN(e *msg.Envelope) ([]canFrame, error) {
-	canID := buildCANID(e.Priority, e.PGN, e.Source, e.Dest)
-	payload := e.Raw
-
-	if len(payload) <= 8 && !isFastPacketPGN(e.PGN, len(payload)) {
-		return []canFrame{{id: canID, data: padTo8(payload)}}, nil
+func (s *fileSink) fragmentCAN(e *msg.Envelope) ([]can.Frame, error) {
+	frames, err := s.fragment.Frames(e)
+	if errors.Is(err, n2kwire.ErrUnsupportedTransport) {
+		return nil, fmt.Errorf("%v: %w", err, ErrSkip)
 	}
-	if len(payload) > maxFastPacketPayload {
-		// Permanently oversized for the fast-packet protocol: wrap ErrSkip
-		// (so pushAll advances past it) while keeping the reason loggable.
-		return nil, fmt.Errorf("payload %d bytes exceeds fast-packet max %d: %w",
-			len(payload), maxFastPacketPayload, ErrSkip)
-	}
-
-	key := fpKey{pgn: e.PGN, source: e.Source}
-	seqID := s.fpSeq[key]
-	s.fpSeq[key] = (seqID + 1) % 8
-	return frameFastPacket(canID, payload, seqID), nil
+	return frames, err
 }
 
-// buildCANID constructs a 29-bit extended CAN ID from NMEA 2000 parameters,
-// matching n2k's internal/framer.BuildCANID bit layout (cross-checked
-// against n2k/internal/framer/canid.go and canid_test.go; verified against
-// the known-good vector in internal/bus/busfake.VesselHeadingFrame: priority
-// 2, PGN 127250, source 12, dest 255 -> 0x09F1120C). That function lives in
-// an internal package n2k does not export, so it is reimplemented here.
+// buildCANID is retained as a package-local test seam; n2kwire owns the
+// production framing implementation shared by candump and transparent sinks.
 //
 //	Bits 28-26: Priority
 //	Bits 25-8:  PGN (already encodes Data Page + PDU Format + PDU
@@ -252,89 +225,18 @@ func (s *fileSink) fragmentCAN(e *msg.Envelope) ([]canFrame, error) {
 // For PDU1 (addressed, PDU Format < 240) PGNs the PGN's low byte is 0 and
 // the destination address is OR'd into that byte (bits 15-8).
 func buildCANID(priority uint8, pgnNum uint32, source, dest uint8) uint32 {
-	id := uint32(priority&0x07) << 26
-	id |= pgnNum << 8
-	pduFormat := uint8((pgnNum >> 8) & 0xFF)
-	if pduFormat < 240 {
-		id |= uint32(dest) << 8
-	}
-	id |= uint32(source)
-	return id
+	return n2kwire.BuildCANID(priority, pgnNum, source, dest)
 }
 
-// isFastPacketPGN reports whether pgnNum uses the NMEA 2000 fast-packet
-// protocol. The n2k pgn package exports per-PGN metadata for exactly this
-// (pgn.PgnInfoLookup[pgn][*].Fast) and is used here as the source of truth.
-// Scanning for ANY Fast variant relies on all variants of a PGN agreeing on
-// Fast — an upstream-data invariant, empirically true at the pinned n2k
-// version (54 multi-entry PGNs, 0 disagreements).
-//
-// Caveat: PGNs the manifest has no entry for at all (proprietary/uncataloged
-// PGNs beacon only sees as pgn.UnknownPGN) fall back to a size heuristic:
-// payload > 8 bytes implies fast-packet. This means a <=8-byte payload on an
-// unmanifested fast-packet PGN logs as a plain single frame instead of a
-// (degenerate, one-frame) fast-packet sequence — a caveat, not a bug, since
-// there is no metadata available to do better.
-func isFastPacketPGN(pgnNum uint32, payloadLen int) bool {
-	if infos, ok := pgn.PgnInfoLookup[pgnNum]; ok {
-		for _, info := range infos {
-			if info.Fast {
-				return true
-			}
-		}
-		return false
-	}
-	return payloadLen > 8
-}
-
-// padTo8 returns payload copied into an 8-byte buffer, 0xFF-padded — the
-// NMEA 2000 convention for unused single-frame bytes (mirrors n2k's
-// framer.FrameSingle).
-func padTo8(payload []byte) []byte {
-	data := make([]byte, 8)
-	for i := range data {
-		data[i] = 0xFF
-	}
-	copy(data, payload)
-	return data
-}
-
-// frameFastPacket splits payload across NMEA 2000 fast-packet frames,
-// mirroring n2k's framer.FrameFastPacket exactly (verified against
-// n2k/internal/framer/framer_test.go's frame-layout vectors):
+// frameFastPacket adapts n2kwire frames to the historical test shape.
 //
 //	Frame 0:            data[0] = seqID<<5 | 0, data[1] = len(payload), data[2:8] = payload[0:6]
 //	Continuation N>=1:  data[0] = seqID<<5 | N,  data[1:8] = next 7 bytes of payload
-//
-// The last frame is 0xFF-padded. Caller (fragmentCAN) already bounds payload
-// to maxFastPacketPayload (223 bytes -> at most 32 frames, frame numbers
-// 0-31 fit the 5-bit counter).
 func frameFastPacket(canID uint32, payload []byte, seqID uint8) []canFrame {
-	total := len(payload)
-
-	d0 := make([]byte, 8)
-	for i := range d0 {
-		d0[i] = 0xFF
-	}
-	d0[0] = (seqID & 0x07) << 5
-	d0[1] = uint8(total)
-	n := min(total, 6)
-	copy(d0[2:2+n], payload[:n])
-	frames := []canFrame{{id: canID, data: d0}}
-
-	offset := n
-	frameNum := uint8(1)
-	for offset < total {
-		d := make([]byte, 8)
-		for i := range d {
-			d[i] = 0xFF
-		}
-		d[0] = ((seqID & 0x07) << 5) | (frameNum & 0x1F)
-		m := min(total-offset, 7)
-		copy(d[1:1+m], payload[offset:offset+m])
-		frames = append(frames, canFrame{id: canID, data: d})
-		offset += m
-		frameNum++
+	wireFrames := n2kwire.FrameFastPacket(canID, payload, seqID)
+	frames := make([]canFrame, 0, len(wireFrames))
+	for _, frame := range wireFrames {
+		frames = append(frames, canFrame{id: frame.ID, data: append([]byte(nil), frame.Data[:frame.Length]...)})
 	}
 	return frames
 }
@@ -389,6 +291,6 @@ func (s *fileSink) rotate() error {
 	s.size = 0
 	// Fresh file, fresh streams: any in-flight fast-packet sequence numbers
 	// from before rotation are meaningless in the new file.
-	s.fpSeq = map[fpKey]uint8{}
+	s.fragment = n2kwire.NewFragmenter()
 	return rotErr
 }

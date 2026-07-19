@@ -13,6 +13,7 @@ import (
 	"github.com/open-ships/beacon/internal/metrics"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/msg"
+	"github.com/open-ships/beacon/internal/n2kwire"
 	"github.com/open-ships/beacon/internal/queue"
 	"github.com/open-ships/beacon/internal/sink"
 	"github.com/open-ships/beacon/internal/source"
@@ -47,19 +48,62 @@ type Connector struct {
 	// failure of a given entry's retry sequence logs at Warn, subsequent
 	// retries of the same entry stay at Debug. Touched only from the single
 	// deliver goroutine, so it needs no synchronization.
-	lastWarnSeq int64
+	lastWarnSeq   int64
+	deliveryClass sink.DeliveryClass
+
+	stateMu sync.Mutex
+	issues  map[string]error
 
 	stopOnce sync.Once
 }
 
 func New(cfg model.Connector, src source.Runtime, snk sink.Runtime, q queue.Queue,
 	chain *filter.Chain, log *slog.Logger, met *metrics.Set, st *stats.Registry) *Connector {
+	deliveryClass := sink.DeliveryClassOf(snk)
+	if cfg.EffectiveMode() == model.BridgeObserve {
+		deliveryClass = sink.DeliveryObserved
+	}
 	return &Connector{cfg: cfg, src: src, snk: snk, q: q, chain: chain,
 		log: log.With("connector", cfg.ID), met: met, st: st, notify: make(chan struct{}, 1),
-		lastWarnSeq: -1}
+		lastWarnSeq: -1, deliveryClass: deliveryClass, issues: map[string]error{}}
 }
 
 func (c *Connector) ID() string { return c.cfg.ID }
+
+func (c *Connector) setIssue(part string, err error) {
+	c.stateMu.Lock()
+	if err == nil {
+		delete(c.issues, part)
+	} else {
+		c.issues[part] = err
+	}
+	state, current := "up", error(nil)
+	for _, issue := range c.issues {
+		state, current = "degraded", issue
+		break
+	}
+	c.stateMu.Unlock()
+	c.st.SetRuntime(c.cfg.ID, string(c.deliveryClass), state, current)
+}
+
+func (c *Connector) State() (string, error) {
+	c.stateMu.Lock()
+	for _, issue := range c.issues {
+		c.stateMu.Unlock()
+		return "degraded", issue
+	}
+	c.stateMu.Unlock()
+	if c.cfg.EffectiveMode() == model.BridgeObserve {
+		c.st.SetRuntime(c.cfg.ID, string(c.deliveryClass), "up", nil)
+		return "up", nil
+	}
+	if state, err := c.snk.State(); state != "up" || err != nil {
+		c.st.SetRuntime(c.cfg.ID, string(c.deliveryClass), state, err)
+		return state, err
+	}
+	c.st.SetRuntime(c.cfg.ID, string(c.deliveryClass), "up", nil)
+	return "up", nil
+}
 
 func (c *Connector) Start(ctx context.Context) {
 	runCtx, cancel := context.WithCancel(ctx)
@@ -87,6 +131,7 @@ func (c *Connector) Start(ctx context.Context) {
 	// Touch registers presence and zeroes the gauges without adding a
 	// history sample; only prune's periodic measurements feed the sparkline.
 	c.st.Touch(c.cfg.ID)
+	c.st.SetRuntime(c.cfg.ID, string(c.deliveryClass), "up", nil)
 
 	// Subscribe synchronously so no envelopes published right after Start
 	// returns can race the intake goroutine's startup and be dropped.
@@ -127,41 +172,72 @@ func (c *Connector) intake(ctx context.Context, in <-chan *msg.Envelope, unsub f
 	flushTimer := time.NewTicker(batchInterval)
 	defer flushTimer.Stop()
 
-	flush := func() {
+	flush := func(flushCtx context.Context) bool {
 		if len(batch) == 0 {
-			return
+			return true
 		}
-		// Append with a fresh short-timeout context, not the run ctx: on
-		// Stop the run ctx is already cancelled and the trailing partial
-		// batch must still be persisted — losing it would be silent data
-		// loss on every graceful shutdown.
-		appendCtx, cancel := context.WithTimeout(context.Background(), appendTimeout)
-		defer cancel()
-		if err := c.q.Append(appendCtx, batch); err != nil {
-			c.log.Error("queue append failed", "err", err, "dropped", len(batch))
-		} else {
-			c.wake()
+		backoff := 100 * time.Millisecond
+		for {
+			appendCtx, cancel := context.WithTimeout(flushCtx, appendTimeout)
+			err := c.q.Append(appendCtx, batch)
+			cancel()
+			if err == nil {
+				c.setIssue("intake", nil)
+				c.st.RecordStage(c.cfg.ID, "queued", int64(len(batch)))
+				c.met.ConnectorMessages(context.Background(), c.cfg.ID, "queued", int64(len(batch)))
+				batch = batch[:0]
+				c.wake()
+				return true
+			}
+			c.setIssue("intake", err)
+			c.st.RecordStage(c.cfg.ID, "append_error", 1)
+			c.met.ConnectorMessages(context.Background(), c.cfg.ID, "append_error", 1)
+			c.log.Warn("queue append failed; retrying", "err", err, "pending_batch", len(batch), "backoff", backoff)
+			select {
+			case <-flushCtx.Done():
+				return false
+			case <-time.After(backoff):
+			}
+			if backoff < maxBackoff {
+				backoff *= 2
+			}
 		}
-		batch = batch[:0]
 	}
-	defer flush()
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), appendTimeout)
+		defer cancel()
+		if !flush(shutdownCtx) && len(batch) > 0 {
+			c.st.RecordStage(c.cfg.ID, "intake_loss", int64(len(batch)))
+			c.met.ConnectorMessages(context.Background(), c.cfg.ID, "intake_loss", int64(len(batch)))
+			c.log.Error("queue append failed during shutdown", "lost", len(batch), "err", shutdownCtx.Err())
+		}
+	}()
 
 	ingest := func(e *msg.Envelope) {
 		c.st.RecordConnectorEvent(c.cfg.ID, "received", e)
 		c.met.ConnectorMessages(ctx, c.cfg.ID, "received", 1)
+		c.st.RecordStage(c.cfg.ID, "received", 1)
+		if c.cfg.EffectiveMode() == model.BridgeTransparent && !c.cfg.ForwardManagement && n2kwire.IsManagementPGN(e.PGN) {
+			c.met.ConnectorMessages(ctx, c.cfg.ID, "management_filtered", 1)
+			c.st.RecordStage(c.cfg.ID, "management_filtered", 1)
+			return
+		}
 		match, err := c.chain.Match(e)
 		if err != nil {
 			c.met.ConnectorMessages(ctx, c.cfg.ID, "filter_error", 1)
+			c.st.RecordStage(c.cfg.ID, "filter_error", 1)
 			c.log.Debug("filter eval error", "err", err)
 			return
 		}
 		if !match {
+			c.met.ConnectorMessages(ctx, c.cfg.ID, "filtered", 1)
+			c.st.RecordStage(c.cfg.ID, "filtered", 1)
 			return
 		}
 		c.met.ConnectorMessages(ctx, c.cfg.ID, "matched", 1)
 		batch = append(batch, e)
 		if len(batch) >= batchSize {
-			flush()
+			_ = flush(ctx)
 		}
 	}
 
@@ -183,7 +259,7 @@ func (c *Connector) intake(ctx context.Context, in <-chan *msg.Envelope, unsub f
 				}
 			}
 		case <-flushTimer.C:
-			flush()
+			_ = flush(ctx)
 		case e, ok := <-in:
 			if !ok {
 				return
@@ -198,6 +274,9 @@ func (c *Connector) deliver(ctx context.Context) {
 	cursor, err := c.q.Cursor(ctx)
 	if err != nil && ctx.Err() == nil {
 		c.log.Error("read checkpoint", "err", err)
+		c.setIssue("checkpoint", err)
+	} else {
+		c.setIssue("checkpoint", nil)
 	}
 	lastAck := time.Now()
 	dirty := false
@@ -212,6 +291,10 @@ func (c *Connector) deliver(ctx context.Context) {
 		if err := c.q.Ack(context.Background(), cursor); err == nil {
 			dirty = false
 			lastAck = time.Now()
+			c.setIssue("checkpoint", nil)
+		} else {
+			c.setIssue("checkpoint", err)
+			c.st.RecordStage(c.cfg.ID, "ack_error", 1)
 		}
 	}
 	defer ack(true)
@@ -228,11 +311,40 @@ func (c *Connector) deliver(ctx context.Context) {
 			if err != nil {
 				if ctx.Err() == nil {
 					c.log.Error("queue read failed", "err", err)
+					c.setIssue("queue_read", err)
+					c.st.RecordStage(c.cfg.ID, "read_error", 1)
 				}
 				break
 			}
+			c.setIssue("queue_read", nil)
 			if len(entries) == 0 {
 				break
+			}
+			if c.cfg.EffectiveMode() == model.BridgeObserve {
+				cursor = entries[len(entries)-1].Seq
+				dirty = true
+				for _, e := range entries {
+					c.met.ConnectorMessages(ctx, c.cfg.ID, "observed", 1)
+					c.st.Record(c.cfg.ID, 1, int64(e.Env.SizeBytes()))
+					c.st.RecordStage(c.cfg.ID, "observed", 1)
+					c.st.RecordConnectorEvent(c.cfg.ID, "observed", e.Env)
+				}
+				ack(false)
+				continue
+			}
+			if c.cfg.EffectiveMode() == model.BridgeTransparent {
+				wire, ok := c.snk.(sink.WirePusher)
+				if !ok {
+					err := errors.New("transparent connector requires a wire-capable sink")
+					c.setIssue("delivery", err)
+					c.log.Error(err.Error())
+					return
+				}
+				if !c.pushWireAll(ctx, wire, entries, &cursor, &dirty) {
+					return
+				}
+				ack(false)
+				continue
 			}
 			switch snk := c.snk.(type) {
 			case sink.Pusher:
@@ -244,18 +356,35 @@ func (c *Connector) deliver(ctx context.Context) {
 					return // ctx cancelled mid-retry
 				}
 			case sink.Broadcaster:
-				snk.Broadcast(entries)
+				report := snk.Broadcast(entries)
 				cursor = entries[len(entries)-1].Seq
 				dirty = true
-				for _, e := range entries {
-					c.met.ConnectorMessages(ctx, c.cfg.ID, "delivered", 1)
-					c.met.ConnectorBytes(ctx, c.cfg.ID, int64(e.Env.SizeBytes()))
-					c.st.Record(c.cfg.ID, 1, int64(e.Env.SizeBytes()))
-					c.st.RecordSink(c.cfg.SinkID, c.cfg.ID, e.Env)
-					c.st.RecordConnectorEvent(c.cfg.ID, "delivered", e.Env)
+				acceptedStage := "dispatched"
+				if c.deliveryClass == sink.DeliveryResumable {
+					acceptedStage = "available"
 				}
+				for i, e := range entries {
+					stage := "dropped"
+					if i < len(report.Accepted) && report.Accepted[i] {
+						stage = acceptedStage
+					}
+					c.met.ConnectorMessages(ctx, c.cfg.ID, stage, 1)
+					c.st.RecordStage(c.cfg.ID, stage, 1)
+					c.st.RecordConnectorEvent(c.cfg.ID, stage, e.Env)
+					if stage != "dropped" {
+						c.met.ConnectorBytes(ctx, c.cfg.ID, int64(e.Env.SizeBytes()))
+						c.st.Record(c.cfg.ID, 1, int64(e.Env.SizeBytes()))
+						c.st.RecordSink(c.cfg.SinkID, c.cfg.ID, e.Env)
+					}
+				}
+				if report.RecipientDrops > 0 {
+					c.st.RecordStage(c.cfg.ID, "recipient_drop", report.RecipientDrops)
+				}
+				c.setIssue("delivery", report.Err)
 			default:
-				c.log.Error("sink implements neither Pusher nor Broadcaster")
+				err := errors.New("sink implements neither Pusher nor Broadcaster")
+				c.setIssue("delivery", err)
+				c.log.Error(err.Error())
 				return
 			}
 			ack(false)
@@ -267,21 +396,35 @@ func (c *Connector) deliver(ctx context.Context) {
 // cursor and dirty advance per delivered entry, not per batch, so partial
 // progress survives a cancellation mid-retry via the caller's deferred ack.
 func (c *Connector) pushAll(ctx context.Context, p sink.Pusher, entries []queue.Entry, cursor *int64, dirty *bool) bool {
+	return c.pushEntries(ctx, p.Push, "confirmed", entries, cursor, dirty)
+}
+
+func (c *Connector) pushWireAll(ctx context.Context, p sink.WirePusher, entries []queue.Entry, cursor *int64, dirty *bool) bool {
+	return c.pushEntries(ctx, p.PushWire, "forwarded", entries, cursor, dirty)
+}
+
+func (c *Connector) pushEntries(ctx context.Context, push func(context.Context, *msg.Envelope) error, successStage string, entries []queue.Entry, cursor *int64, dirty *bool) bool {
 	for _, e := range entries {
 		backoff := 250 * time.Millisecond
 		for {
-			err := p.Push(ctx, e.Env)
+			err := push(ctx, e.Env)
 			if err == nil || errors.Is(err, sink.ErrSkip) {
 				if errors.Is(err, sink.ErrSkip) {
 					c.log.Debug("sink skipped message", "pgn", e.Env.PGN)
 					c.met.ConnectorMessages(ctx, c.cfg.ID, "skipped", 1)
+					c.st.RecordStage(c.cfg.ID, "skipped", 1)
 				} else {
+					c.met.ConnectorMessages(ctx, c.cfg.ID, successStage, 1)
+					// Keep the original metric stage as a compatibility alias;
+					// route-runtime consumers should prefer "confirmed".
 					c.met.ConnectorMessages(ctx, c.cfg.ID, "delivered", 1)
+					c.met.ConnectorBytes(ctx, c.cfg.ID, int64(e.Env.SizeBytes()))
 					c.st.RecordSink(c.cfg.SinkID, c.cfg.ID, e.Env)
-					c.st.RecordConnectorEvent(c.cfg.ID, "delivered", e.Env)
+					c.st.RecordConnectorEvent(c.cfg.ID, successStage, e.Env)
+					c.st.RecordStage(c.cfg.ID, successStage, 1)
+					c.st.Record(c.cfg.ID, 1, int64(e.Env.SizeBytes()))
 				}
-				c.met.ConnectorBytes(ctx, c.cfg.ID, int64(e.Env.SizeBytes()))
-				c.st.Record(c.cfg.ID, 1, int64(e.Env.SizeBytes()))
+				c.setIssue("delivery", nil)
 				*cursor = e.Seq
 				*dirty = true
 				break
@@ -296,6 +439,9 @@ func (c *Connector) pushAll(ctx context.Context, p sink.Pusher, entries []queue.
 			} else {
 				c.log.Debug("push failed; retrying", "err", err, "backoff", backoff)
 			}
+			c.setIssue("delivery", err)
+			c.st.RecordStage(c.cfg.ID, "retry", 1)
+			c.met.ConnectorMessages(ctx, c.cfg.ID, "retry", 1)
 			select {
 			case <-ctx.Done():
 				return false
@@ -320,7 +466,11 @@ func (c *Connector) prune(ctx context.Context) {
 	refreshStats := func() {
 		if st, err := c.q.Stats(ctx); err == nil {
 			c.met.SetQueueDepth(c.cfg.ID, st.Depth, st.Bytes)
-			c.st.SetQueue(c.cfg.ID, st.Depth, st.Bytes)
+			c.st.SetQueueStats(c.cfg.ID, st)
+			c.setIssue("queue_stats", nil)
+		} else if ctx.Err() == nil {
+			c.setIssue("queue_stats", err)
+			c.st.RecordStage(c.cfg.ID, "stats_error", 1)
 		}
 	}
 	refreshStats()
@@ -331,8 +481,19 @@ func (c *Connector) prune(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if n, err := c.q.Prune(ctx); err == nil && n > 0 {
-				c.met.ConnectorMessages(ctx, c.cfg.ID, "pruned", n)
+			if pruned, err := c.q.Prune(ctx); err == nil {
+				c.setIssue("prune", nil)
+				if pruned.Total > 0 {
+					c.met.ConnectorMessages(ctx, c.cfg.ID, "pruned", pruned.Total)
+					c.st.RecordStage(c.cfg.ID, "pruned", pruned.Total)
+				}
+				if pruned.Pending > 0 {
+					c.met.ConnectorMessages(ctx, c.cfg.ID, "pending_pruned", pruned.Pending)
+					c.st.RecordStage(c.cfg.ID, "pending_pruned", pruned.Pending)
+				}
+			} else {
+				c.setIssue("prune", err)
+				c.st.RecordStage(c.cfg.ID, "prune_error", 1)
 			}
 			refreshStats()
 		}

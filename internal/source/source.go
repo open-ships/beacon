@@ -53,11 +53,16 @@ type hub struct {
 	next int64
 
 	met *metrics.Set // may be nil; met's own methods no-op on a nil receiver
-	id  string       // source id, used as the drop counter's component label
+	reg *stats.Registry
+	id  string // source id, used as the drop counter's component label
 }
 
-func newHub(met *metrics.Set, id string) *hub {
-	return &hub{subs: map[int64]chan *msg.Envelope{}, met: met, id: id}
+func newHub(met *metrics.Set, id string, regs ...*stats.Registry) *hub {
+	var reg *stats.Registry
+	if len(regs) > 0 {
+		reg = regs[0]
+	}
+	return &hub{subs: map[int64]chan *msg.Envelope{}, met: met, reg: reg, id: id}
 }
 
 func (h *hub) subscribe(buf int) (<-chan *msg.Envelope, func()) {
@@ -90,6 +95,7 @@ func (h *hub) publish(e *msg.Envelope) {
 	}
 	if dropped > 0 {
 		h.met.SourceDrops(context.Background(), h.id, dropped)
+		h.reg.RecordSourceDrops(h.id, dropped)
 	}
 }
 
@@ -122,8 +128,8 @@ func newCANSource(ctx context.Context, cfg model.Source, mgr *bus.Manager, log *
 		return nil, err
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	s := &canSource{id: cfg.ID, handle: handle, hub: newHub(met, cfg.ID), cancel: cancel}
-	ch, unsub := handle.Subscribe(256)
+	s := &canSource{id: cfg.ID, handle: handle, hub: newHub(met, cfg.ID, reg), cancel: cancel}
+	ch, unsub := handle.SubscribeNamed(cfg.ID, 256)
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()

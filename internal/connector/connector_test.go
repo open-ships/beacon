@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -57,6 +58,24 @@ type pushSink struct {
 	got      []*msg.Envelope
 }
 
+type wireSink struct {
+	pushSink
+	wire []*msg.Envelope
+}
+
+func (w *wireSink) PushWire(_ context.Context, e *msg.Envelope) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.wire = append(w.wire, e)
+	return nil
+}
+
+func (w *wireSink) wireCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.wire)
+}
+
 func (p *pushSink) ID() string             { return "fake-push" }
 func (p *pushSink) Stop()                  {}
 func (p *pushSink) State() (string, error) { return "up", nil }
@@ -84,15 +103,22 @@ type bcastSink struct {
 	mu         sync.Mutex
 	got        []queue.Entry
 	registered map[string]sink.ReplayReader
+	reject     bool
+	err        error
 }
 
 func (b *bcastSink) ID() string             { return "fake-bcast" }
 func (b *bcastSink) Stop()                  {}
 func (b *bcastSink) State() (string, error) { return "up", nil }
-func (b *bcastSink) Broadcast(entries []queue.Entry) {
+func (b *bcastSink) Broadcast(entries []queue.Entry) sink.BroadcastReport {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.got = append(b.got, entries...)
+	accepted := make([]bool, len(entries))
+	for i := range accepted {
+		accepted[i] = !b.reject
+	}
+	return sink.BroadcastReport{Accepted: accepted, Err: b.err}
 }
 func (b *bcastSink) RegisterConnector(id string, r sink.ReplayReader) {
 	b.mu.Lock()
@@ -184,6 +210,104 @@ func TestFilterThenBroadcast(t *testing.T) {
 	waitFor(t, 3*time.Second, func() bool { return snk.count() == 2 }, "2 broadcasts")
 	if snk.registered["conn1"] == nil {
 		t.Fatal("connector did not register for replay")
+	}
+}
+
+func TestRejectedBroadcastIsReportedAsDropNotDelivery(t *testing.T) {
+	src := &fakeSource{}
+	snk := &bcastSink{reject: true, err: errors.New("no recipient accepted message")}
+	chain, _ := filter.Compile(nil)
+	reg := stats.NewRegistry()
+	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true,
+		Buffer: model.BufferLimits{MaxMessages: 1000}},
+		src, snk, testQueue(t), chain, slog.Default(), nil, reg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	defer c.Stop()
+
+	src.emit(env(127250))
+	waitFor(t, 3*time.Second, func() bool {
+		snap, _ := reg.Snapshot("conn1")
+		return snap.StageTotals["dropped"] == 1
+	}, "rejected broadcast accounting")
+	snap, _ := reg.Snapshot("conn1")
+	if snap.TotalMessages != 0 {
+		t.Fatalf("accepted messages = %d, want 0", snap.TotalMessages)
+	}
+	if state, err := c.State(); state != "degraded" || err == nil {
+		t.Fatalf("state = %q, err = %v; want degraded with cause", state, err)
+	}
+}
+
+func TestTransparentModeUsesWirePathAndPreservesUnknownEnvelope(t *testing.T) {
+	src := &fakeSource{}
+	snk := &wireSink{}
+	chain, _ := filter.Compile(nil)
+	reg := stats.NewRegistry()
+	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true,
+		Mode: model.BridgeTransparent, Buffer: model.BufferLimits{MaxMessages: 1000}},
+		src, snk, testQueue(t), chain, slog.Default(), nil, reg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	defer c.Stop()
+
+	e := env(130999)
+	e.Source = 42
+	e.Raw = []byte{1, 2, 3, 4, 5, 6, 7, 8, 9}
+	src.emit(e)
+	waitFor(t, 3*time.Second, func() bool { return snk.wireCount() == 1 }, "transparent wire forwarding")
+	if snk.wire[0].Source != 42 || !bytes.Equal(snk.wire[0].Raw, e.Raw) {
+		t.Fatalf("wire envelope changed: %+v", snk.wire[0])
+	}
+	snap, _ := reg.Snapshot("conn1")
+	if snap.StageTotals["forwarded"] != 1 {
+		t.Fatalf("stage totals = %+v", snap.StageTotals)
+	}
+}
+
+func TestTransparentModeFiltersManagementByDefault(t *testing.T) {
+	src := &fakeSource{}
+	snk := &wireSink{}
+	chain, _ := filter.Compile(nil)
+	reg := stats.NewRegistry()
+	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true,
+		Mode: model.BridgeTransparent, Buffer: model.BufferLimits{MaxMessages: 1000}},
+		src, snk, testQueue(t), chain, slog.Default(), nil, reg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	defer c.Stop()
+	src.emit(env(60928))
+	waitFor(t, time.Second, func() bool {
+		snap, _ := reg.Snapshot("conn1")
+		return snap.StageTotals["management_filtered"] == 1
+	}, "management policy count")
+	if snk.wireCount() != 0 {
+		t.Fatal("address claim was transparently forwarded")
+	}
+}
+
+func TestObserveModeNeverCallsSink(t *testing.T) {
+	src := &fakeSource{}
+	snk := &pushSink{}
+	chain, _ := filter.Compile(nil)
+	reg := stats.NewRegistry()
+	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true,
+		Mode: model.BridgeObserve, Buffer: model.BufferLimits{MaxMessages: 1000}},
+		src, snk, testQueue(t), chain, slog.Default(), nil, reg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	defer c.Stop()
+	src.emit(env(127250))
+	waitFor(t, 3*time.Second, func() bool {
+		snap, _ := reg.Snapshot("conn1")
+		return snap.StageTotals["observed"] == 1
+	}, "observe checkpoint")
+	if snk.count() != 0 {
+		t.Fatal("observe mode wrote to sink")
 	}
 }
 

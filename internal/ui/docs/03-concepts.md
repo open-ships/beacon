@@ -11,13 +11,24 @@
   `tcp_gateway` sink.
 - A **connector** is the only thing that actually moves data — it names
   exactly one source and one sink, an optional list of CEL filter
-  expressions (see the filters page), and its own durable buffer. A source
+  expressions (see the filters page), a bridge mode, and its own durable buffer. A source
   or sink with no connector referencing it does nothing.
 
 Multiple connectors can share the same source or the same sink (e.g. one
 CAN source feeding both an SSE connector for a browser dashboard and a
 socketcan connector mirroring onto a second bus), each with its own
 filters and its own buffer.
+
+## Bridge modes
+
+- **`semantic`** (default) decodes a message and writes it through Beacon's
+  claimed N2K client, so Beacon is the source device on the destination bus.
+- **`transparent`** preserves the envelope's original priority, PGN, source,
+  destination, and raw payload, including unknown PGNs. It currently requires
+  a SocketCAN sink, rejects same-interface loops, and blocks management PGNs
+  unless `forward_management` is explicitly enabled.
+- **`observe`** filters, retains, checkpoints, and inspects messages without
+  calling the configured sink.
 
 ## The envelope
 
@@ -34,8 +45,16 @@ object with this shape:
 | `dest` | integer | always | destination address (255 = broadcast) |
 | `priority` | integer | always | 0 (highest) to 7 (lowest) |
 | `timestamp` | string | always | RFC 3339 timestamp |
+| `observed_at` | string | always | when this Beacon ingress observed the message |
+| `ingress` / `origin_ingress` | string | when known | current and first-known ingress provenance |
+| `device_name` | integer | after an address claim is known | stable 64-bit ISO Device NAME; unlike `source`, it survives address changes |
+| `device_name_hex` | string | after an address claim is known | the same NAME as 16 uppercase hex digits, safe for JavaScript and database keys |
+| `pgn_name` / `variant` / `transport` | string | cataloged PGNs | catalog identity and N2K transport kind |
+| `manufacturer_code` | integer | proprietary PGNs | manufacturer discriminator decoded from the payload |
+| `decode` | object | always | `decoded` or `unknown`, plus catalog completeness/fallback/missing metadata |
+| `physical` | object | decoded numeric fields | unit-scaled values with unit, physical quantity, and catalog range; raw payload ticks remain unchanged |
 | `payload` | object or `null` | always | the decoded PGN fields, one JSON key per field, `null` for a PGN beacon doesn't know how to decode |
-| `raw` | string (base64) | usually | the CAN payload bytes: for an undecodable PGN, the original bytes as received; for a decoded PGN, the canonical re-encoding (omitted in the rare case re-encoding fails). Undecodable PGNs still carry these bytes here, but a CAN sink cannot write them back out (see Delivery guarantees below) — they're skipped by `socketcan`/`usbcan` sinks and delivered as-is to HTTP/TCP/MQTT sinks |
+| `raw` | string (base64) | usually | the assembled CAN payload bytes: original for an undecodable PGN and canonical re-encoding for a decoded PGN. Semantic CAN delivery skips an unknown decoder; transparent SocketCAN mode forwards it losslessly |
 
 `id` and `connector` are only populated once a message has passed through a
 connector's buffer — a freshly-decoded message from a source doesn't have
@@ -58,6 +77,14 @@ Any combination can be set; if none are set at all, `max_messages` defaults
 to 100000. Pruning runs periodically per connector, deleting whatever each
 configured limit says to drop; if more than one limit is set, all of them
 are enforced.
+
+`queue_depth` and `queue_bytes` mean **pending delivery after the connector
+checkpoint**. `retained_depth` and `retained_bytes` include acknowledged rows
+kept for replay. The metrics response also exposes checkpoint/tail, oldest
+pending time, configured storage headroom, delivery class, route state/error,
+drops, and per-stage totals. If retention pruning removes a message that was
+still pending delivery, `pending_pruned` records that loss separately from
+ordinary retained-history pruning.
 
 ## Replay
 
@@ -88,6 +115,13 @@ holds, ask for everything after sequence zero: `?after=<connector>:0`.
 ## Delivery guarantees
 
 Delivery guarantees differ by sink kind:
+
+- **Confirmed** routes advance after a successful CAN/file/raw-wire write.
+- **Resumable** SSE/WS routes advance after the entry is available through
+  their retained replay stream.
+- **Best-effort** TCP/MQTT routes advance after dispatch; downstream receipt
+  is unknown and is never labeled confirmed delivery.
+- **Observe-only** routes advance after local inspection without a sink write.
 
 - **CAN sinks** (`socketcan`, `usbcan`, and `tcp_gateway`, which transmits
   onto a remote bus through a Yacht Devices or Actisense TCP WiFi gateway

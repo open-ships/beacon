@@ -48,7 +48,8 @@ func newServeSink(cfg model.Sink, ds *DataServer, log *slog.Logger, met *metrics
 	return s, nil
 }
 
-func (s *serveSink) ID() string { return s.id }
+func (s *serveSink) ID() string                   { return s.id }
+func (s *serveSink) DeliveryClass() DeliveryClass { return DeliveryResumable }
 func (s *serveSink) State() (string, error) {
 	return "up", nil // route is registered; per-client failures are per-client
 }
@@ -93,10 +94,14 @@ func (s *serveSink) UnregisterConnector(id string) {
 // already gone and skips closing c.ch a second time when the client's own
 // goroutine unwinds — so there is exactly one close per client regardless
 // of which path (overflow here, or a normal disconnect) removes it first.
-func (s *serveSink) Broadcast(entries []queue.Entry) {
+func (s *serveSink) Broadcast(entries []queue.Entry) BroadcastReport {
+	report := BroadcastReport{Accepted: make([]bool, len(entries))}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, e := range entries {
+	for i, e := range entries {
+		// The connector queue makes every entry replayable even when there
+		// are no live clients, so availability is the resumable boundary.
+		report.Accepted[i] = true
 		for c := range s.clients {
 			select {
 			case c.ch <- e:
@@ -104,9 +109,11 @@ func (s *serveSink) Broadcast(entries []queue.Entry) {
 				delete(s.clients, c)
 				close(c.ch)
 				go c.drop()
+				report.RecipientDrops++
 			}
 		}
 	}
+	return report
 }
 
 func (s *serveSink) addClient(drop func()) (*client, bool) {

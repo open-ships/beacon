@@ -24,9 +24,13 @@ source --> [connector: CEL filters + durable buffer] --> sink
   2000 bus through a TCP gateway (`tcp_gateway`).
 - **Connectors** are the only thing that moves data — each names exactly
   one source and one sink, an optional list of CEL filter expressions, and
-  its own durable SQLite-backed buffer that absorbs a slow or disconnected
-  sink without blocking the source. A source or sink with no connector
-  naming it does nothing.
+  its own durable SQLite-backed buffer. Each connector explicitly chooses
+  `semantic`, `transparent`, or `observe` bridge mode and reports a
+  confirmed, resumable, best-effort, or observe-only delivery boundary.
+
+Beacon also persists one stable N2K appliance NAME, exposes the complete PGN
+and field catalog with unit-scaled physical values, inventories devices by
+their stable NAME, and generates commissioning reports with SocketCAN health.
 
 Every configuration write (via the API or the UI) applies immediately —
 validated, persisted, and reconciled against the running system in one
@@ -99,9 +103,9 @@ never risks the surface you use to fix it:
 
 | Surface | Where | Notes |
 |---|---|---|
-| Web UI | admin address, `/ui` (`/` and `/ui` both redirect to `/ui/dashboard`) | dashboard, sources/sinks/connectors CRUD, live stats |
+| Web UI | admin address, `/ui` (`/` and `/ui` both redirect to `/ui/dashboard`) | routing, pending/retained state, bus diagnostics, device commissioning |
 | Manual | admin address, `/ui/docs` (`/docs` 301s there) | getting started, CAN setup, concepts, filters, API, troubleshooting |
-| Config API | admin address, `/api/v1/...` | REST CRUD, filter validation, export/import, live metrics, health, system info |
+| Config API | admin address, `/api/v1/...` | REST CRUD, live route state, PGN catalog, device inventory, commissioning report |
 | API reference | admin address, `/api/docs` (interactive, offline) and `/api/openapi.json` (OpenAPI 3.1) | self-describing — start here for scripting/agents |
 | Health | admin address, `/health` (mirrored at `/api/v1/health`) | JSON status, rolled up from every component |
 | Metrics | admin address, `/metrics` | Prometheus exposition |
@@ -124,6 +128,17 @@ on every write. For the full field reference, the envelope shape, buffering
 and replay semantics, and a CEL cookbook, see `/ui/docs` (or
 [`internal/ui/docs/`](internal/ui/docs/)) and `/api/docs`; for ready-to-use
 starting points, see [`examples/`](examples/).
+
+Bridge mode is selected on each connector. Omitted mode means `semantic`:
+
+```json
+{"id":"bridge","name":"CAN 0 to CAN 1","source_id":"can0","sink_id":"can1","mode":"transparent","forward_management":false,"filters":[],"buffer":{},"enabled":true}
+```
+
+Transparent mode currently requires a SocketCAN sink, rejects a source and
+sink on the same interface, preserves source/destination/priority/raw payload
+including unknown PGNs, and blocks address-claim and other management PGNs
+unless `forward_management` is deliberately enabled.
 
 Gateway and replay source examples:
 

@@ -52,11 +52,13 @@ func (s *tcpSink) acceptLoop() {
 	}
 }
 
-func (s *tcpSink) ID() string             { return s.id }
-func (s *tcpSink) Addr() string           { return s.ln.Addr().String() }
-func (s *tcpSink) State() (string, error) { return "up", nil }
+func (s *tcpSink) ID() string                   { return s.id }
+func (s *tcpSink) Addr() string                 { return s.ln.Addr().String() }
+func (s *tcpSink) State() (string, error)       { return "up", nil }
+func (s *tcpSink) DeliveryClass() DeliveryClass { return DeliveryBestEffort }
 
-func (s *tcpSink) Broadcast(entries []queue.Entry) {
+func (s *tcpSink) Broadcast(entries []queue.Entry) BroadcastReport {
+	report := BroadcastReport{Accepted: make([]bool, len(entries))}
 	s.mu.Lock()
 	conns := make([]net.Conn, 0, len(s.conns))
 	for c := range s.conns {
@@ -64,19 +66,27 @@ func (s *tcpSink) Broadcast(entries []queue.Entry) {
 	}
 	s.mu.Unlock()
 
-	for _, e := range entries {
+	for i, e := range entries {
 		doc, err := json.Marshal(e.Env)
 		if err != nil {
+			report.Err = err
 			continue
 		}
 		doc = append(doc, '\n')
+		accepted := false
 		for _, c := range conns {
 			_ = c.SetWriteDeadline(time.Now().Add(2 * time.Second))
 			if _, err := c.Write(doc); err != nil {
 				s.dropConn(c)
+				report.RecipientDrops++
+				report.Err = err
+			} else {
+				accepted = true
 			}
 		}
+		report.Accepted[i] = accepted
 	}
+	return report
 }
 
 func (s *tcpSink) dropConn(c net.Conn) {

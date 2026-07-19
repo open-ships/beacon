@@ -32,6 +32,22 @@ var migrations = []string{
 	   connector_id TEXT PRIMARY KEY,
 	   last_seq INTEGER NOT NULL DEFAULT 0
 	 );`,
+	`CREATE TABLE IF NOT EXISTS appliance_identity (
+	   id INTEGER PRIMARY KEY CHECK (id = 1),
+	   identity_number INTEGER NOT NULL,
+	   created_at INTEGER NOT NULL
+	 );
+	 CREATE TABLE IF NOT EXISTS device_inventory (
+	   endpoint TEXT NOT NULL,
+	   device_name TEXT NOT NULL,
+	   first_seen INTEGER NOT NULL,
+	   last_seen INTEGER NOT NULL,
+	   expected INTEGER NOT NULL DEFAULT 0,
+	   label TEXT NOT NULL DEFAULT '',
+	   baseline_doc TEXT NOT NULL DEFAULT '',
+	   current_doc TEXT NOT NULL,
+	   PRIMARY KEY(endpoint, device_name)
+	 );`,
 }
 
 func Open(path string) (*Store, error) {

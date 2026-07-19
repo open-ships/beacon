@@ -1107,19 +1107,21 @@ type connectorsPageData struct {
 // (opening the edit form) and a raw *http.Request (redisplaying a failed
 // submission — see writeConnector).
 type connectorFormViewData struct {
-	IsEdit      bool
-	ID          string
-	Name        string
-	Enabled     bool
-	SourceID    string
-	SinkID      string
-	FiltersText string
-	MaxMessages string
-	MaxAge      string
-	MaxBytes    string
-	Sources     []model.Source
-	Sinks       []model.Sink
-	Alert       *alertData
+	IsEdit            bool
+	ID                string
+	Name              string
+	Enabled           bool
+	SourceID          string
+	SinkID            string
+	Mode              string
+	ForwardManagement bool
+	FiltersText       string
+	MaxMessages       string
+	MaxAge            string
+	MaxBytes          string
+	Sources           []model.Source
+	Sinks             []model.Sink
+	Alert             *alertData
 }
 
 // parseFilters splits a filters textarea into one CEL expression per
@@ -1224,18 +1226,20 @@ func parseMaxAge(s string) (model.Duration, error) {
 // edit page: every field pre-filled from the stored entity.
 func connectorFormViewFromModel(v model.Connector, sources []model.Source, sinks []model.Sink) connectorFormViewData {
 	return connectorFormViewData{
-		IsEdit:      true,
-		ID:          v.ID,
-		Name:        v.Name,
-		Enabled:     v.Enabled,
-		SourceID:    v.SourceID,
-		SinkID:      v.SinkID,
-		FiltersText: formatFilters(v.Filters),
-		MaxMessages: formatOptionalInt64(v.Buffer.MaxMessages),
-		MaxAge:      formatMaxAge(v.Buffer.MaxAge),
-		MaxBytes:    formatOptionalInt64(v.Buffer.MaxBytes),
-		Sources:     sources,
-		Sinks:       sinks,
+		IsEdit:            true,
+		ID:                v.ID,
+		Name:              v.Name,
+		Enabled:           v.Enabled,
+		SourceID:          v.SourceID,
+		SinkID:            v.SinkID,
+		Mode:              string(v.EffectiveMode()),
+		ForwardManagement: v.ForwardManagement,
+		FiltersText:       formatFilters(v.Filters),
+		MaxMessages:       formatOptionalInt64(v.Buffer.MaxMessages),
+		MaxAge:            formatMaxAge(v.Buffer.MaxAge),
+		MaxBytes:          formatOptionalInt64(v.Buffer.MaxBytes),
+		Sources:           sources,
+		Sinks:             sinks,
 	}
 }
 
@@ -1243,7 +1247,7 @@ func connectorFormViewFromModel(v model.Connector, sources []model.Source, sinks
 // create page: every field empty except the source/sink lists the <select>s
 // need to populate their <option>s.
 func blankConnectorFormView(sources []model.Source, sinks []model.Sink) connectorFormViewData {
-	return connectorFormViewData{Sources: sources, Sinks: sinks}
+	return connectorFormViewData{Sources: sources, Sinks: sinks, Mode: string(model.BridgeSemantic)}
 }
 
 // connectorFormViewFromRequest rebuilds a connector-form view from a
@@ -1253,18 +1257,20 @@ func blankConnectorFormView(sources []model.Source, sinks []model.Sink) connecto
 // blank/stored values.
 func connectorFormViewFromRequest(r *http.Request, isEdit bool, sources []model.Source, sinks []model.Sink) connectorFormViewData {
 	return connectorFormViewData{
-		IsEdit:      isEdit,
-		ID:          r.PostFormValue("id"),
-		Name:        r.PostFormValue("name"),
-		Enabled:     r.PostFormValue("enabled") != "",
-		SourceID:    r.PostFormValue("source_id"),
-		SinkID:      r.PostFormValue("sink_id"),
-		FiltersText: r.PostFormValue("filters"),
-		MaxMessages: r.PostFormValue("max_messages"),
-		MaxAge:      r.PostFormValue("max_age"),
-		MaxBytes:    r.PostFormValue("max_bytes"),
-		Sources:     sources,
-		Sinks:       sinks,
+		IsEdit:            isEdit,
+		ID:                r.PostFormValue("id"),
+		Name:              r.PostFormValue("name"),
+		Enabled:           r.PostFormValue("enabled") != "",
+		SourceID:          r.PostFormValue("source_id"),
+		SinkID:            r.PostFormValue("sink_id"),
+		Mode:              r.PostFormValue("mode"),
+		ForwardManagement: r.PostFormValue("forward_management") != "",
+		FiltersText:       r.PostFormValue("filters"),
+		MaxMessages:       r.PostFormValue("max_messages"),
+		MaxAge:            r.PostFormValue("max_age"),
+		MaxBytes:          r.PostFormValue("max_bytes"),
+		Sources:           sources,
+		Sinks:             sinks,
 	}
 }
 
@@ -1289,12 +1295,14 @@ func (f connectorFormViewData) toModel() (model.Connector, error) {
 		return model.Connector{}, fmt.Errorf("max_bytes: %w", err)
 	}
 	return model.Connector{
-		ID:       f.ID,
-		Name:     f.Name,
-		Enabled:  f.Enabled,
-		SourceID: f.SourceID,
-		SinkID:   f.SinkID,
-		Filters:  parseFilters(f.FiltersText),
+		ID:                f.ID,
+		Name:              f.Name,
+		Enabled:           f.Enabled,
+		SourceID:          f.SourceID,
+		SinkID:            f.SinkID,
+		Mode:              model.BridgeMode(f.Mode),
+		ForwardManagement: f.ForwardManagement,
+		Filters:           parseFilters(f.FiltersText),
 		Buffer: model.BufferLimits{
 			MaxMessages: maxMessages,
 			MaxAge:      maxAge,
@@ -1538,11 +1546,12 @@ func handleConnectorDelete(svc *config.Service, reg *stats.Registry, log *slog.L
 // Byte counts are pre-humanized in Go, avoiding a template FuncMap.
 // ConnectorID supplies the stable polling target URL.
 type connectorStatsData struct {
-	ConnectorID     string
-	Snapshot        stats.Snapshot
-	BytesPerSecText string
-	QueueBytesText  string
-	SparkPoints     string
+	ConnectorID       string
+	Snapshot          stats.Snapshot
+	BytesPerSecText   string
+	QueueBytesText    string
+	RetainedBytesText string
+	SparkPoints       string
 }
 
 // handleConnectorStatsFrag serves GET /ui/frag/connectors/{id}/stats, an
@@ -1573,11 +1582,12 @@ func handleConnectorStatsFrag(svc *config.Service, reg *stats.Registry, log *slo
 		}
 		snap, _ := reg.Snapshot(id)
 		data := connectorStatsData{
-			ConnectorID:     id,
-			Snapshot:        snap,
-			BytesPerSecText: humanizeBytes(snap.BytesPerSec, "/s"),
-			QueueBytesText:  humanizeBytes(float64(snap.QueueBytes), ""),
-			SparkPoints:     sparklinePoints(snap.DepthHistory),
+			ConnectorID:       id,
+			Snapshot:          snap,
+			BytesPerSecText:   humanizeBytes(snap.BytesPerSec, "/s"),
+			QueueBytesText:    humanizeBytes(float64(snap.QueueBytes), ""),
+			RetainedBytesText: humanizeBytes(float64(snap.RetainedBytes), ""),
+			SparkPoints:       sparklinePoints(snap.DepthHistory),
 		}
 		renderFragment(w, log, "connector-stats", data)
 	}

@@ -116,6 +116,14 @@ type BufferLimits struct {
 	MaxBytes    int64    `json:"max_bytes,omitempty"`
 }
 
+type BridgeMode string
+
+const (
+	BridgeSemantic    BridgeMode = "semantic"
+	BridgeTransparent BridgeMode = "transparent"
+	BridgeObserve     BridgeMode = "observe"
+)
+
 // ApplyDefaults returns l with the spec default (max_messages=100000)
 // applied when no limit at all is set.
 func (l BufferLimits) ApplyDefaults() BufferLimits {
@@ -126,13 +134,22 @@ func (l BufferLimits) ApplyDefaults() BufferLimits {
 }
 
 type Connector struct {
-	ID       string       `json:"id"`
-	Name     string       `json:"name"`
-	SourceID string       `json:"source_id"`
-	SinkID   string       `json:"sink_id"`
-	Filters  []string     `json:"filters,omitempty"`
-	Buffer   BufferLimits `json:"buffer"`
-	Enabled  bool         `json:"enabled"`
+	ID                string       `json:"id"`
+	Name              string       `json:"name"`
+	SourceID          string       `json:"source_id"`
+	SinkID            string       `json:"sink_id"`
+	Filters           []string     `json:"filters,omitempty"`
+	Buffer            BufferLimits `json:"buffer"`
+	Enabled           bool         `json:"enabled"`
+	Mode              BridgeMode   `json:"mode,omitempty"`
+	ForwardManagement bool         `json:"forward_management,omitempty"`
+}
+
+func (c Connector) EffectiveMode() BridgeMode {
+	if c.Mode == "" {
+		return BridgeSemantic
+	}
+	return c.Mode
 }
 
 type Config struct {

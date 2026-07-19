@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
+	"time"
 
 	n2k "github.com/open-ships/n2k"
 
@@ -18,12 +20,15 @@ import (
 	"github.com/open-ships/beacon/internal/bus"
 	"github.com/open-ships/beacon/internal/config"
 	"github.com/open-ships/beacon/internal/filter"
+	"github.com/open-ships/beacon/internal/identity"
+	"github.com/open-ships/beacon/internal/inventory"
 	"github.com/open-ships/beacon/internal/metrics"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/sink"
 	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/store"
 	"github.com/open-ships/beacon/internal/supervisor"
+	"github.com/open-ships/beacon/internal/sysinfo"
 	"github.com/open-ships/beacon/internal/ui"
 )
 
@@ -44,14 +49,18 @@ type Options struct {
 // supervisor, and admin HTTP server, all started by Run and torn down by
 // Close.
 type App struct {
-	log      *slog.Logger
-	st       *store.Store
-	ds       *sink.DataServer
-	sup      *supervisor.Supervisor
-	reg      *stats.Registry
-	cfgSvc   *config.Service
-	adminSrv *http.Server
-	adminLn  net.Listener
+	log       *slog.Logger
+	st        *store.Store
+	ds        *sink.DataServer
+	sup       *supervisor.Supervisor
+	reg       *stats.Registry
+	cfgSvc    *config.Service
+	adminSrv  *http.Server
+	adminLn   net.Listener
+	identity  identity.Appliance
+	inv       *inventory.Registry
+	invCancel context.CancelFunc
+	invWG     sync.WaitGroup
 }
 
 // Run opens the store, seeds it if requested, starts the bus manager and
@@ -88,17 +97,23 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("init metrics: %w", err)
 	}
+	reg := stats.NewRegistry()
+	appliance, err := identity.LoadOrCreate(ctx, st)
+	if err != nil {
+		_ = st.Close()
+		return nil, err
+	}
 
 	// Identity options go first so any caller-supplied ExtraN2KOpts (tests use
 	// WithBus/WithClaimTimeout) still override.
-	busMgr := bus.NewManager(log, met, append(bus.Identity(version), opts.ExtraN2KOpts...)...)
+	busMgr := bus.NewManager(log, met, append(appliance.Options(version), opts.ExtraN2KOpts...)...)
+	busMgr.SetStatsRegistry(reg)
 	ds := sink.NewDataServer(opts.DataAddr, log)
 	if err := ds.Start(); err != nil {
 		_ = st.Close()
 		return nil, fmt.Errorf("start data server: %w", err)
 	}
 
-	reg := stats.NewRegistry()
 	sup := supervisor.New(st, busMgr, ds, log, met, reg)
 	if err := sup.Reconcile(ctx); err != nil {
 		sup.Stop()
@@ -107,11 +122,37 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 		return nil, fmt.Errorf("initial reconcile: %w", err)
 	}
 	cfgSvc := config.NewService(st, sup, log)
+	inv := inventory.New(st)
+	if err := inv.Refresh(ctx); err != nil {
+		log.Warn("load N2K inventory", "err", err)
+	}
 
-	a := &App{log: log, st: st, ds: ds, sup: sup, reg: reg, cfgSvc: cfgSvc}
+	a := &App{log: log, st: st, ds: ds, sup: sup, reg: reg, cfgSvc: cfgSvc, identity: appliance, inv: inv}
+	invCtx, invCancel := context.WithCancel(context.Background())
+	a.invCancel = invCancel
+	a.invWG.Add(1)
+	go func() {
+		defer a.invWG.Done()
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			if err := inv.Observe(invCtx, sup.BusDevices()); err != nil && invCtx.Err() == nil {
+				log.Warn("refresh N2K inventory", "err", err)
+			}
+			select {
+			case <-invCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 
-	apiHandler, _ := api.New(cfgSvc, reg, version, log)
-	uiHandler := ui.Handler(cfgSvc, reg, sup.Statuses, sup.BusDevices, version, log)
+	apiHandler, _ := api.New(cfgSvc, reg, version, log, api.RuntimeInfo{
+		Identity: appliance, Devices: sup.BusDevices, Inventory: inv, Statuses: sup.Statuses,
+	})
+	uiHandler := ui.Handler(cfgSvc, reg, sup.Statuses, sup.BusDevices, version, log, ui.RuntimeInfo{
+		Inventory: inv, CANDetails: sysinfo.DiscoverCANDetails,
+	})
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", promHandler)
@@ -235,6 +276,10 @@ func (a *App) Service() *config.Service { return a.cfgSvc }
 func (a *App) Close(ctx context.Context) error {
 	if a.adminSrv != nil {
 		_ = a.adminSrv.Shutdown(ctx)
+	}
+	if a.invCancel != nil {
+		a.invCancel()
+		a.invWG.Wait()
 	}
 	a.sup.Stop() // connectors flush final checkpoints
 	_ = a.ds.Stop(ctx)

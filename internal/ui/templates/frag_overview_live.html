@@ -34,8 +34,13 @@
         <div><span>Msg/s</span><strong>{{printf "%.2f" .Snapshot.MsgPerSec}}</strong></div>
         <div><span>Total bytes</span><strong>{{.TotalBytesText}}</strong></div>
         <div><span>Bytes/s</span><strong>{{.BytesPerSecText}}</strong></div>
-        <div><span>Queue</span><strong>{{.Snapshot.QueueDepth}}</strong></div>
-        <div><span>Queue bytes</span><strong>{{.QueueBytesText}}</strong></div>
+        {{if .Snapshot.Drops}}<div><span>Intake drops</span><strong>{{.Snapshot.Drops}}</strong></div>{{end}}
+        <div><span>Pending delivery</span><strong>{{.Snapshot.QueueDepth}}</strong></div>
+        <div><span>Pending bytes</span><strong>{{.QueueBytesText}}</strong></div>
+        <div><span>Retained history</span><strong>{{.Snapshot.RetainedDepth}}</strong></div>
+        <div><span>Retained bytes</span><strong>{{.RetainedBytesText}}</strong></div>
+        {{if .Snapshot.DeliveryClass}}<div><span>Delivery class</span><strong>{{.Snapshot.DeliveryClass}}</strong></div>{{end}}
+        {{if .Snapshot.QueueTail}}<div><span>Checkpoint / tail</span><strong>{{.Snapshot.QueueCursor}} / {{.Snapshot.QueueTail}}</strong></div>{{end}}
       </div>
     </section>
   </div>
@@ -63,7 +68,7 @@
           <tr>
             <td><code>{{.TimeText}}</code></td>
             <td>{{.Stage}}</td>
-            <td><code>{{.PGN}}</code></td>
+            <td><code>{{.PGN}}</code>{{if .PGNName}}<br><span class="opacity-70">{{.PGNName}}</span>{{end}}</td>
             <td>{{.Source}}</td>
             <td>{{.Dest}}</td>
             <td>{{.Priority}}</td>
