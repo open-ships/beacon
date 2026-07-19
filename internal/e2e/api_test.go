@@ -36,8 +36,9 @@ func startEmptyApp(t *testing.T, fake *busfake.FakeBus) *app.App {
 		DataAddr:  "127.0.0.1:0",
 		AdminAddr: "127.0.0.1:0",
 		Log:       slog.Default(),
+		N2KBus:    fake,
 		ExtraN2KOpts: []n2k.Option{
-			n2k.WithBus(fake), n2k.WithClaimTimeout(50 * time.Millisecond)},
+			n2k.WithClaimTimeout(50 * time.Millisecond)},
 	})
 	if err != nil {
 		t.Fatal(err)

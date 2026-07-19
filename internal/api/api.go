@@ -27,6 +27,7 @@ import (
 type RuntimeInfo struct {
 	Identity  identity.Appliance
 	Devices   func() []bus.DeviceInfo
+	Buses     func() []bus.EndpointStatus
 	Inventory *inventory.Registry
 	Statuses  func() []supervisor.Status
 }

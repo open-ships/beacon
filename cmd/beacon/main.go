@@ -136,7 +136,7 @@ func runExport(dbPath string, w io.Writer) error {
 // success. Factored out of newImportCmd's RunE so it is directly
 // unit-testable without going through cobra or a built binary.
 func runImport(dbPath, filePath string, merge bool, w io.Writer) error {
-	raw, err := os.ReadFile(filePath)
+	raw, err := os.ReadFile(filePath) // #nosec G304 -- filePath is the operator-selected import file.
 	if err != nil {
 		return fmt.Errorf("read import file: %w", err)
 	}

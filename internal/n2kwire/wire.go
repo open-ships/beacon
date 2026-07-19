@@ -80,12 +80,15 @@ func frameSingle(id uint32, payload []byte) can.Frame {
 }
 
 func FrameFastPacket(id uint32, payload []byte, sequence uint8) []can.Frame {
+	if len(payload) > MaxFastPacketPayload {
+		return nil
+	}
 	first := can.Frame{ID: id, Length: 8}
 	for i := range first.Data {
 		first.Data[i] = 0xFF
 	}
 	first.Data[0] = (sequence & 7) << 5
-	first.Data[1] = uint8(len(payload))
+	first.Data[1] = uint8(len(payload)) // #nosec G115 -- the MaxFastPacketPayload guard above caps this at 223.
 	n := min(len(payload), 6)
 	copy(first.Data[2:], payload[:n])
 	frames := []can.Frame{first}

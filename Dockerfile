@@ -20,7 +20,9 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -o beacon ./cmd/beacon
 
 # --- Runtime stage ---
-FROM alpine:3.19
+FROM alpine:3.24
+
+LABEL org.opencontainers.image.source="https://github.com/open-ships/beacon"
 
 # ca-certificates: TLS support
 RUN apk add --no-cache ca-certificates

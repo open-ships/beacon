@@ -44,6 +44,7 @@ beacon.db
 
 # Artifacts
 /beacon
+/dist/
 
 # Tailwind/daisyUI standalone CLI + plugin bundles (dev-time download, not
 # source); see internal/ui/uisrc/README.md to re-fetch.

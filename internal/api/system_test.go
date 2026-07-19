@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/open-ships/beacon/internal/api"
+	"github.com/open-ships/beacon/internal/bus"
 	"github.com/open-ships/beacon/internal/config"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/stats"
@@ -19,7 +20,7 @@ import (
 // newStatsServer mirrors newTestServer (entities_test.go) but also returns
 // the stats.Registry the server was built with, so tests can Record
 // deliveries and assert the metrics endpoints reflect them.
-func newStatsServer(t *testing.T) (srv *httptest.Server, rec *fakeReconciler, reg *stats.Registry) {
+func newStatsServer(t *testing.T, runtimeInfo ...api.RuntimeInfo) (srv *httptest.Server, rec *fakeReconciler, reg *stats.Registry) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -29,7 +30,7 @@ func newStatsServer(t *testing.T) (srv *httptest.Server, rec *fakeReconciler, re
 	rec = &fakeReconciler{}
 	svc := config.NewService(st, rec, nil)
 	reg = stats.NewRegistry()
-	handler, _ := api.New(svc, reg, "test-version", nil)
+	handler, _ := api.New(svc, reg, "test-version", nil, runtimeInfo...)
 	s := httptest.NewServer(handler)
 	t.Cleanup(s.Close)
 	return s, rec, reg
@@ -68,14 +69,20 @@ func TestValidateFiltersInvalid(t *testing.T) {
 // --- System discovery ---
 
 func TestGetSystem(t *testing.T) {
-	srv, _, _ := newStatsServer(t)
+	srv, _, _ := newStatsServer(t, api.RuntimeInfo{Buses: func() []bus.EndpointStatus {
+		return []bus.EndpointStatus{{
+			Endpoint: "socketcan:can0", Kind: "socketcan", Name: "can0", State: "up",
+			Address: 42, AddressClaimed: true, WriteQueueCapacity: 64, ReceiveSubscribers: 1,
+		}}
+	}})
 
 	resp := doJSON(t, http.MethodGet, srv.URL+"/api/v1/system", nil)
 	mustStatus(t, resp, http.StatusOK)
 	var body struct {
-		Version       string   `json:"version"`
-		CANInterfaces []string `json:"can_interfaces"`
-		SerialPorts   []string `json:"serial_ports"`
+		Version       string               `json:"version"`
+		CANInterfaces []string             `json:"can_interfaces"`
+		SerialPorts   []string             `json:"serial_ports"`
+		Buses         []bus.EndpointStatus `json:"n2k_buses"`
 	}
 	decodeInto(t, resp, &body)
 	if body.Version != "test-version" {
@@ -86,6 +93,10 @@ func TestGetSystem(t *testing.T) {
 	}
 	if body.SerialPorts == nil {
 		t.Fatal("serial_ports = null, want an array (possibly empty)")
+	}
+	if len(body.Buses) != 1 || body.Buses[0].Endpoint != "socketcan:can0" ||
+		!body.Buses[0].AddressClaimed || body.Buses[0].WriteQueueCapacity != 64 {
+		t.Fatalf("n2k_buses = %+v, want bounded runtime status", body.Buses)
 	}
 }
 
@@ -112,10 +123,11 @@ func TestCommissioningReportIsAvailableWithoutHardware(t *testing.T) {
 	mustStatus(t, resp, http.StatusOK)
 	var body struct {
 		Devices    []any                     `json:"devices"`
+		Buses      []bus.EndpointStatus      `json:"buses"`
 		Connectors map[string]stats.Snapshot `json:"connectors"`
 	}
 	decodeInto(t, resp, &body)
-	if body.Devices == nil || body.Connectors == nil {
+	if body.Devices == nil || body.Buses == nil || body.Connectors == nil {
 		t.Fatalf("report contains null collections: %+v", body)
 	}
 }

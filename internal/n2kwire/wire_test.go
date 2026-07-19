@@ -32,3 +32,9 @@ func TestFramesRejectUnsupportedLargeTransport(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestFrameFastPacketRejectsOversizedPayload(t *testing.T) {
+	if frames := FrameFastPacket(1, make([]byte, MaxFastPacketPayload+1), 0); frames != nil {
+		t.Fatalf("frames = %d, want nil for oversized payload", len(frames))
+	}
+}
