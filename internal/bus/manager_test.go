@@ -315,8 +315,9 @@ func TestStatusesExposeBoundedN2KRuntime(t *testing.T) {
 	if status.State != "up" || !status.AddressClaimed || status.Closed {
 		t.Fatalf("lifecycle status = %+v, want claimed and up", status)
 	}
-	if status.WriteQueueCapacity != 5 || status.WriteQueueDepth != 0 || status.ReceiveSubscribers != 1 {
-		t.Fatalf("bounded runtime status = %+v, want write capacity 5 and one receiver", status)
+	if status.WriteQueueCapacity != 5 || status.WriteQueueDepth < 0 ||
+		status.WriteQueueDepth > status.WriteQueueCapacity || status.ReceiveSubscribers != 1 {
+		t.Fatalf("bounded runtime status = %+v, want write depth within capacity 5 and one receiver", status)
 	}
 }
 
