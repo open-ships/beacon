@@ -47,20 +47,6 @@ type alertData struct {
 	Message string
 }
 
-// stateFor returns the State of the status in statuses matching kind/id
-// ("source"/"sink", per internal/supervisor.Status.Kind's literal values —
-// see internal/supervisor/supervisor.go), or "unknown" if none is reported
-// yet (e.g. a disabled entity the supervisor never started, or a request
-// racing just after a config write's reconcile).
-func stateFor(statuses []supervisor.Status, kind, id string) string {
-	for _, s := range statuses {
-		if s.Kind == kind && s.ID == id {
-			return s.State
-		}
-	}
-	return "unknown"
-}
-
 // referencingConnectorNames returns the ids of every connector referencing
 // id as its source (kind="source") or sink (kind="sink"), for composing the
 // delete-in-use error message: config.ErrInUse alone doesn't carry enough
