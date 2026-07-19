@@ -370,17 +370,15 @@ code {
 
 .dag-node-connector {
   border-color: var(--border-strong);
-  background: var(--black);
-  color: #fff;
 }
 
 .dag-node-connector:hover {
-  color: #fff;
+  color: var(--gray-dark);
 }
 
 .dag-node-connector code {
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
+  background: rgba(255, 255, 255, 0.65);
+  color: var(--black);
 }
 
 .dag-node-sink {
@@ -417,7 +415,7 @@ code {
 
 .dag-metrics {
   justify-content: space-between;
-  border-top: 1px solid rgba(255, 255, 255, 0.14);
+  border-top: 1px solid rgba(96, 115, 159, 0.22);
   padding-top: var(--space-3);
 }
 
@@ -426,8 +424,25 @@ code {
 }
 
 .dag-link {
+  --dag-link-color: var(--border-strong);
   position: relative;
   min-width: 48px;
+}
+
+.dag-link.state-up {
+  --dag-link-color: var(--success);
+}
+
+.dag-link.state-degraded {
+  --dag-link-color: var(--warning);
+}
+
+.dag-link.state-error {
+  --dag-link-color: var(--error);
+}
+
+.dag-link.state-restarting {
+  --dag-link-color: var(--accent);
 }
 
 .dag-link::before {
@@ -437,7 +452,7 @@ code {
   right: var(--space-2);
   left: var(--space-2);
   height: 2px;
-  background: var(--border-strong);
+  background: var(--dag-link-color);
   transform: translateY(-50%);
 }
 
@@ -448,8 +463,8 @@ code {
   right: var(--space-2);
   width: 8px;
   height: 8px;
-  border-top: 2px solid var(--border-strong);
-  border-right: 2px solid var(--border-strong);
+  border-top: 2px solid var(--dag-link-color);
+  border-right: 2px solid var(--dag-link-color);
   transform: translateY(-50%) rotate(45deg);
 }
 
@@ -635,6 +650,164 @@ code {
   min-width: 920px;
 }
 
+.source-metrics-heading {
+  align-items: start;
+}
+
+.source-baseline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.source-metrics-heading > div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.source-metrics-heading p {
+  margin: 0;
+  color: #666;
+  font-size: 0.84rem;
+}
+
+.source-metrics-table {
+  min-width: 1280px;
+}
+
+.source-metrics-table td {
+  vertical-align: top;
+}
+
+.source-stream-gap td {
+  background: rgba(180, 35, 24, 0.055);
+}
+
+.source-stream-anomaly td {
+  background: rgba(166, 95, 0, 0.06);
+}
+
+.source-stream-changed td,
+.source-stream-awaiting td {
+  background: rgba(166, 95, 0, 0.04);
+}
+
+.source-stream-missing td {
+  background: rgba(180, 35, 24, 0.075);
+}
+
+.source-gap-text {
+  color: var(--error);
+  font-weight: 800;
+}
+
+.source-anomaly-note {
+  display: block;
+  max-width: 11rem;
+  margin-top: 0.35rem;
+  overflow: hidden;
+  color: var(--warning);
+  font-size: 0.75rem;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-baseline-state {
+  display: block;
+  margin-top: 0.32rem;
+  color: #666;
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.source-values {
+  min-width: 19rem;
+}
+
+.source-values summary {
+  color: var(--accent-dark);
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.source-value-list {
+  display: grid;
+  gap: 0.55rem;
+  width: min(42rem, 70vw);
+  margin-top: 0.65rem;
+}
+
+.source-value-list h4 {
+  margin: 0.65rem 0 0;
+  color: var(--black);
+  font-size: 0.86rem;
+}
+
+.source-raw-summary {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.3rem 0.7rem;
+  margin: 0;
+}
+
+.source-raw-summary dt {
+  color: #666;
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.source-raw-summary dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.source-byte-table {
+  min-width: 640px;
+  font-size: 0.78rem;
+}
+
+.source-fingerprint-list,
+.source-raw-samples {
+  color: #555;
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+.source-raw-samples {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.source-raw-samples div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.source-event-table {
+  min-width: 900px;
+}
+
+.source-value-row {
+  display: grid;
+  gap: 0.15rem;
+  border-left: 3px solid var(--border);
+  padding-left: 0.55rem;
+}
+
+.source-value-row > span,
+.source-value-row > small {
+  color: #666;
+  line-height: 1.35;
+}
+
+.source-value-anomaly {
+  border-left-color: var(--warning);
+}
+
 .event-table td:last-child code {
   white-space: normal;
 }
@@ -807,13 +980,72 @@ code {
   box-shadow: 0 0 0 4px var(--warning-bg);
 }
 
-.state-error {
-  border-color: rgba(180, 35, 24, 0.45);
+/* Component health surfaces share one visual language across the flow DAG,
+   route arrows, metadata/config tables, and detail status card. Badges retain
+   the explicit state text, so color is never the sole status signal. */
+.component-status-surface,
+.component-status-row {
+  --component-state-accent: var(--gray);
+  --component-state-bg: var(--surface-muted);
+  --component-state-hover: var(--surface-strong);
+  --component-state-border: var(--border-strong);
 }
 
-.state-degraded,
-.state-restarting {
-  border-color: rgba(166, 95, 0, 0.42);
+.component-status-surface.state-up,
+.component-status-row.state-up {
+  --component-state-accent: var(--success);
+  --component-state-bg: var(--success-bg);
+  --component-state-hover: #ddf1e6;
+  --component-state-border: rgba(15, 122, 79, 0.42);
+}
+
+.component-status-surface.state-degraded,
+.component-status-row.state-degraded {
+  --component-state-accent: var(--warning);
+  --component-state-bg: var(--warning-bg);
+  --component-state-hover: #fbe9c8;
+  --component-state-border: rgba(166, 95, 0, 0.42);
+}
+
+.component-status-surface.state-error,
+.component-status-row.state-error {
+  --component-state-accent: var(--error);
+  --component-state-bg: var(--error-bg);
+  --component-state-hover: #f9e2df;
+  --component-state-border: rgba(180, 35, 24, 0.45);
+}
+
+.component-status-surface.state-restarting,
+.component-status-row.state-restarting {
+  --component-state-accent: var(--accent);
+  --component-state-bg: #edf0ff;
+  --component-state-hover: #e1e6ff;
+  --component-state-border: rgba(35, 55, 255, 0.35);
+}
+
+.component-status-surface {
+  border-color: var(--component-state-border);
+  background: var(--component-state-bg);
+}
+
+.dag-node.component-status-surface {
+  box-shadow: inset 4px 0 0 var(--component-state-accent);
+}
+
+.overview-card.component-status-surface {
+  box-shadow: inset 4px 0 0 var(--component-state-accent), var(--shadow);
+}
+
+.component-status-row {
+  background: var(--component-state-bg);
+}
+
+.component-status-row > td:first-child {
+  box-shadow: inset 4px 0 0 var(--component-state-accent);
+}
+
+.table tbody tr.component-status-row[data-href]:hover {
+  background: var(--component-state-hover);
 }
 
 .btn {
@@ -1821,18 +2053,22 @@ code {
   }
 
   .metadata-section[aria-label="Connectors metadata"] td:nth-child(5)::before {
-    content: "Filters";
+    content: "State";
   }
 
   .metadata-section[aria-label="Connectors metadata"] td:nth-child(6)::before {
-    content: "Msg/s";
+    content: "Filters";
   }
 
   .metadata-section[aria-label="Connectors metadata"] td:nth-child(7)::before {
-    content: "Queue";
+    content: "Msg/s";
   }
 
   .metadata-section[aria-label="Connectors metadata"] td:nth-child(8)::before {
+    content: "Queue";
+  }
+
+  .metadata-section[aria-label="Connectors metadata"] td:nth-child(9)::before {
     content: "Action";
   }
 }

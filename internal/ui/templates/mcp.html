@@ -173,6 +173,20 @@
   "arguments": {"connector_id": "navigation"}
 }</code></pre>
       </article>
+      <article>
+        <h4>Inspect one source's PGN traffic</h4>
+        <pre class="mcp-code"><code>{
+  "name": "get_source_metrics",
+  "arguments": {"source_id": "can0"}
+}</code></pre>
+      </article>
+      <article>
+        <h4>Set expected traffic baseline</h4>
+        <pre class="mcp-code"><code>{
+  "name": "commit_source_traffic_baseline",
+  "arguments": {"source_id": "can0"}
+}</code></pre>
+      </article>
     </div>
   </section>
 
@@ -181,7 +195,7 @@
     <dl class="config-list">
       <dt>Writes</dt><dd>Validated, persisted to SQLite, and reconciled against the running graph in the same call.</dd>
       <dt>Tool errors</dt><dd>Invalid ids, types, references, CEL, durations, and in-use deletes return correctable MCP tool errors.</dd>
-      <dt>Statistics</dt><dd>Reports pending delivery separately from retained history, plus rates, totals, limits, drops, and the latest delivery error.</dd>
+      <dt>Statistics</dt><dd>Reports pending delivery separately from retained history, plus per-source/sender PGN rates, payload sizes, learned gaps, anomalies, and decoded value distributions.</dd>
       <dt>Network</dt><dd>No cloud service, CDN, remote schema, telemetry endpoint, or internet connection is required.</dd>
     </dl>
   </section>

@@ -48,6 +48,26 @@ var migrations = []string{
 	   current_doc TEXT NOT NULL,
 	   PRIMARY KEY(endpoint, device_name)
 	 );`,
+	`CREATE TABLE IF NOT EXISTS source_metric_baselines (
+	   source_id TEXT NOT NULL,
+	   identity TEXT NOT NULL,
+	   pgn INTEGER NOT NULL,
+	   approved_at INTEGER NOT NULL,
+	   doc TEXT NOT NULL,
+	   PRIMARY KEY(source_id, identity, pgn)
+	 );
+	 CREATE INDEX IF NOT EXISTS source_metric_baselines_source ON source_metric_baselines(source_id);
+	 CREATE TABLE IF NOT EXISTS source_metric_events (
+	   id INTEGER PRIMARY KEY AUTOINCREMENT,
+	   ts INTEGER NOT NULL,
+	   source_id TEXT NOT NULL,
+	   pgn INTEGER NOT NULL,
+	   source_address INTEGER NOT NULL,
+	   kind TEXT NOT NULL,
+	   severity TEXT NOT NULL,
+	   doc TEXT NOT NULL
+	 );
+	 CREATE INDEX IF NOT EXISTS source_metric_events_source_ts ON source_metric_events(source_id, ts DESC);`,
 }
 
 func Open(path string) (*Store, error) {

@@ -95,12 +95,12 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 		}
 	}
 
-	met, promHandler, err := metrics.New()
+	reg := stats.NewRegistry()
+	met, promHandler, err := metrics.New(reg)
 	if err != nil {
 		_ = st.Close()
 		return nil, fmt.Errorf("init metrics: %w", err)
 	}
-	reg := stats.NewRegistry()
 	appliance, err := identity.LoadOrCreate(ctx, st)
 	if err != nil {
 		_ = st.Close()
@@ -122,11 +122,19 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("start data server: %w", err)
 	}
+	// Load approved expectations before sources start so even their first
+	// observed stream/change event is compared and persisted.
+	if err := reg.AttachSourceMetricPersistence(ctx, st.DB()); err != nil {
+		_ = ds.Stop(ctx)
+		_ = st.Close()
+		return nil, fmt.Errorf("load source metric history: %w", err)
+	}
 
 	sup := supervisor.New(st, busMgr, ds, log, met, reg)
 	if err := sup.Reconcile(ctx); err != nil {
 		sup.Stop()
 		_ = ds.Stop(ctx)
+		_ = reg.CloseSourceMetricPersistence(ctx)
 		_ = st.Close()
 		return nil, fmt.Errorf("initial reconcile: %w", err)
 	}
@@ -135,7 +143,6 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 	if err := inv.Refresh(ctx); err != nil {
 		log.Warn("load N2K inventory", "err", err)
 	}
-
 	a := &App{log: log, st: st, ds: ds, sup: sup, reg: reg, cfgSvc: cfgSvc, identity: appliance, inv: inv}
 	invCtx, invCancel := context.WithCancel(context.Background())
 	a.invCancel = invCancel
@@ -293,5 +300,7 @@ func (a *App) Close(ctx context.Context) error {
 	}
 	a.sup.Stop() // connectors flush final checkpoints
 	_ = a.ds.Stop(ctx)
-	return a.st.Close()
+	persistenceErr := a.reg.CloseSourceMetricPersistence(ctx)
+	storeErr := a.st.Close()
+	return errors.Join(persistenceErr, storeErr)
 }

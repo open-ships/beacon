@@ -151,6 +151,8 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 	mux.HandleFunc("GET /ui/sources/{id}", redirectToTrailingSlash)
 	mux.HandleFunc("GET /ui/sources/{id}/{$}", handleSourceOverviewPage(svc, reg, statuses, assetVersion, log))
 	mux.HandleFunc("GET /ui/frag/sources/{id}/overview", handleSourceOverviewFrag(svc, reg, statuses, log))
+	mux.HandleFunc("POST /ui/sources/{id}/traffic-baseline", handleSourceTrafficBaselineCommit(svc, reg, statuses, log))
+	mux.HandleFunc("POST /ui/sources/{id}/traffic-baseline/clear", handleSourceTrafficBaselineClear(svc, reg, statuses, log))
 	mux.HandleFunc("GET /ui/frag/source-type-fields", handleSourceTypeFieldsFrag(log))
 	mux.HandleFunc("POST /ui/sources", handleSourceCreate(svc, log))
 	mux.HandleFunc("POST /ui/sources/{id}", handleSourceUpdate(svc, log))
@@ -172,18 +174,18 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 	// above, plus a per-connector overview page with live stats/streaming
 	// data and live CEL validation diagnostics. See forms.go's
 	// "--- Connectors ---" section for the behavior contract.
-	mux.HandleFunc("GET /ui/connectors", handleConnectorsPage(svc, reg, assetVersion, log))
-	mux.HandleFunc("GET /ui/connectors/new", handleConnectorNewPage(svc, reg, assetVersion, log))
-	mux.HandleFunc("GET /ui/connectors/{id}/edit", handleConnectorEditPage(svc, reg, assetVersion, log))
+	mux.HandleFunc("GET /ui/connectors", handleConnectorsPage(svc, reg, statuses, assetVersion, log))
+	mux.HandleFunc("GET /ui/connectors/new", handleConnectorNewPage(svc, reg, statuses, assetVersion, log))
+	mux.HandleFunc("GET /ui/connectors/{id}/edit", handleConnectorEditPage(svc, reg, statuses, assetVersion, log))
 	mux.HandleFunc("GET /ui/connectors/{id}", redirectToTrailingSlash)
 	mux.HandleFunc("GET /ui/connectors/{id}/{$}", handleConnectorOverviewPage(svc, reg, statuses, assetVersion, log))
 	mux.HandleFunc("GET /ui/cel-completions", handleCELCompletions)
 	mux.HandleFunc("POST /ui/frag/validate-filters", handleValidateFiltersFrag(svc, log))
 	mux.HandleFunc("GET /ui/frag/connectors/{id}/stats", handleConnectorStatsFrag(svc, reg, log))
 	mux.HandleFunc("GET /ui/frag/connectors/{id}/overview", handleConnectorOverviewFrag(svc, reg, statuses, log))
-	mux.HandleFunc("POST /ui/connectors", handleConnectorCreate(svc, reg, log))
-	mux.HandleFunc("POST /ui/connectors/{id}", handleConnectorUpdate(svc, reg, log))
-	mux.HandleFunc("POST /ui/connectors/{id}/delete", handleConnectorDelete(svc, reg, log))
+	mux.HandleFunc("POST /ui/connectors", handleConnectorCreate(svc, reg, statuses, log))
+	mux.HandleFunc("POST /ui/connectors/{id}", handleConnectorUpdate(svc, reg, statuses, log))
+	mux.HandleFunc("POST /ui/connectors/{id}/delete", handleConnectorDelete(svc, reg, statuses, log))
 
 	mux.HandleFunc("GET /ui/config", handleConfigPage(svc, assetVersion, log))
 	mux.HandleFunc("POST /ui/config/import", handleConfigImport(svc, assetVersion, log))

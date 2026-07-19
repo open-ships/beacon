@@ -354,13 +354,20 @@ func (c *counters) depthHistoryLocked() []int64 {
 // Snapshot/All, the same nil-safe convention as metrics.Set, so callers
 // never need a nil check around instrumentation.
 type Registry struct {
-	now func() time.Time
+	now       func() time.Time
+	startedAt time.Time
 
-	mu     sync.Mutex
-	conn   map[string]*counters
-	source map[string]*counters
-	sink   map[string]*counters
-	events map[string]*eventRing
+	mu                    sync.Mutex
+	conn                  map[string]*counters
+	source                map[string]*counters
+	sink                  map[string]*counters
+	events                map[string]*eventRing
+	sourceStreams         map[sourceStreamKey]*sourceStream
+	sourceBaselines       map[sourceBaselineKey]SourceTrafficBaseline
+	sourceMetricEvents    map[string]*sourceMetricEventRing
+	sourcePersistence     *sourceMetricPersistence
+	sourceAddressNames    map[sourceAddressKey]uint64
+	sourceDeviceAddresses map[sourceDeviceKey]uint8
 }
 
 // NewRegistry returns an empty Registry using the real wall clock.
@@ -372,11 +379,17 @@ func NewRegistry() *Registry {
 // (via r.now) to exercise rate decay deterministically.
 func newRegistryAt(now func() time.Time) *Registry {
 	return &Registry{
-		now:    now,
-		conn:   map[string]*counters{},
-		source: map[string]*counters{},
-		sink:   map[string]*counters{},
-		events: map[string]*eventRing{},
+		now:                   now,
+		startedAt:             now(),
+		conn:                  map[string]*counters{},
+		source:                map[string]*counters{},
+		sink:                  map[string]*counters{},
+		events:                map[string]*eventRing{},
+		sourceStreams:         map[sourceStreamKey]*sourceStream{},
+		sourceBaselines:       map[sourceBaselineKey]SourceTrafficBaseline{},
+		sourceMetricEvents:    map[string]*sourceMetricEventRing{},
+		sourceAddressNames:    map[sourceAddressKey]uint64{},
+		sourceDeviceAddresses: map[sourceDeviceKey]uint8{},
 	}
 }
 
@@ -440,12 +453,22 @@ func (r *Registry) recordEvent(kind, id string, e Event) {
 }
 
 func (r *Registry) RecordSource(source string, e *msg.Envelope) {
-	if r == nil {
+	if r == nil || e == nil {
 		return
 	}
 	now := r.now()
 	ev := eventFromEnvelope(now, "received", "", e)
 	r.getSource(source).record(now, 1, int64(ev.SizeBytes))
+	stream, created := r.getSourceStream(source, e)
+	before := stream.sourceEventState()
+	stream.record(now, e)
+	after := stream.sourceEventState()
+	for _, event := range r.sourceLifecycleEvents(now, source, e, created, before, after) {
+		r.recordSourceMetricEvent(event)
+	}
+	for _, event := range r.sourceIdentityEvents(now, source, e) {
+		r.recordSourceMetricEvent(event)
+	}
 	r.recordEvent("source", source, ev)
 }
 
@@ -614,6 +637,11 @@ func (r *Registry) RemoveSource(source string) {
 	r.mu.Lock()
 	delete(r.source, source)
 	delete(r.events, "source:"+source)
+	for key := range r.sourceStreams {
+		if key.source == source {
+			delete(r.sourceStreams, key)
+		}
+	}
 	r.mu.Unlock()
 }
 

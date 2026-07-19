@@ -24,9 +24,16 @@ session headers:
 
 The tools are `get_config`, `put_source`, `put_sink`, `put_connector`,
 `delete_source`, `delete_sink`, `delete_connector`, `get_health`, and
-`get_delivery_statistics`. Their input and output JSON Schemas are returned by
-MCP `tools/list`. Configuration writes use the same validation, SQLite
-persistence, and immediate supervisor reconciliation as the REST calls below.
+`get_delivery_statistics`, plus `get_source_metrics`,
+`commit_source_traffic_baseline`, and `clear_source_traffic_baseline`. Source
+metrics can be filtered by configured source id, PGN, and NMEA 2000 source
+address. They include learned timing/jitter, rates and estimated bus load,
+addressing, decode quality, payload-size and raw-byte distributions, last-seen
+age, gaps/bursts, anomalies, decoded-field quantiles and availability, approved
+expectations, and recent lifecycle events. Input and output JSON Schemas are
+returned by MCP `tools/list`. Configuration and baseline writes persist to
+SQLite; configuration changes also reconcile immediately through the
+supervisor.
 
 MCP needs no cloud relay, separate process, remote schema, or internet access.
 It can change live configuration, so bind the admin listener to localhost or a
@@ -142,6 +149,16 @@ A known-but-idle connector reports a zero snapshot rather than 404 —
 404 means the connector id itself doesn't exist. See the Prometheus
 exposition at `/metrics` (admin port) for the same data in a form built
 for scraping/alerting rather than point queries.
+
+Source overview pages show one row for each `(source, source address, PGN)`
+stream. The same process-local store is available to agents through
+`get_source_metrics` and at `/metrics` under the
+`beacon_source_pgn_*` metric families. Frequency and gap thresholds are learned
+from recent arrival intervals. Live observation windows reset when Beacon
+restarts; operator-approved expected-traffic baselines and bounded lifecycle
+events persist in SQLite. Prometheus exports bounded numeric summaries and
+finite labels, while raw hexdumps and payload fingerprints remain available in
+the UI and MCP response rather than becoming high-cardinality time series.
 
 ## Health and system info
 

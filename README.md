@@ -309,13 +309,13 @@ take away the control surface used to repair it.
 |---|---|---|
 | Dashboard | `:2112/ui` | Route graph, pending/retained state, bus diagnostics, device commissioning |
 | Manual | `:2112/ui/docs` | Offline getting started, CAN setup, concepts, filters, API, troubleshooting |
-| MCP endpoint | `:2112/mcp` | Streamable HTTP tools for agent configuration, health, and delivery statistics |
+| MCP endpoint | `:2112/mcp` | Streamable HTTP tools for agent configuration, health, delivery, and source PGN statistics |
 | MCP reference | `:2112/ui/mcp` | Embedded connection guide, tool catalog, and call examples |
 | REST API | `:2112/api/v1/...` | Configuration, live state, PGN catalog, inventory, commissioning |
 | API reference | `:2112/api/docs` | Interactive, embedded OpenAPI 3.1 documentation |
 | OpenAPI document | `:2112/api/openapi.json` | Machine-readable discovery for SDKs, scripts, and agents |
 | Health | `:2112/health` | Rolled-up component health; mirrored at `/api/v1/health` |
-| Metrics | `:2112/metrics` | Prometheus exposition |
+| Metrics | `:2112/metrics` | Prometheus exposition, including per-source/sender PGN traffic and value distributions |
 | SSE / WebSocket sinks | `:8080/<configured-path>` | Data and replay endpoints |
 | TCP sinks | Configured listener address | Live-only NDJSON stream |
 
@@ -329,12 +329,24 @@ An MCP client can connect without a cloud relay or companion process:
 }
 ```
 
-The MCP server exposes nine tools to read the complete configuration, create or
+The MCP server exposes twelve tools to read the complete configuration, create or
 update sources, sinks, and connector routes, delete each entity type, and read
-health or delivery statistics. It uses the same validation, SQLite persistence,
-and hot reconciliation as the UI and REST API. The server, tool schemas, and
-reference page are all embedded in the Beacon binary; no internet connection,
-remote schema, CDN, or hosted MCP service is required.
+health, delivery statistics, or per-source PGN traffic metrics. Operators and
+agents can approve or clear persistent expected-traffic baselines for each
+source. It uses the same validation, SQLite persistence, and hot reconciliation as the UI and REST API.
+The server, tool schemas, and reference page are all embedded in the Beacon
+binary; no internet connection, remote schema, CDN, or hosted MCP service is
+required.
+
+Each source overview groups traffic by source address and PGN, including PGNs
+Beacon cannot decode. It reports learned frequency and jitter, gaps and bursts,
+last-seen age, addressing and decode outcomes, traffic share and estimated CAN
+load, payload lengths, decoded-field quantiles/availability/rate-of-change, and
+bounded raw-wire fingerprints, entropy, byte ranges, and change masks. Approved
+baselines make missing streams, frequency drift, payload/decode changes, address
+moves, and out-of-range values visible after a restart. The scrape-safe subset
+is exported as `beacon_source_pgn_*` at `/metrics`; raw payloads and fingerprint
+identifiers stay in the UI/MCP response to avoid unbounded Prometheus labels.
 
 The admin API also exposes the complete PGN and field catalog, best-effort
 CAN/USB hardware discovery, stable Device NAME inventory, commissioning

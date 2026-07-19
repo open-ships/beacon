@@ -53,7 +53,7 @@ type dashboardEndpointNode struct {
 	ConnectorCount int
 }
 
-// endpointState resolves one configured component's node state:
+// componentState resolves one configured component's displayed state:
 //
 //   - its live supervisor status, if statuses (the reconciler's current
 //     snapshot) currently reports one for (kind, id) — "up"/"degraded"/
@@ -64,9 +64,9 @@ type dashboardEndpointNode struct {
 //   - "restarting", if it's enabled but transiently missing from statuses
 //     anyway — e.g. between a hot-apply's stop of the old instance and the
 //     new one's start landing in the supervisor's state map. This is the
-//     dashboard's documented tolerance for that window: it renders a
-//     neutral node, never a crash and never a silently dropped component.
-func endpointState(statuses []supervisor.Status, kind, id string, enabled bool) string {
+//     UI's documented tolerance for that window: it renders an explicit
+//     restarting state, never a crash and never a silently dropped component.
+func componentState(statuses []supervisor.Status, kind, id string, enabled bool) string {
 	for _, s := range statuses {
 		if s.Kind == kind && s.ID == id {
 			return s.State
@@ -95,7 +95,7 @@ func sourceEndpointNodes(sources []model.Source, statuses []supervisor.Status, c
 			Type:           string(s.Type),
 			Detail:         sourceDetail(s),
 			Enabled:        s.Enabled,
-			State:          endpointState(statuses, "source", s.ID, s.Enabled),
+			State:          componentState(statuses, "source", s.ID, s.Enabled),
 			ConnectorCount: connectorCounts[s.ID],
 		}
 	}
@@ -112,7 +112,7 @@ func sinkEndpointNodes(sinks []model.Sink, statuses []supervisor.Status, connect
 			Type:           string(s.Type),
 			Detail:         sinkDetail(s),
 			Enabled:        s.Enabled,
-			State:          endpointState(statuses, "sink", s.ID, s.Enabled),
+			State:          componentState(statuses, "sink", s.ID, s.Enabled),
 			ConnectorCount: connectorCounts[s.ID],
 		}
 	}
@@ -176,7 +176,7 @@ func dashboardFlows(connectors []model.Connector, reg *stats.Registry, statuses 
 		flows[i] = dashboardFlow{
 			Connector:       c,
 			Snapshot:        snap,
-			State:           stateFor(statuses, "connector", c.ID),
+			State:           componentState(statuses, "connector", c.ID, c.Enabled),
 			BytesPerSecText: humanizeBytes(snap.BytesPerSec, "/s"),
 			Source:          src,
 			Sink:            sink,
