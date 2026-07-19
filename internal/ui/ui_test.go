@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/open-ships/beacon/internal/config"
+	"github.com/open-ships/beacon/internal/mcpserver"
 	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/store"
 	"github.com/open-ships/beacon/internal/supervisor"
@@ -267,7 +268,7 @@ func TestDashboardPageIsSelfContained(t *testing.T) {
 	if !strings.Contains(html, `href="/ui/assets/favicon.svg`) {
 		t.Fatalf("dashboard page does not reference the site favicon:\n%s", html)
 	}
-	for _, nav := range []string{`href="https://openships.ai"`, `href="/ui/dashboard"`, `href="/ui/docs"`} {
+	for _, nav := range []string{`href="https://openships.ai"`, `href="/ui/dashboard"`, `href="/ui/docs"`, `href="/ui/mcp"`} {
 		if !strings.Contains(html, nav) {
 			t.Fatalf("dashboard page header does not link to %q:\n%s", nav, html)
 		}
@@ -288,6 +289,42 @@ func TestDashboardPageIsSelfContained(t *testing.T) {
 	}
 	if ext := externalURLs(html); len(ext) != 1 || ext[0] != "https://openships.ai" {
 		t.Fatalf("dashboard page external links = %v, want only https://openships.ai", ext)
+	}
+}
+
+func TestMCPReferencePageIsCompleteAndSelfContained(t *testing.T) {
+	srv := newAppMountedServer(t)
+	resp, err := http.Get(srv.URL + "/ui/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusOK)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	for _, want := range []string{
+		"Model Context Protocol", "offline ready", "Streamable HTTP", "2025-11-25",
+		`id="installation">Install Beacon MCP</h3>`,
+		"codex mcp add beacon --url http://127.0.0.1:2112/mcp",
+		"claude mcp add --transport http beacon http://127.0.0.1:2112/mcp",
+		"gemini mcp add beacon http://127.0.0.1:2112/mcp --transport http",
+		`.vscode/mcp.json`, "get_health",
+		`"url": "http://127.0.0.1:2112/mcp"`, `href="/ui/mcp" class="nav-link menu-active"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("MCP page does not contain %q:\n%s", want, html)
+		}
+	}
+	for _, tool := range mcpserver.Catalog() {
+		if !strings.Contains(html, "<code>"+tool.Name+"</code>") {
+			t.Fatalf("MCP page does not document tool %q", tool.Name)
+		}
+	}
+	if ext := externalURLs(html); len(ext) != 1 || ext[0] != "https://openships.ai" {
+		t.Fatalf("MCP page external links = %v, want only https://openships.ai", ext)
 	}
 }
 

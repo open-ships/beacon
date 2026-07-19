@@ -23,6 +23,7 @@ import (
 	"github.com/open-ships/beacon/internal/filter"
 	"github.com/open-ships/beacon/internal/identity"
 	"github.com/open-ships/beacon/internal/inventory"
+	"github.com/open-ships/beacon/internal/mcpserver"
 	"github.com/open-ships/beacon/internal/metrics"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/sink"
@@ -67,7 +68,7 @@ type App struct {
 
 // Run opens the store, seeds it if requested, starts the bus manager and
 // data server, performs an initial supervisor reconcile, and starts the
-// admin HTTP server (/health, /metrics, /api/). It returns once everything
+// admin HTTP server (/health, /metrics, /api/, /mcp). It returns once everything
 // is listening.
 //
 // Components started by the supervisor's reconcile run on the supervisor's
@@ -165,6 +166,7 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", promHandler)
 	mux.HandleFunc("GET /health", a.handleHealth)
+	mux.Handle(mcpserver.EndpointPath, mcpserver.Handler(cfgSvc, reg, version, log))
 	mux.Handle("/api/", apiHandler)
 	mux.Handle("/ui/", uiHandler)
 	// The exact-path "/ui" mount (alongside the "/ui/" subtree mount above)
@@ -253,7 +255,7 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (a *App) DataAddr() string { return a.ds.Addr() }
 
 // AdminAddr returns the bound address of the admin server (/health,
-// /metrics, /api/).
+// /metrics, /api/, /mcp).
 func (a *App) AdminAddr() string {
 	if a.adminLn == nil {
 		return ""

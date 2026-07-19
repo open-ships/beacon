@@ -1,0 +1,189 @@
+{{define "content"}}
+<div class="overview-page mcp-page">
+  <div class="page-heading">
+    <div>
+      <p class="eyebrow">Local agent control</p>
+      <h1>Model Context Protocol</h1>
+      <p>Connect an AI agent to Beacon to configure routes and inspect health and delivery state. The server, schemas, reference, and runtime are embedded and operate without an internet connection.</p>
+    </div>
+    <span class="badge badge-success">offline ready</span>
+  </div>
+
+  <div class="stats" aria-label="MCP connection summary">
+    <div class="stat">
+      <span class="stat-title">Endpoint</span>
+      <span class="mcp-stat-value"><code>/mcp</code></span>
+    </div>
+    <div class="stat">
+      <span class="stat-title">Transport</span>
+      <span class="mcp-stat-value">Streamable HTTP</span>
+    </div>
+    <div class="stat">
+      <span class="stat-title">Protocol</span>
+      <span class="mcp-stat-value"><code>2025-11-25</code></span>
+    </div>
+    <div class="stat">
+      <span class="stat-title">Tools</span>
+      <span class="mcp-stat-value">{{len .Tools}}</span>
+    </div>
+  </div>
+
+  <section class="overview-card mcp-section" aria-labelledby="installation">
+    <div class="section-heading">
+      <div>
+        <h3 id="installation">Install Beacon MCP</h3>
+        <p>Register Beacon's local Streamable HTTP endpoint with the agent you use. Run the matching command once while Beacon is running.</p>
+      </div>
+    </div>
+    <div class="mcp-install-grid">
+      <article class="mcp-install-card">
+        <h4>Codex</h4>
+        <p>Add Beacon from a terminal:</p>
+        <pre class="mcp-code"><code>codex mcp add beacon --url http://127.0.0.1:2112/mcp</code></pre>
+        <p class="mcp-install-note">Verify with <code>codex mcp list</code>, or open <code>/mcp</code> inside Codex.</p>
+      </article>
+
+      <article class="mcp-install-card">
+        <h4>Claude Code</h4>
+        <p>Add Beacon as a local HTTP server:</p>
+        <pre class="mcp-code"><code>claude mcp add --transport http beacon http://127.0.0.1:2112/mcp</code></pre>
+        <p class="mcp-install-note">Verify with <code>claude mcp list</code>, or open <code>/mcp</code> inside Claude Code.</p>
+      </article>
+
+      <article class="mcp-install-card">
+        <h4>Gemini CLI</h4>
+        <p>Add Beacon from a terminal:</p>
+        <pre class="mcp-code"><code>gemini mcp add beacon http://127.0.0.1:2112/mcp --transport http</code></pre>
+        <p class="mcp-install-note">Verify with <code>gemini mcp list</code>, or run <code>/mcp list</code>.</p>
+      </article>
+
+      <article class="mcp-install-card">
+        <h4>VS Code</h4>
+        <p>Run <code>MCP: Add Server</code> and choose HTTP, or add this to <code>.vscode/mcp.json</code>:</p>
+        <pre class="mcp-code"><code>{
+  "servers": {
+    "beacon": {
+      "type": "http",
+      "url": "http://127.0.0.1:2112/mcp"
+    }
+  }
+}</code></pre>
+      </article>
+    </div>
+    <p class="mcp-install-note">If the agent runs on another device, replace <code>127.0.0.1</code> with Beacon's address on your trusted onboard network. Claude.ai and Claude Desktop custom connectors run through Anthropic's cloud and cannot reach this localhost endpoint; use Claude Code for the offline setup.</p>
+    <div class="alert alert-warning" role="note">
+      <span>The MCP endpoint can change live configuration. Keep the admin listener on localhost or a trusted onboard network.</span>
+    </div>
+  </section>
+
+  <section class="metadata-section" aria-labelledby="mcp-tools">
+    <div class="section-heading">
+      <div>
+        <h3 id="mcp-tools">Tools</h3>
+        <p>Inputs and outputs are advertised as JSON Schema through <code>tools/list</code>.</p>
+      </div>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="table metadata-table mcp-tool-table">
+        <thead>
+          <tr><th>Name</th><th>Access</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          {{range .Tools}}
+          <tr>
+            <td><code>{{.Name}}</code></td>
+            <td><span class="badge {{if eq .Access "read"}}badge-ghost{{else if eq .Access "write"}}badge-warning{{else}}badge-error{{end}}">{{.Access}}</span></td>
+            <td>{{.Description}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="overview-card mcp-section" aria-labelledby="call-examples">
+    <div class="section-heading">
+      <div>
+        <h3 id="call-examples">Call examples</h3>
+        <p>These are the <code>params</code> bodies sent with MCP <code>tools/call</code>. Read configuration before making a change.</p>
+      </div>
+    </div>
+
+    <div class="mcp-call-grid">
+      <article>
+        <h4>Read configuration</h4>
+        <pre class="mcp-code"><code>{"name":"get_config","arguments":{}}</code></pre>
+      </article>
+      <article>
+        <h4>Add a SocketCAN source</h4>
+        <pre class="mcp-code"><code>{
+  "name": "put_source",
+  "arguments": {
+    "source": {
+      "id": "can0",
+      "name": "Engine room bus",
+      "type": "socketcan",
+      "enabled": true,
+      "interface": "can0"
+    }
+  }
+}</code></pre>
+      </article>
+      <article>
+        <h4>Add an SSE sink</h4>
+        <pre class="mcp-code"><code>{
+  "name": "put_sink",
+  "arguments": {
+    "sink": {
+      "id": "events",
+      "name": "Agent events",
+      "type": "http_sse",
+      "enabled": true,
+      "path": "/events"
+    }
+  }
+}</code></pre>
+      </article>
+      <article>
+        <h4>Add a connector route</h4>
+        <pre class="mcp-code"><code>{
+  "name": "put_connector",
+  "arguments": {
+    "connector": {
+      "id": "navigation",
+      "name": "Navigation data",
+      "source_id": "can0",
+      "sink_id": "events",
+      "filters": ["msg.pgn in [127250, 129025, 129026, 129029]"],
+      "buffer": {"max_age": "24h"},
+      "enabled": true,
+      "mode": "semantic"
+    }
+  }
+}</code></pre>
+      </article>
+      <article>
+        <h4>Read health</h4>
+        <pre class="mcp-code"><code>{"name":"get_health","arguments":{}}</code></pre>
+      </article>
+      <article>
+        <h4>Read one route's delivery statistics</h4>
+        <pre class="mcp-code"><code>{
+  "name": "get_delivery_statistics",
+  "arguments": {"connector_id": "navigation"}
+}</code></pre>
+      </article>
+    </div>
+  </section>
+
+  <section class="overview-card mcp-section" aria-labelledby="behavior">
+    <div class="section-heading"><h3 id="behavior">Behavior</h3></div>
+    <dl class="config-list">
+      <dt>Writes</dt><dd>Validated, persisted to SQLite, and reconciled against the running graph in the same call.</dd>
+      <dt>Tool errors</dt><dd>Invalid ids, types, references, CEL, durations, and in-use deletes return correctable MCP tool errors.</dd>
+      <dt>Statistics</dt><dd>Reports pending delivery separately from retained history, plus rates, totals, limits, drops, and the latest delivery error.</dd>
+      <dt>Network</dt><dd>No cloud service, CDN, remote schema, telemetry endpoint, or internet connection is required.</dd>
+    </dl>
+  </section>
+</div>
+{{end}}

@@ -643,6 +643,106 @@ code {
   gap: var(--space-4);
 }
 
+.mcp-page {
+  max-width: 1180px;
+}
+
+.mcp-page .page-heading > .badge {
+  flex: 0 0 auto;
+}
+
+.mcp-stat-value {
+  color: var(--black);
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.mcp-section {
+  gap: var(--space-4);
+}
+
+.mcp-install-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.mcp-install-card {
+  display: grid;
+  align-content: start;
+  gap: var(--space-2);
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  padding: var(--space-4);
+}
+
+.mcp-install-card h4 {
+  margin: 0;
+  color: var(--black);
+  font-size: 0.96rem;
+  font-weight: 800;
+}
+
+.mcp-install-card p {
+  margin: 0;
+}
+
+.mcp-install-note {
+  margin: 0;
+  color: #555;
+  font-size: 0.9rem;
+}
+
+.mcp-code {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 0;
+  border-radius: var(--radius);
+  background: var(--black);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.55;
+  padding: var(--space-4);
+}
+
+.mcp-code code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+.mcp-call-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.mcp-call-grid article {
+  display: grid;
+  align-content: start;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.mcp-call-grid h4 {
+  margin: 0;
+  color: var(--black);
+  font-size: 0.92rem;
+  font-weight: 800;
+}
+
+.mcp-tool-table {
+  min-width: 760px;
+}
+
+.mcp-tool-table td:last-child,
+.mcp-tool-table th:last-child {
+  text-align: left;
+}
+
 /* Height is driven by the server-rendered `rows` (one per config line) so the
    whole document is visible without an inner scrollbar. `pre` keeps JSON
    indentation intact and lets long lines scroll horizontally instead of
@@ -1551,6 +1651,11 @@ code {
   }
 
   .overview-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mcp-install-grid,
+  .mcp-call-grid {
     grid-template-columns: 1fr;
   }
 

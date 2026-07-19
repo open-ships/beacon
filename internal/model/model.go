@@ -56,7 +56,7 @@ const (
 )
 
 // ReservedPathPrefixes cannot be used by HTTP sink paths.
-var ReservedPathPrefixes = []string{"/api", "/ui", "/docs", "/metrics", "/health"}
+var ReservedPathPrefixes = []string{"/api", "/ui", "/docs", "/mcp", "/metrics", "/health"}
 
 // Duration marshals as a Go duration string ("90s", "24h").
 type Duration time.Duration

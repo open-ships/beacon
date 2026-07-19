@@ -20,6 +20,7 @@ import (
 	"github.com/open-ships/beacon/internal/bus"
 	"github.com/open-ships/beacon/internal/config"
 	"github.com/open-ships/beacon/internal/inventory"
+	"github.com/open-ships/beacon/internal/mcpserver"
 	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/supervisor"
 	"github.com/open-ships/beacon/internal/sysinfo"
@@ -186,6 +187,13 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 
 	mux.HandleFunc("GET /ui/config", handleConfigPage(svc, assetVersion, log))
 	mux.HandleFunc("POST /ui/config/import", handleConfigImport(svc, assetVersion, log))
+	mux.HandleFunc("GET /ui/mcp", func(w http.ResponseWriter, r *http.Request) {
+		data := mcpPageData{
+			pageData: newPageData("MCP", assetVersion, "mcp"),
+			Tools:    mcpserver.Catalog(),
+		}
+		renderPage(w, log, "mcp", data)
+	})
 
 	// Docs: the onboard operator manual — see docspages.go. /ui/docs 302s to
 	// the first page; /ui/docs/{slug} serves one page or 404s for an unknown
