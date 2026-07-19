@@ -31,7 +31,7 @@
     </thead>
     <tbody>
       {{range .Sinks}}
-      <tr data-href="/ui/sinks/{{.ID}}/">
+      <tr class="endpoint-status-row state-{{.State}}" data-href="/ui/sinks/{{.ID}}/">
         <td><a class="link" href="/ui/sinks/{{.ID}}/">{{.Name}}</a></td>
         <td><code>{{.ID}}</code></td>
         <td>{{.Type}}</td>

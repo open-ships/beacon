@@ -77,7 +77,7 @@ func markerSnippet(t *testing.T, body, marker string) string {
 	if idx < 0 {
 		t.Fatalf("dashboard fragment has no marker %q:\n%s", marker, body)
 	}
-	start := idx - 250
+	start := idx - 450
 	if start < 0 {
 		start = 0
 	}
@@ -255,13 +255,13 @@ func TestDashboardFragEndpointNodeStates(t *testing.T) {
 	body := dashboardFrag(t, srv)
 
 	cases := []struct {
-		name, wantBadgeClass, wantText string
+		name, wantBadgeClass, wantText, wantStateClass string
 	}{
-		{"Up Src", "badge-success", "up"},
-		{"Degraded Src", "badge-warning", "degraded"},
-		{"Err Sink", "badge-error", "error"},
-		{"Restarting Src", "badge-ghost", "restarting"},
-		{"Off Src", "badge-ghost", "disabled"},
+		{"Up Src", "badge-success", "up", "endpoint-status-surface state-up"},
+		{"Degraded Src", "badge-warning", "degraded", "endpoint-status-surface state-degraded"},
+		{"Err Sink", "badge-error", "error", "endpoint-status-surface state-error"},
+		{"Restarting Src", "badge-ghost", "restarting", "endpoint-status-surface state-restarting"},
+		{"Off Src", "badge-ghost", "disabled", "endpoint-status-surface state-disabled"},
 	}
 	for _, c := range cases {
 		snip := markerSnippet(t, body, c.name)
@@ -270,6 +270,38 @@ func TestDashboardFragEndpointNodeStates(t *testing.T) {
 		}
 		if !strings.Contains(snip, ">"+c.wantText+"<") {
 			t.Errorf("node for %q = %q, want state text %q", c.name, snip, c.wantText)
+		}
+		if !strings.Contains(snip, c.wantStateClass) {
+			t.Errorf("node for %q = %q, want status surface class %q", c.name, snip, c.wantStateClass)
+		}
+	}
+
+	for _, want := range []string{
+		`<tr class="endpoint-status-row state-up" data-href="/ui/sources/up-src/">`,
+		`<tr class="endpoint-status-row state-degraded" data-href="/ui/sources/degraded-src/">`,
+		`<tr class="endpoint-status-row state-error" data-href="/ui/sinks/err-sink/">`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard metadata missing status-colored row %q", want)
+		}
+	}
+
+	for _, tc := range []struct {
+		path, want string
+	}{
+		{"/ui/sources", `<tr class="endpoint-status-row state-up" data-href="/ui/sources/up-src/">`},
+		{"/ui/sinks", `<tr class="endpoint-status-row state-error" data-href="/ui/sinks/err-sink/">`},
+		{"/ui/frag/sources/up-src/overview", `<section class="overview-card endpoint-status-surface state-up" aria-label="Status">`},
+		{"/ui/frag/sinks/err-sink/overview", `<section class="overview-card endpoint-status-surface state-error" aria-label="Status">`},
+	} {
+		resp, err := http.Get(srv.URL + tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustStatus(t, resp, http.StatusOK)
+		page := mustBody(t, resp)
+		if !strings.Contains(page, tc.want) {
+			t.Errorf("%s missing status background class %q:\n%s", tc.path, tc.want, page)
 		}
 	}
 }

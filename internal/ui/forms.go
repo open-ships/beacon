@@ -210,7 +210,7 @@ type sourceRow struct {
 func sourceRows(sources []model.Source, statuses []supervisor.Status) []sourceRow {
 	rows := make([]sourceRow, len(sources))
 	for i, s := range sources {
-		rows[i] = sourceRow{Source: s, State: stateFor(statuses, "source", s.ID), Detail: sourceDetail(s)}
+		rows[i] = sourceRow{Source: s, State: endpointState(statuses, "source", s.ID, s.Enabled), Detail: sourceDetail(s)}
 	}
 	return rows
 }
@@ -636,7 +636,7 @@ type sinkRow struct {
 func sinkRows(sinks []model.Sink, statuses []supervisor.Status) []sinkRow {
 	rows := make([]sinkRow, len(sinks))
 	for i, s := range sinks {
-		rows[i] = sinkRow{Sink: s, State: stateFor(statuses, "sink", s.ID), Detail: sinkDetail(s)}
+		rows[i] = sinkRow{Sink: s, State: endpointState(statuses, "sink", s.ID, s.Enabled), Detail: sinkDetail(s)}
 	}
 	return rows
 }

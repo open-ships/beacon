@@ -965,12 +965,80 @@ code {
   box-shadow: 0 0 0 4px var(--warning-bg);
 }
 
-.state-error {
+/* Source/sink health surfaces share one visual language across the flow DAG,
+   metadata/config tables, and detail status card. Badges retain the explicit
+   state text, so color is never the sole status signal. */
+.endpoint-status-surface,
+.endpoint-status-row {
+  --endpoint-state-accent: var(--gray);
+  --endpoint-state-bg: var(--surface-muted);
+  --endpoint-state-hover: var(--surface-strong);
+  --endpoint-state-border: var(--border-strong);
+}
+
+.endpoint-status-surface.state-up,
+.endpoint-status-row.state-up {
+  --endpoint-state-accent: var(--success);
+  --endpoint-state-bg: var(--success-bg);
+  --endpoint-state-hover: #ddf1e6;
+  --endpoint-state-border: rgba(15, 122, 79, 0.42);
+}
+
+.endpoint-status-surface.state-degraded,
+.endpoint-status-row.state-degraded {
+  --endpoint-state-accent: var(--warning);
+  --endpoint-state-bg: var(--warning-bg);
+  --endpoint-state-hover: #fbe9c8;
+  --endpoint-state-border: rgba(166, 95, 0, 0.42);
+}
+
+.endpoint-status-surface.state-error,
+.endpoint-status-row.state-error {
+  --endpoint-state-accent: var(--error);
+  --endpoint-state-bg: var(--error-bg);
+  --endpoint-state-hover: #f9e2df;
+  --endpoint-state-border: rgba(180, 35, 24, 0.45);
+}
+
+.endpoint-status-surface.state-restarting,
+.endpoint-status-row.state-restarting {
+  --endpoint-state-accent: var(--accent);
+  --endpoint-state-bg: #edf0ff;
+  --endpoint-state-hover: #e1e6ff;
+  --endpoint-state-border: rgba(35, 55, 255, 0.35);
+}
+
+.endpoint-status-surface {
+  border-color: var(--endpoint-state-border);
+  background: var(--endpoint-state-bg);
+}
+
+.dag-node.endpoint-status-surface {
+  box-shadow: inset 4px 0 0 var(--endpoint-state-accent);
+}
+
+.overview-card.endpoint-status-surface {
+  box-shadow: inset 4px 0 0 var(--endpoint-state-accent), var(--shadow);
+}
+
+.endpoint-status-row {
+  background: var(--endpoint-state-bg);
+}
+
+.endpoint-status-row > td:first-child {
+  box-shadow: inset 4px 0 0 var(--endpoint-state-accent);
+}
+
+.table tbody tr.endpoint-status-row[data-href]:hover {
+  background: var(--endpoint-state-hover);
+}
+
+.dag-node-connector.state-error {
   border-color: rgba(180, 35, 24, 0.45);
 }
 
-.state-degraded,
-.state-restarting {
+.dag-node-connector.state-degraded,
+.dag-node-connector.state-restarting {
   border-color: rgba(166, 95, 0, 0.42);
 }
 

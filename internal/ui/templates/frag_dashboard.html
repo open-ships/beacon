@@ -30,7 +30,7 @@
     <div class="dag-label dag-label-sink">Sinks</div>
     {{range .Flows}}
     <div class="dag-row">
-      <a class="dag-node dag-node-source state-{{.Source.State}}" href="/ui/sources/{{.Source.ID}}/" data-node-id="{{.Source.ID}}">
+      <a class="dag-node dag-node-source endpoint-status-surface state-{{.Source.State}}" href="/ui/sources/{{.Source.ID}}/" data-node-id="{{.Source.ID}}">
         <div class="dag-node-header">
           <span class="dag-kind">source</span>
           {{if eq .Source.State "up"}}<span class="badge badge-success">up</span>
@@ -61,7 +61,7 @@
 
       <div class="dag-link" aria-hidden="true"></div>
 
-      <a class="dag-node dag-node-sink state-{{.Sink.State}}" href="/ui/sinks/{{.Sink.ID}}/" data-node-id="{{.Sink.ID}}">
+      <a class="dag-node dag-node-sink endpoint-status-surface state-{{.Sink.State}}" href="/ui/sinks/{{.Sink.ID}}/" data-node-id="{{.Sink.ID}}">
         <div class="dag-node-header">
           <span class="dag-kind">sink</span>
           {{if eq .Sink.State "up"}}<span class="badge badge-success">up</span>
@@ -104,7 +104,7 @@
           </thead>
           <tbody>
             {{range .Sources}}
-            <tr data-href="/ui/sources/{{.ID}}/">
+            <tr class="endpoint-status-row state-{{.State}}" data-href="/ui/sources/{{.ID}}/">
               <td><a class="link" href="/ui/sources/{{.ID}}/">{{.Name}}</a></td>
               <td><code>{{.ID}}</code></td>
               <td>{{.Type}}</td>
@@ -150,7 +150,7 @@
           </thead>
           <tbody>
             {{range .Sinks}}
-            <tr data-href="/ui/sinks/{{.ID}}/">
+            <tr class="endpoint-status-row state-{{.State}}" data-href="/ui/sinks/{{.ID}}/">
               <td><a class="link" href="/ui/sinks/{{.ID}}/">{{.Name}}</a></td>
               <td><code>{{.ID}}</code></td>
               <td>{{.Type}}</td>

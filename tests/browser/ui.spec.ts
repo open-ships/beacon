@@ -23,7 +23,11 @@ test('operator can load the dashboard and create a source', async ({ page }) => 
 
   await expect(page).toHaveURL(/\/ui\/dashboard$/);
   await expect(page.getByRole('status')).toContainText(`Source "${sourceID}" created`);
-  await expect(page.getByRole('link', { name: sourceName })).toBeVisible();
+  const sourceLink = page.getByRole('link', { name: sourceName });
+  await expect(sourceLink).toBeVisible();
+  const sourceRow = sourceLink.locator('xpath=ancestor::tr');
+  await expect(sourceRow).toHaveClass(/endpoint-status-row state-(up|degraded|error|restarting|disabled)/);
+  expect(await sourceRow.evaluate((row) => getComputedStyle(row).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
 });
 
 test('connector CEL editor provides autocomplete and live diagnostics', async ({ page }) => {
