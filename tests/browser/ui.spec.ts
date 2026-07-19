@@ -68,3 +68,26 @@ test('connector CEL editor provides autocomplete and live diagnostics', async ({
   await expect(page.locator('.cel-filter-error')).toHaveCount(0);
   await expect(page.locator('#filter-feedback')).toContainText('filters OK');
 });
+
+test('MCP reference is available from the header and stays local', async ({ page }) => {
+  const requestedOrigins = new Set<string>();
+  page.on('request', (request) => requestedOrigins.add(new URL(request.url()).origin));
+
+  await page.goto('/ui/dashboard');
+  const mcpLink = page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'mcp', exact: true });
+  await expect(mcpLink).toBeVisible();
+  await mcpLink.click();
+
+  await expect(page).toHaveURL(/\/ui\/mcp$/);
+  await expect(page).toHaveTitle('MCP - beacon');
+  await expect(page.getByRole('heading', { name: 'Model Context Protocol' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Install Beacon MCP' })).toBeVisible();
+  await expect(page.getByText('codex mcp add beacon --url http://127.0.0.1:2112/mcp', { exact: true })).toBeVisible();
+  await expect(page.getByText('claude mcp add --transport http beacon http://127.0.0.1:2112/mcp', { exact: true })).toBeVisible();
+  await expect(page.getByText('gemini mcp add beacon http://127.0.0.1:2112/mcp --transport http', { exact: true })).toBeVisible();
+  await expect(page.getByText('.vscode/mcp.json', { exact: true })).toBeVisible();
+  await expect(page.getByText('/mcp', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('table').getByText('get_delivery_statistics', { exact: true })).toBeVisible();
+  await expect(page.getByText('offline ready', { exact: true })).toBeVisible();
+  expect([...requestedOrigins]).toEqual(['http://127.0.0.1:32112']);
+});

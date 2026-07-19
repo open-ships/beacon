@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/open-ships/beacon/internal/mcpserver"
 	"github.com/open-ships/beacon/internal/model"
 )
 
@@ -114,5 +117,25 @@ func TestDocsRedirectToUIDocs(t *testing.T) {
 				t.Fatalf("Location = %q, want %q", loc, c.want)
 			}
 		})
+	}
+}
+
+func TestMCPIsMountedOnAdminServer(t *testing.T) {
+	a := startTestApp(t)
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "app-test", Version: "test"}, nil)
+	session, err := client.Connect(context.Background(), &sdkmcp.StreamableClientTransport{
+		Endpoint: "http://" + a.AdminAddr() + mcpserver.EndpointPath,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Close() }()
+
+	tools, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools.Tools) != len(mcpserver.Catalog()) {
+		t.Fatalf("tools = %d, want %d", len(tools.Tools), len(mcpserver.Catalog()))
 	}
 }

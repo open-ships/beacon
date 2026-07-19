@@ -53,13 +53,13 @@ Flags (all optional; shown with their defaults):
 |---|---|---|
 | `--db` | `beacon.db` | SQLite database path — configuration and every connector's message buffer live here |
 | `--data-address` | `0.0.0.0:8080` | Bind address for sink endpoints (SSE/WS; TCP sinks bind their own address) |
-| `--admin-address` | `0.0.0.0:2112` | Bind address for this UI, the config API, `/health`, and `/metrics` |
+| `--admin-address` | `0.0.0.0:2112` | Bind address for this UI, the config API, `/mcp`, `/health`, and `/metrics` |
 | `--seed` | (none) | JSON config file to load into an empty database on first boot |
 | `--log-level` | `info` | `debug`, `info`, `warn`, or `error` |
 
 Two separate HTTP servers are running: one for sink traffic (the data you
 configure sinks to serve), one for everything administrative (this UI, the
-API, health, and metrics). They're kept apart so a sink misconfiguration
+API, MCP, health, and metrics). They're kept apart so a sink misconfiguration
 never risks the surface you use to fix it.
 
 ### Docker

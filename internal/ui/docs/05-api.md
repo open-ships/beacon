@@ -6,6 +6,32 @@ start from its own documentation rather than this page:
 
 - `/api/docs` — an interactive, offline reference (no CDN dependency)
 - `/api/openapi.json` — the machine-readable OpenAPI 3.1 document backing it
+- `/ui/mcp` — the offline MCP connection guide, tool catalog, and call examples
+
+## MCP (for AI agents)
+
+Beacon serves the MCP Streamable HTTP transport at `/mcp` on the admin port.
+Configure an MCP client with the local URL; it handles initialization and
+session headers:
+
+```json
+{
+  "mcpServers": {
+    "beacon": {"url": "http://127.0.0.1:2112/mcp"}
+  }
+}
+```
+
+The tools are `get_config`, `put_source`, `put_sink`, `put_connector`,
+`delete_source`, `delete_sink`, `delete_connector`, `get_health`, and
+`get_delivery_statistics`. Their input and output JSON Schemas are returned by
+MCP `tools/list`. Configuration writes use the same validation, SQLite
+persistence, and immediate supervisor reconciliation as the REST calls below.
+
+MCP needs no cloud relay, separate process, remote schema, or internet access.
+It can change live configuration, so bind the admin listener to localhost or a
+trusted onboard network. Cross-origin browser requests are rejected on every
+MCP method.
 
 What follows is a curl-first walkthrough of the shapes and gotchas that
 aren't obvious from the schema alone.

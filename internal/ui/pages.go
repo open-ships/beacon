@@ -3,6 +3,8 @@ package ui
 import (
 	"embed"
 	"html/template"
+
+	"github.com/open-ships/beacon/internal/mcpserver"
 )
 
 //go:embed templates/*.html
@@ -63,6 +65,7 @@ var pages = map[string]*template.Template{
 	"overview": mustPage("overview.html"),
 	"config":   mustPage("config.html"),
 	"docs":     mustPage("docs.html"),
+	"mcp":      mustPage("mcp.html"),
 }
 
 // fragTemplates holds every frag_*.html file parsed into ONE shared
@@ -90,6 +93,11 @@ type pageData struct {
 	// flash.go). Empty on every page that isn't the redirect destination.
 	Flash       string
 	Breadcrumbs []breadcrumbItem
+}
+
+type mcpPageData struct {
+	pageData
+	Tools []mcpserver.ToolInfo
 }
 
 type breadcrumbItem struct {

@@ -45,6 +45,7 @@ Once it is running:
 
 - **Dashboard:** [localhost:2112/ui](http://localhost:2112/ui)
 - **Onboard manual:** [localhost:2112/ui/docs](http://localhost:2112/ui/docs)
+- **MCP agent reference:** [localhost:2112/ui/mcp](http://localhost:2112/ui/mcp)
 - **Interactive API reference:** [localhost:2112/api/docs](http://localhost:2112/api/docs)
 - **Health:** [localhost:2112/health](http://localhost:2112/health)
 
@@ -308,6 +309,8 @@ take away the control surface used to repair it.
 |---|---|---|
 | Dashboard | `:2112/ui` | Route graph, pending/retained state, bus diagnostics, device commissioning |
 | Manual | `:2112/ui/docs` | Offline getting started, CAN setup, concepts, filters, API, troubleshooting |
+| MCP endpoint | `:2112/mcp` | Streamable HTTP tools for agent configuration, health, and delivery statistics |
+| MCP reference | `:2112/ui/mcp` | Embedded connection guide, tool catalog, and call examples |
 | REST API | `:2112/api/v1/...` | Configuration, live state, PGN catalog, inventory, commissioning |
 | API reference | `:2112/api/docs` | Interactive, embedded OpenAPI 3.1 documentation |
 | OpenAPI document | `:2112/api/openapi.json` | Machine-readable discovery for SDKs, scripts, and agents |
@@ -315,6 +318,23 @@ take away the control surface used to repair it.
 | Metrics | `:2112/metrics` | Prometheus exposition |
 | SSE / WebSocket sinks | `:8080/<configured-path>` | Data and replay endpoints |
 | TCP sinks | Configured listener address | Live-only NDJSON stream |
+
+An MCP client can connect without a cloud relay or companion process:
+
+```json
+{
+  "mcpServers": {
+    "beacon": {"url": "http://127.0.0.1:2112/mcp"}
+  }
+}
+```
+
+The MCP server exposes nine tools to read the complete configuration, create or
+update sources, sinks, and connector routes, delete each entity type, and read
+health or delivery statistics. It uses the same validation, SQLite persistence,
+and hot reconciliation as the UI and REST API. The server, tool schemas, and
+reference page are all embedded in the Beacon binary; no internet connection,
+remote schema, CDN, or hosted MCP service is required.
 
 The admin API also exposes the complete PGN and field catalog, best-effort
 CAN/USB hardware discovery, stable Device NAME inventory, commissioning
@@ -335,7 +355,7 @@ remote streams, development, and administration.
 |---|---|---|
 | `--db` | `beacon.db` | SQLite configuration, appliance identity, inventory, and connector buffers |
 | `--data-address` | `0.0.0.0:8080` | Bind address for HTTP sink endpoints |
-| `--admin-address` | `0.0.0.0:2112` | Bind address for UI, API, health, and metrics |
+| `--admin-address` | `0.0.0.0:2112` | Bind address for UI, API, MCP, health, and metrics |
 | `--seed` | none | Config loaded into an empty database; ignored after configuration exists |
 | `--log-level` | `info` | `debug`, `info`, `warn`, or `error` JSON logs |
 

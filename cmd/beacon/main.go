@@ -37,7 +37,7 @@ func main() {
 	}
 	root.Flags().StringVar(&dbPath, "db", "beacon.db", "SQLite database path (config + buffers)")
 	root.Flags().StringVar(&dataAddr, "data-address", "0.0.0.0:8080", "data server bind address (sink endpoints)")
-	root.Flags().StringVar(&adminAddr, "admin-address", "0.0.0.0:2112", "admin server bind address (/health, /metrics)")
+	root.Flags().StringVar(&adminAddr, "admin-address", "0.0.0.0:2112", "admin server bind address (UI, API, MCP, health, metrics)")
 	root.Flags().StringVar(&seedPath, "seed", "", "JSON config to seed an empty database")
 	root.Flags().StringVar(&logLevel, "log-level", "info", "debug | info | warn | error")
 	root.AddCommand(newExportCmd(), newImportCmd())
