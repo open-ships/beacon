@@ -238,7 +238,182 @@
       if (!editor.contains(event.target)) close();
     });
 
+    attachLiveValidation(editor, textarea);
     loadCatalog();
+  }
+
+  function attachLiveValidation(editor, textarea) {
+    var highlight = editor.querySelector("[data-cel-highlight]");
+    var fieldset = editor.closest("fieldset");
+    var feedback = fieldset && fieldset.querySelector("[data-cel-validation-feedback]");
+    if (!highlight || !feedback) return;
+
+    var validationTimer;
+    var validationRequest;
+    var validationSequence = 0;
+
+    function syncHighlightScroll() {
+      highlight.scrollTop = textarea.scrollTop;
+      highlight.scrollLeft = textarea.scrollLeft;
+    }
+
+    function clearFeedback() {
+      feedback.replaceChildren();
+    }
+
+    function showChecking() {
+      clearFeedback();
+      var checking = document.createElement("div");
+      checking.className = "filter-validation-checking";
+      checking.setAttribute("role", "status");
+      checking.textContent = "Checking filters…";
+      feedback.appendChild(checking);
+    }
+
+    function showValid() {
+      clearFeedback();
+      var valid = document.createElement("div");
+      valid.className = "text-success text-sm";
+      valid.setAttribute("role", "status");
+      valid.textContent = "filters OK";
+      feedback.appendChild(valid);
+    }
+
+    function showDiagnostics(diagnostics) {
+      clearFeedback();
+      var alert = document.createElement("div");
+      alert.className = "alert alert-error filter-validation-errors";
+      alert.setAttribute("role", "alert");
+      var list = document.createElement("ul");
+      diagnostics.forEach(function (diagnostic) {
+        var item = document.createElement("li");
+        item.textContent = "Line " + diagnostic.line + ", column " + diagnostic.column + ": " + diagnostic.message;
+        list.appendChild(item);
+      });
+      alert.appendChild(list);
+      feedback.appendChild(alert);
+    }
+
+    function showUnavailable() {
+      clearFeedback();
+      var alert = document.createElement("div");
+      alert.className = "alert alert-warning filter-validation-errors";
+      alert.setAttribute("role", "status");
+      alert.textContent = "Live filter validation is temporarily unavailable. Save will still validate the filters.";
+      feedback.appendChild(alert);
+    }
+
+    function renderHighlight(text, diagnostics) {
+      var ranges = diagnosticRanges(text, diagnostics);
+      var cursor = 0;
+      highlight.replaceChildren();
+      ranges.forEach(function (range) {
+        if (range.start > cursor) {
+          highlight.appendChild(document.createTextNode(text.slice(cursor, range.start)));
+        }
+        var error = document.createElement("mark");
+        error.className = "cel-filter-error";
+        error.textContent = text.slice(range.start, range.end);
+        highlight.appendChild(error);
+        cursor = range.end;
+      });
+      if (cursor < text.length) {
+        highlight.appendChild(document.createTextNode(text.slice(cursor)));
+      }
+      if (text === "" || text.endsWith("\n")) {
+        highlight.appendChild(document.createTextNode("\u200b"));
+      }
+      syncHighlightScroll();
+    }
+
+    function queueValidation() {
+      window.clearTimeout(validationTimer);
+      if (validationRequest) validationRequest.abort();
+      validationRequest = null;
+      validationSequence++;
+      renderHighlight(textarea.value, []);
+      textarea.setAttribute("aria-invalid", "false");
+      textarea.removeAttribute("aria-busy");
+
+      if (textarea.value.trim() === "") {
+        clearFeedback();
+        return;
+      }
+
+      showChecking();
+      textarea.setAttribute("aria-busy", "true");
+      var sequence = validationSequence;
+      validationTimer = window.setTimeout(function () {
+        validate(sequence, textarea.value);
+      }, 300);
+    }
+
+    function validate(sequence, value) {
+      validationRequest = new AbortController();
+      var body = new URLSearchParams();
+      body.set("filters", value);
+      fetch("/ui/frag/validate-filters", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: body.toString(),
+        credentials: "same-origin",
+        signal: validationRequest.signal
+      })
+        .then(function (response) {
+          if (!response.ok) throw new Error("validation request failed");
+          return response.json();
+        })
+        .then(function (result) {
+          if (sequence !== validationSequence || textarea.value !== value) return;
+          var diagnostics = Array.isArray(result.diagnostics) ? result.diagnostics : [];
+          renderHighlight(value, diagnostics);
+          textarea.setAttribute("aria-busy", "false");
+          textarea.setAttribute("aria-invalid", result.valid ? "false" : "true");
+          if (result.valid) showValid();
+          else showDiagnostics(diagnostics);
+        })
+        .catch(function (error) {
+          if (error.name === "AbortError" || sequence !== validationSequence) return;
+          textarea.setAttribute("aria-busy", "false");
+          textarea.setAttribute("aria-invalid", "false");
+          renderHighlight(textarea.value, []);
+          showUnavailable();
+        });
+    }
+
+    textarea.addEventListener("input", queueValidation);
+    textarea.addEventListener("scroll", syncHighlightScroll);
+    renderHighlight(textarea.value, []);
+    if (textarea.value.trim() !== "") queueValidation();
+  }
+
+  function diagnosticRanges(text, diagnostics) {
+    var ranges = (Array.isArray(diagnostics) ? diagnostics : [])
+      .map(function (diagnostic) {
+        var start = Math.max(0, Math.min(text.length, Number(diagnostic.start)));
+        var end = Math.max(start, Math.min(text.length, Number(diagnostic.end)));
+        if (end === start && start < text.length) end++;
+        return { start: start, end: end };
+      })
+      .filter(function (range) {
+        return range.end > range.start;
+      })
+      .sort(function (left, right) {
+        return left.start - right.start || left.end - right.end;
+      });
+
+    return ranges.reduce(function (merged, range) {
+      var previous = merged[merged.length - 1];
+      if (previous && range.start <= previous.end) {
+        previous.end = Math.max(previous.end, range.end);
+      } else {
+        merged.push(range);
+      }
+      return merged;
+    }, []);
   }
 
   function completionContext(value, cursor, manual) {

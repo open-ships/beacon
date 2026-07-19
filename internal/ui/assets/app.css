@@ -896,10 +896,60 @@ code {
   position: relative;
 }
 
+.cel-filter-editor {
+  position: relative;
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.cel-filter-highlight,
 .cel-filter-input {
-  display: block;
   font-family: var(--font-mono);
   line-height: 1.45;
+  tab-size: 8;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.cel-filter-highlight {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  margin: 0;
+  color: transparent;
+  pointer-events: none;
+  padding: 0.55rem 0.7rem;
+}
+
+.cel-filter-input {
+  position: relative;
+  z-index: 1;
+  display: block;
+  overflow: auto;
+  background: transparent;
+  caret-color: var(--gray-dark);
+  scrollbar-gutter: stable;
+}
+
+.cel-filter-error {
+  background: transparent;
+  color: transparent;
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--error);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+
+.cel-filter-input[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.cel-filter-input[aria-invalid="true"]:focus {
+  outline-color: rgba(180, 35, 24, 0.14);
 }
 
 .cel-completions {
@@ -968,6 +1018,29 @@ code {
 
 .field-help {
   margin: 0.38rem 0 0;
+}
+
+.filter-validation-feedback:not(:empty) {
+  margin-top: 0.45rem;
+}
+
+.filter-validation-checking {
+  color: var(--gray);
+  font-size: 0.82rem;
+}
+
+.filter-validation-errors {
+  padding: 0.65rem 0.78rem;
+  font-size: 0.82rem;
+}
+
+.filter-validation-errors ul {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.filter-validation-errors li + li {
+  margin-top: 0.25rem;
 }
 
 .field-help kbd {

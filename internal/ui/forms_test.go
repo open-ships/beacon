@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/open-ships/beacon/internal/config"
 	"github.com/open-ships/beacon/internal/model"
@@ -1465,7 +1466,7 @@ func TestConnectorDeleteRoundTripAndUnknownID(t *testing.T) {
 	}
 }
 
-// --- CEL validate-on-blur fragment ---
+// --- CEL validation ---
 
 func TestValidateFiltersFragmentHappyAndError(t *testing.T) {
 	srv, _ := newUIServerWithService(t)
@@ -1482,6 +1483,48 @@ func TestValidateFiltersFragmentHappyAndError(t *testing.T) {
 	body2 := mustBody(t, resp2)
 	if !strings.Contains(body2, "alert-error") {
 		t.Fatalf("expected an error alert for an invalid CEL expression:\n%s", body2)
+	}
+}
+
+func TestValidateFiltersJSONReturnsEditorRanges(t *testing.T) {
+	srv, _ := newUIServerWithService(t)
+	text := "msg.timestamp == \"😁\"\n  msg.source == @"
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/ui/frag/validate-filters", strings.NewReader(url.Values{"filters": {text}}.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	defer func() { _ = resp.Body.Close() }()
+	var body struct {
+		Valid       bool `json:"valid"`
+		Diagnostics []struct {
+			Start   int    `json:"start"`
+			End     int    `json:"end"`
+			Line    int    `json:"line"`
+			Column  int    `json:"column"`
+			Message string `json:"message"`
+		} `json:"diagnostics"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Valid || len(body.Diagnostics) != 1 {
+		t.Fatalf("validation response = %+v, want one diagnostic", body)
+	}
+	diagnostic := body.Diagnostics[0]
+	atByte := strings.Index(text, "@")
+	wantStart := len(utf16.Encode([]rune(text[:atByte])))
+	if diagnostic.Start != wantStart || diagnostic.End != wantStart+1 || diagnostic.Line != 2 || diagnostic.Column != 17 {
+		t.Fatalf("diagnostic = %+v, want start=%d end=%d line=2 column=17", diagnostic, wantStart, wantStart+1)
+	}
+	if !strings.Contains(diagnostic.Message, "token recognition error") {
+		t.Fatalf("diagnostic message = %q", diagnostic.Message)
 	}
 }
 

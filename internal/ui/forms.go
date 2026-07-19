@@ -1039,7 +1039,7 @@ func handleSinkDelete(svc *config.Service, log *slog.Logger) http.HandlerFunc {
 // (see forms.go's package doc comment): no type switch (source_id/sink_id
 // are plain <select>s populated from svc.ListSources/ListSinks rather than
 // a type-driven fieldset), a filters textarea (one CEL expression per line)
-// with its own advisory validate-on-blur endpoint, and a detail page with
+// with its own advisory live-validation endpoint, and a detail page with
 // live stats read from reg (a *stats.Registry) instead of statuses.
 // DeleteConnector has no ErrInUse case (config.Service: "nothing else
 // references a connector"), so handleConnectorDelete's error switch is one
@@ -1394,23 +1394,30 @@ func handleConnectorEditPage(svc *config.Service, reg *stats.Registry, version s
 	}
 }
 
-// filterValidateData is frag_filter_validate.html's data: the advisory
-// CEL-compile result of a filters textarea's blur event (see
-// handleValidateFiltersFrag). Never blocks a submit — svc.PutConnector
-// re-validates authoritatively regardless of what this fragment last said.
+// filterValidateData is frag_filter_validate.html's data for non-JSON callers
+// of handleValidateFiltersFrag. The enhanced connector editor requests JSON
+// diagnostics instead; either path is advisory, and svc.PutConnector always
+// re-validates authoritatively on Save.
 type filterValidateData struct {
 	OK  bool
 	Err string
 }
 
-// handleValidateFiltersFrag serves POST /ui/frag/validate-filters: the
-// filters textarea's hx-post="blur changed" target. Advisory only — it
-// never persists anything, just reports whether svc.ValidateFilters
-// CEL-compiles the textarea's current lines.
+// handleValidateFiltersFrag serves POST /ui/frag/validate-filters. Requests
+// accepting application/json receive source ranges for live editor
+// underlines; other callers retain the original HTML status fragment.
 func handleValidateFiltersFrag(svc *config.Service, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
+			if acceptsJSON(r) {
+				http.Error(w, "invalid form submission", http.StatusBadRequest)
+				return
+			}
 			renderFragment(w, log, "filter-validate", filterValidateData{Err: "invalid form submission: " + err.Error()})
+			return
+		}
+		if acceptsJSON(r) {
+			renderCELValidationJSON(w, log, r.PostFormValue("filters"))
 			return
 		}
 		filters := parseFilters(r.PostFormValue("filters"))

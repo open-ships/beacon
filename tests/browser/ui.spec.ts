@@ -26,7 +26,7 @@ test('operator can load the dashboard and create a source', async ({ page }) => 
   await expect(page.getByRole('link', { name: sourceName })).toBeVisible();
 });
 
-test('connector CEL filters provide typeahead and keyboard completion', async ({ page }) => {
+test('connector CEL editor provides autocomplete and live diagnostics', async ({ page }) => {
   await page.goto('/ui/connectors/new');
 
   const filters = page.locator('#conn-filters');
@@ -52,4 +52,19 @@ test('connector CEL filters provide typeahead and keyboard completion', async ({
   await filters.press('Control+Space');
   await expect(completions).toBeVisible();
   await expect(page.getByRole('option', { name: /has\(\).*optional field/ })).toBeVisible();
+
+  await filters.fill('msg.pgn == @');
+  await expect(filters).toBeFocused();
+  await expect(filters).toHaveAttribute('aria-invalid', 'true');
+  const badCharacter = page.locator('.cel-filter-error');
+  await expect(badCharacter).toBeVisible();
+  await expect(badCharacter).toHaveText('@');
+  await expect(page.locator('#filter-feedback')).toContainText('token recognition error');
+  await expect(badCharacter).toHaveCSS('text-decoration-style', 'wavy');
+  await expect(badCharacter).toHaveCSS('text-decoration-color', 'rgb(180, 35, 24)');
+
+  await filters.fill('msg.pgn == 127250');
+  await expect(filters).toHaveAttribute('aria-invalid', 'false');
+  await expect(page.locator('.cel-filter-error')).toHaveCount(0);
+  await expect(page.locator('#filter-feedback')).toContainText('filters OK');
 });

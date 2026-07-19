@@ -122,7 +122,7 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 
 	// Connectors: the list/add/edit/delete pages parallel sources/sinks
 	// above, plus a per-connector overview page with live stats/streaming
-	// data and a CEL validate-on-blur fragment. See forms.go's
+	// data and live CEL validation diagnostics. See forms.go's
 	// "--- Connectors ---" section for the behavior contract.
 	mux.HandleFunc("GET /ui/connectors", handleConnectorsPage(svc, reg, assetVersion, log))
 	mux.HandleFunc("GET /ui/connectors/new", handleConnectorNewPage(svc, reg, assetVersion, log))
