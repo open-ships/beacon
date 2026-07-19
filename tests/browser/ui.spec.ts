@@ -25,3 +25,31 @@ test('operator can load the dashboard and create a source', async ({ page }) => 
   await expect(page.getByRole('status')).toContainText(`Source "${sourceID}" created`);
   await expect(page.getByRole('link', { name: sourceName })).toBeVisible();
 });
+
+test('connector CEL filters provide typeahead and keyboard completion', async ({ page }) => {
+  await page.goto('/ui/connectors/new');
+
+  const filters = page.locator('#conn-filters');
+  const completions = page.getByRole('listbox', { name: 'CEL completions' });
+
+  await filters.fill('msg.p');
+  await expect(completions).toBeVisible();
+  await expect(page.getByRole('option', { name: /msg\.pgn/ })).toBeVisible();
+  await filters.press('Enter');
+  await expect(filters).toHaveValue('msg.pgn');
+
+  await filters.fill('msg.pgn == 12725');
+  await expect(page.getByRole('option', { name: /127250.*Vessel Heading/ })).toBeVisible();
+  await filters.press('Enter');
+  await expect(filters).toHaveValue('msg.pgn == 127250');
+
+  await filters.fill('msg.payload.speedW');
+  await expect(page.getByRole('option', { name: /msg\.payload\.speedWaterReferenced\s/ })).toBeVisible();
+  await filters.press('Enter');
+  await expect(filters).toHaveValue('msg.payload.speedWaterReferenced');
+
+  await filters.fill('');
+  await filters.press('Control+Space');
+  await expect(completions).toBeVisible();
+  await expect(page.getByRole('option', { name: /has\(\).*optional field/ })).toBeVisible();
+});

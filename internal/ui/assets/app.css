@@ -892,6 +892,105 @@ code {
   resize: vertical;
 }
 
+.cel-autocomplete {
+  position: relative;
+}
+
+.cel-filter-input {
+  display: block;
+  font-family: var(--font-mono);
+  line-height: 1.45;
+}
+
+.cel-completions {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  right: 0;
+  left: 0;
+  max-height: 19rem;
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  padding: 4px;
+}
+
+.cel-completion-option {
+  display: grid;
+  gap: 2px;
+  border-radius: 4px;
+  padding: 0.48rem 0.58rem;
+  cursor: pointer;
+}
+
+.cel-completion-option[aria-selected="true"] {
+  background: var(--surface-strong);
+}
+
+.cel-completion-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.cel-completion-label {
+  overflow: hidden;
+  background: transparent;
+  padding: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cel-completion-kind {
+  flex: none;
+  color: var(--gray);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.cel-completion-detail,
+.field-help {
+  color: var(--gray);
+  font-size: 0.78rem;
+}
+
+.cel-completion-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.field-help {
+  margin: 0.38rem 0 0;
+}
+
+.field-help kbd {
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface-muted);
+  color: var(--gray-dark);
+  font-family: var(--font-mono);
+  font-size: 0.72em;
+  padding: 0.08rem 0.28rem;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .input:focus,
 .select:focus,
 .textarea:focus {

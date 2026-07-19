@@ -300,6 +300,7 @@ func TestAssetsServed(t *testing.T) {
 		minSize    int // 0 means "just check >0 bytes"
 	}{
 		{"htmx.min.js", "javascript", 0},
+		{"app.js", "javascript", 1024},
 		{"app.css", "css", 1024},
 		{"favicon.svg", "image/svg", 1024},
 	}

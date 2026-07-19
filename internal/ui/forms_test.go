@@ -1111,6 +1111,11 @@ func TestConnectorNewPageOpensCreateForm(t *testing.T) {
 		`name="id"`,
 		`value="src1"`,
 		`value="sink1"`,
+		`data-cel-autocomplete`,
+		`role="combobox"`,
+		`aria-autocomplete="list"`,
+		`role="listbox"`,
+		`aria-keyshortcuts="Control+Space"`,
 		`aria-label="Breadcrumb"`,
 		`href="/ui/connectors"`,
 		`aria-current="page">Add connector</span>`,
@@ -1118,6 +1123,28 @@ func TestConnectorNewPageOpensCreateForm(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("connector new page missing %q:\n%s", want, body)
 		}
+	}
+}
+
+func TestCELCompletionCatalogIncludesSchemaFieldsAndPGNs(t *testing.T) {
+	srv, _ := newUIServerWithService(t)
+
+	resp, err := http.Get(srv.URL + "/ui/cel-completions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+	body := mustBody(t, resp)
+	for _, want := range []string{`"payloadFields"`, `"label":"msg.payload.heading"`, `"label":"msg.payload.speedWaterReferenced"`, `"pgns"`, `"label":"127250"`, "Vessel Heading"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("CEL completion catalog missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `"label":"msg.payload.reserved"`) {
+		t.Fatalf("CEL completion catalog should omit reserved payload fields:\n%s", body)
 	}
 }
 
