@@ -11,13 +11,21 @@ default:
 build:
     CGO_ENABLED=0 go build -ldflags "-X main.version={{version}}" -o {{binary}} {{cmd}}
 
-# run all tests
+# run all Go tests
 test:
     go test ./...
 
 # run tests with verbose output
 test-v:
     go test -v ./...
+
+# run browser end-to-end tests with Playwright
+test-browser:
+    npm test
+
+# run browser end-to-end tests in Playwright's interactive UI
+test-browser-ui:
+    npm run test:ui
 
 # run the full test suite with the race detector
 test-race:

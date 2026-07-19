@@ -35,6 +35,33 @@ jobs:
       - name: Test
         run: go test ./... -timeout 300s
 
+  browser:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Test (browser)
+        run: npm test
+
   # n2k v0.2.0 split its generated PGN catalog into compiler-sized chunks,
   # removing the race-build compiler ICE that previously forced this job to
   # cover only a small package allow-list. Keep the full repository under the
