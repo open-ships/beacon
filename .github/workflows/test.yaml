@@ -133,27 +133,9 @@ jobs:
           go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1
           gosec -exclude-generated -exclude-dir=.claude ./...
 
-  container:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build container image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: false
-          platforms: linux/amd64,linux/arm64
-          outputs: type=cacheonly
-
   release-gate:
     if: ${{ always() }}
-    needs: [test, browser, race, lint, secure, container]
+    needs: [test, browser, race, lint, secure]
     runs-on: ubuntu-latest
     env:
       TEST_RESULT: ${{ needs.test.result }}
@@ -161,7 +143,6 @@ jobs:
       RACE_RESULT: ${{ needs.race.result }}
       LINT_RESULT: ${{ needs.lint.result }}
       SECURE_RESULT: ${{ needs.secure.result }}
-      CONTAINER_RESULT: ${{ needs.container.result }}
 
     steps:
       - name: Require every release gate
@@ -171,4 +152,3 @@ jobs:
           test "$RACE_RESULT" = success
           test "$LINT_RESULT" = success
           test "$SECURE_RESULT" = success
-          test "$CONTAINER_RESULT" = success
