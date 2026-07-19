@@ -210,7 +210,7 @@ type sourceRow struct {
 func sourceRows(sources []model.Source, statuses []supervisor.Status) []sourceRow {
 	rows := make([]sourceRow, len(sources))
 	for i, s := range sources {
-		rows[i] = sourceRow{Source: s, State: endpointState(statuses, "source", s.ID, s.Enabled), Detail: sourceDetail(s)}
+		rows[i] = sourceRow{Source: s, State: componentState(statuses, "source", s.ID, s.Enabled), Detail: sourceDetail(s)}
 	}
 	return rows
 }
@@ -636,7 +636,7 @@ type sinkRow struct {
 func sinkRows(sinks []model.Sink, statuses []supervisor.Status) []sinkRow {
 	rows := make([]sinkRow, len(sinks))
 	for i, s := range sinks {
-		rows[i] = sinkRow{Sink: s, State: endpointState(statuses, "sink", s.ID, s.Enabled), Detail: sinkDetail(s)}
+		rows[i] = sinkRow{Sink: s, State: componentState(statuses, "sink", s.ID, s.Enabled), Detail: sinkDetail(s)}
 	}
 	return rows
 }
@@ -1047,8 +1047,8 @@ func handleSinkDelete(svc *config.Service, log *slog.Logger) http.HandlerFunc {
 
 // connectorRow is one row of the connectors table
 // (frag_connector_table.html): model.Connector plus its live stats
-// snapshot and its source/sink NAMES (nameOrID — falls back to the raw id
-// when the source/sink has no name set). reg.Snapshot returns a zero
+// snapshot, supervisor state, and source/sink NAMES (nameOrID — falls back
+// to the raw id when the source/sink has no name set). reg.Snapshot returns a zero
 // Snapshot for a connector it has never recorded (not yet started, or
 // started but idle since boot) — so a row for a connector with no traffic
 // yet renders zero queue depth/msg-per-second rather than needing a
@@ -1059,6 +1059,7 @@ type connectorRow struct {
 	Snapshot   stats.Snapshot
 	SourceName string
 	SinkName   string
+	State      string
 }
 
 // connectorRows builds connectorTableData's rows. sourceNames/sinkNames are
@@ -1067,7 +1068,7 @@ type connectorRow struct {
 // handler already has to fetch for other reasons (the connector form's
 // <select> options, or — for handlers that don't otherwise need them —
 // fetched solely for this).
-func connectorRows(connectors []model.Connector, reg *stats.Registry, srcNames, sinkNamesByID map[string]string) []connectorRow {
+func connectorRows(connectors []model.Connector, reg *stats.Registry, statuses []supervisor.Status, srcNames, sinkNamesByID map[string]string) []connectorRow {
 	rows := make([]connectorRow, len(connectors))
 	for i, c := range connectors {
 		snap, _ := reg.Snapshot(c.ID)
@@ -1076,6 +1077,7 @@ func connectorRows(connectors []model.Connector, reg *stats.Registry, srcNames, 
 			Snapshot:   snap,
 			SourceName: nameOrID(srcNames, c.SourceID),
 			SinkName:   nameOrID(sinkNamesByID, c.SinkID),
+			State:      componentState(statuses, "connector", c.ID, c.Enabled),
 		}
 	}
 	return rows
@@ -1325,7 +1327,7 @@ func listSourcesAndSinks(ctx context.Context, svc *config.Service) ([]model.Sour
 	return sources, sinks, nil
 }
 
-func renderConnectorsPage(w http.ResponseWriter, r *http.Request, svc *config.Service, reg *stats.Registry, version string, log *slog.Logger, form *connectorFormViewData) {
+func renderConnectorsPage(w http.ResponseWriter, r *http.Request, svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, version string, log *slog.Logger, form *connectorFormViewData) {
 	connectors, err := svc.ListConnectors(r.Context())
 	if err != nil {
 		log.Error("ui: list connectors failed", "err", err)
@@ -1351,21 +1353,21 @@ func renderConnectorsPage(w http.ResponseWriter, r *http.Request, svc *config.Se
 	}
 	data := connectorsPageData{
 		pageData:           page,
-		connectorTableData: connectorTableData{Connectors: connectorRows(connectors, reg, sourceNames(sources), sinkNames(sinks))},
+		connectorTableData: connectorTableData{Connectors: connectorRows(connectors, reg, statuses(), sourceNames(sources), sinkNames(sinks))},
 		ConnectorForm:      form,
 	}
 	renderPage(w, log, "connectors", data)
 }
 
 // handleConnectorsPage serves GET /ui/connectors: the full list page.
-func handleConnectorsPage(svc *config.Service, reg *stats.Registry, version string, log *slog.Logger) http.HandlerFunc {
+func handleConnectorsPage(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		renderConnectorsPage(w, r, svc, reg, version, log, nil)
+		renderConnectorsPage(w, r, svc, reg, statuses, version, log, nil)
 	}
 }
 
 // handleConnectorNewPage serves GET /ui/connectors/new: the canonical create page.
-func handleConnectorNewPage(svc *config.Service, reg *stats.Registry, version string, log *slog.Logger) http.HandlerFunc {
+func handleConnectorNewPage(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sources, sinks, err := listSourcesAndSinks(r.Context(), svc)
 		if err != nil {
@@ -1374,12 +1376,12 @@ func handleConnectorNewPage(svc *config.Service, reg *stats.Registry, version st
 			return
 		}
 		form := blankConnectorFormView(sources, sinks)
-		renderConnectorsPage(w, r, svc, reg, version, log, &form)
+		renderConnectorsPage(w, r, svc, reg, statuses, version, log, &form)
 	}
 }
 
 // handleConnectorEditPage serves GET /ui/connectors/{id}/edit: the canonical edit page.
-func handleConnectorEditPage(svc *config.Service, reg *stats.Registry, version string, log *slog.Logger) http.HandlerFunc {
+func handleConnectorEditPage(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sources, sinks, err := listSourcesAndSinks(r.Context(), svc)
 		if err != nil {
@@ -1398,7 +1400,7 @@ func handleConnectorEditPage(svc *config.Service, reg *stats.Registry, version s
 			return
 		}
 		form := connectorFormViewFromModel(v, sources, sinks)
-		renderConnectorsPage(w, r, svc, reg, version, log, &form)
+		renderConnectorsPage(w, r, svc, reg, statuses, version, log, &form)
 	}
 }
 
@@ -1440,23 +1442,23 @@ func handleValidateFiltersFrag(svc *config.Service, log *slog.Logger) http.Handl
 }
 
 // handleConnectorCreate serves POST /ui/connectors.
-func handleConnectorCreate(svc *config.Service, reg *stats.Registry, log *slog.Logger) http.HandlerFunc {
+func handleConnectorCreate(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeConnector(w, r, svc, reg, log, true, "")
+		writeConnector(w, r, svc, reg, statuses, log, true, "")
 	}
 }
 
 // handleConnectorUpdate serves POST /ui/connectors/{id}.
-func handleConnectorUpdate(svc *config.Service, reg *stats.Registry, log *slog.Logger) http.HandlerFunc {
+func handleConnectorUpdate(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeConnector(w, r, svc, reg, log, false, r.PathValue("id"))
+		writeConnector(w, r, svc, reg, statuses, log, false, r.PathValue("id"))
 	}
 }
 
 // writeConnector backs both handleConnectorCreate and handleConnectorUpdate,
 // mirroring writeSource/writeSink; see writeSource's comments for the
 // pathID-is-authoritative rationale.
-func writeConnector(w http.ResponseWriter, r *http.Request, svc *config.Service, reg *stats.Registry, log *slog.Logger, isCreate bool, pathID string) {
+func writeConnector(w http.ResponseWriter, r *http.Request, svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, log *slog.Logger, isCreate bool, pathID string) {
 	sources, sinks, err := listSourcesAndSinks(r.Context(), svc)
 	if err != nil {
 		log.Error("ui: list sources/sinks failed", "err", err)
@@ -1501,7 +1503,7 @@ func writeConnector(w http.ResponseWriter, r *http.Request, svc *config.Service,
 		return
 	}
 	data := connectorTableData{
-		Connectors: connectorRows(connectors, reg, sourceNames(sources), sinkNames(sinks)),
+		Connectors: connectorRows(connectors, reg, statuses(), sourceNames(sources), sinkNames(sinks)),
 		Alert:      &alertData{Kind: "success", Message: fmt.Sprintf("connector %q saved", v.ID)},
 	}
 	writeFragmentSuccess(w, log, "connector-panel-oob", "connector-form-container", data)
@@ -1511,7 +1513,7 @@ func writeConnector(w http.ResponseWriter, r *http.Request, svc *config.Service,
 // handleSourceDelete/handleSinkDelete there is no ErrInUse case:
 // config.Service.DeleteConnector never returns it ("nothing else
 // references a connector").
-func handleConnectorDelete(svc *config.Service, reg *stats.Registry, log *slog.Logger) http.HandlerFunc {
+func handleConnectorDelete(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		var alert *alertData
@@ -1537,7 +1539,7 @@ func handleConnectorDelete(svc *config.Service, reg *stats.Registry, log *slog.L
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		data := connectorTableData{Connectors: connectorRows(connectors, reg, sourceNames(sources), sinkNames(sinks)), Alert: alert}
+		data := connectorTableData{Connectors: connectorRows(connectors, reg, statuses(), sourceNames(sources), sinkNames(sinks)), Alert: alert}
 		renderFragment(w, log, "connector-panel", data)
 	}
 }

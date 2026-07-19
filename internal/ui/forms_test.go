@@ -123,7 +123,7 @@ func TestSourcesPageRendersConfiguredEntities(t *testing.T) {
 	}
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
-	for _, want := range []string{"Engine CAN", "<code>can0</code>", "socketcan", "Detail", "badge-success", "endpoint-status-row state-restarting", `href="/ui/sources/new"`, `href="/ui/sources/can0/"`, `href="/ui/sources/can0/edit"`} {
+	for _, want := range []string{"Engine CAN", "<code>can0</code>", "socketcan", "Detail", "badge-success", "component-status-row state-restarting", `href="/ui/sources/new"`, `href="/ui/sources/can0/"`, `href="/ui/sources/can0/edit"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sources page missing %q:\n%s", want, body)
 		}
@@ -231,7 +231,7 @@ func TestSinksPageRendersConfiguredEntities(t *testing.T) {
 	}
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
-	for _, want := range []string{"NMEA Out", "<code>out1</code>", "tcp", "<code>0.0.0.0:2000</code>", "badge-success", "endpoint-status-row state-restarting", `href="/ui/sinks/new"`, `href="/ui/sinks/out1/"`, `href="/ui/sinks/out1/edit"`} {
+	for _, want := range []string{"NMEA Out", "<code>out1</code>", "tcp", "<code>0.0.0.0:2000</code>", "badge-success", "component-status-row state-restarting", `href="/ui/sinks/new"`, `href="/ui/sinks/out1/"`, `href="/ui/sinks/out1/edit"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sinks page missing %q:\n%s", want, body)
 		}
@@ -1063,7 +1063,7 @@ func TestConnectorsPageRendersConfiguredEntities(t *testing.T) {
 	for _, want := range []string{
 		`href="/ui/connectors/new"`, `href="/ui/connectors/conn1/"`, `href="/ui/connectors/conn1/edit"`, "NMEA Bridge",
 		"Source One", "Sink One",
-		"badge-success",
+		"badge-success", "component-status-row state-restarting", ">restarting<",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("connectors page missing %q:\n%s", want, body)

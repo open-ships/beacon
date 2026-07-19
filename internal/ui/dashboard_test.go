@@ -225,6 +225,15 @@ func TestDashboardFragConnectorErrorBadge(t *testing.T) {
 	if !strings.Contains(body, "badge-success\">enabled</span>") {
 		t.Fatalf("dashboard fragment lost the enabled badge alongside the error badge:\n%s", body)
 	}
+	for _, want := range []string{
+		`dag-node-connector component-status-surface state-error`,
+		`dag-link state-error`,
+		`<tr class="component-status-row state-error" data-href="/ui/connectors/heading/">`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard fragment missing connector error colorization %q:\n%s", want, body)
+		}
+	}
 }
 
 // --- Endpoint node states + transient-absence tolerance ---
@@ -239,7 +248,7 @@ func TestDashboardFragEndpointNodeStates(t *testing.T) {
 	must(t, svc.PutSink(ctx, model.Sink{ID: "err-sink", Name: "Err Sink", Type: model.SinkTCP, Enabled: true, Address: "127.0.0.1:9001"}, true))
 	for _, id := range []string{"up", "degraded", "restarting", "off"} {
 		must(t, svc.PutConnector(ctx, model.Connector{
-			ID: id + "-conn", Name: id + " connector", SourceID: id + "-src", SinkID: "err-sink", Enabled: true,
+			ID: id + "-conn", Name: id + " connector", SourceID: id + "-src", SinkID: "err-sink", Enabled: id != "off",
 		}, true))
 	}
 
@@ -250,6 +259,8 @@ func TestDashboardFragEndpointNodeStates(t *testing.T) {
 		{Kind: "source", ID: "up-src", State: "up"},
 		{Kind: "source", ID: "degraded-src", State: "degraded"},
 		{Kind: "sink", ID: "err-sink", State: "error", Err: "boom"},
+		{Kind: "connector", ID: "up-conn", State: "up"},
+		{Kind: "connector", ID: "degraded-conn", State: "degraded"},
 	})
 
 	body := dashboardFrag(t, srv)
@@ -257,11 +268,15 @@ func TestDashboardFragEndpointNodeStates(t *testing.T) {
 	cases := []struct {
 		name, wantBadgeClass, wantText, wantStateClass string
 	}{
-		{"Up Src", "badge-success", "up", "endpoint-status-surface state-up"},
-		{"Degraded Src", "badge-warning", "degraded", "endpoint-status-surface state-degraded"},
-		{"Err Sink", "badge-error", "error", "endpoint-status-surface state-error"},
-		{"Restarting Src", "badge-ghost", "restarting", "endpoint-status-surface state-restarting"},
-		{"Off Src", "badge-ghost", "disabled", "endpoint-status-surface state-disabled"},
+		{"Up Src", "badge-success", "up", "component-status-surface state-up"},
+		{"Degraded Src", "badge-warning", "degraded", "component-status-surface state-degraded"},
+		{"Err Sink", "badge-error", "error", "component-status-surface state-error"},
+		{"Restarting Src", "badge-ghost", "restarting", "component-status-surface state-restarting"},
+		{"Off Src", "badge-ghost", "disabled", "component-status-surface state-disabled"},
+		{"up connector", "badge-success", "up", "component-status-surface state-up"},
+		{"degraded connector", "badge-warning", "degraded", "component-status-surface state-degraded"},
+		{"restarting connector", "badge-ghost", "restarting", "component-status-surface state-restarting"},
+		{"off connector", "badge-ghost", "disabled", "component-status-surface state-disabled"},
 	}
 	for _, c := range cases {
 		snip := markerSnippet(t, body, c.name)
@@ -277,9 +292,17 @@ func TestDashboardFragEndpointNodeStates(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		`<tr class="endpoint-status-row state-up" data-href="/ui/sources/up-src/">`,
-		`<tr class="endpoint-status-row state-degraded" data-href="/ui/sources/degraded-src/">`,
-		`<tr class="endpoint-status-row state-error" data-href="/ui/sinks/err-sink/">`,
+		`<tr class="component-status-row state-up" data-href="/ui/sources/up-src/">`,
+		`<tr class="component-status-row state-degraded" data-href="/ui/sources/degraded-src/">`,
+		`<tr class="component-status-row state-error" data-href="/ui/sinks/err-sink/">`,
+		`<tr class="component-status-row state-up" data-href="/ui/connectors/up-conn/">`,
+		`<tr class="component-status-row state-degraded" data-href="/ui/connectors/degraded-conn/">`,
+		`<tr class="component-status-row state-restarting" data-href="/ui/connectors/restarting-conn/">`,
+		`<tr class="component-status-row state-disabled" data-href="/ui/connectors/off-conn/">`,
+		`<div class="dag-link state-up" aria-hidden="true"></div>`,
+		`<div class="dag-link state-degraded" aria-hidden="true"></div>`,
+		`<div class="dag-link state-restarting" aria-hidden="true"></div>`,
+		`<div class="dag-link state-disabled" aria-hidden="true"></div>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard metadata missing status-colored row %q", want)
@@ -289,10 +312,12 @@ func TestDashboardFragEndpointNodeStates(t *testing.T) {
 	for _, tc := range []struct {
 		path, want string
 	}{
-		{"/ui/sources", `<tr class="endpoint-status-row state-up" data-href="/ui/sources/up-src/">`},
-		{"/ui/sinks", `<tr class="endpoint-status-row state-error" data-href="/ui/sinks/err-sink/">`},
-		{"/ui/frag/sources/up-src/overview", `<section class="overview-card endpoint-status-surface state-up" aria-label="Status">`},
-		{"/ui/frag/sinks/err-sink/overview", `<section class="overview-card endpoint-status-surface state-error" aria-label="Status">`},
+		{"/ui/sources", `<tr class="component-status-row state-up" data-href="/ui/sources/up-src/">`},
+		{"/ui/sinks", `<tr class="component-status-row state-error" data-href="/ui/sinks/err-sink/">`},
+		{"/ui/connectors", `<tr class="component-status-row state-up" data-href="/ui/connectors/up-conn/">`},
+		{"/ui/frag/sources/up-src/overview", `<section class="overview-card component-status-surface state-up" aria-label="Status">`},
+		{"/ui/frag/sinks/err-sink/overview", `<section class="overview-card component-status-surface state-error" aria-label="Status">`},
+		{"/ui/frag/connectors/up-conn/overview", `<section class="overview-card component-status-surface state-up" aria-label="Status">`},
 	} {
 		resp, err := http.Get(srv.URL + tc.path)
 		if err != nil {

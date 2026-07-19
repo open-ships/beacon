@@ -27,6 +27,7 @@
         <th>Mode</th>
         <th>Filters</th>
         <th>Enabled</th>
+        <th>State</th>
         <th>Pending</th>
         <th>Msg/s</th>
         <th></th>
@@ -34,7 +35,7 @@
     </thead>
     <tbody>
       {{range .Connectors}}
-      <tr data-href="/ui/connectors/{{.ID}}/">
+      <tr class="component-status-row state-{{.State}}" data-href="/ui/connectors/{{.ID}}/">
         <td><a class="link" href="/ui/connectors/{{.ID}}/">{{.Name}}</a></td>
         <td>{{.SourceName}} &rarr; {{.SinkName}}</td>
         <td>{{.EffectiveMode}}</td>
@@ -42,6 +43,12 @@
         <td>
           {{if .Enabled}}<span class="badge badge-success">enabled</span>
           {{else}}<span class="badge badge-ghost">disabled</span>{{end}}
+        </td>
+        <td>
+          {{if eq .State "up"}}<span class="badge badge-success">up</span>
+          {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
+          {{else if eq .State "error"}}<span class="badge badge-error">error</span>
+          {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
         </td>
         <td>{{.Snapshot.QueueDepth}}</td>
         <td>{{printf "%.2f" .Snapshot.MsgPerSec}}</td>
@@ -55,7 +62,7 @@
         </td>
       </tr>
       {{else}}
-      <tr><td colspan="8" class="text-center opacity-70">No connectors configured.</td></tr>
+      <tr><td colspan="9" class="text-center opacity-70">No connectors configured.</td></tr>
       {{end}}
     </tbody>
   </table>

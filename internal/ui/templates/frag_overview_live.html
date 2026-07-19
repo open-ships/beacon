@@ -2,7 +2,7 @@
 <div id="{{.DOMID}}" class="overview-live"
      hx-get="{{.RefreshHref}}" hx-trigger="load, every 2s" hx-swap="outerHTML">
   <div class="overview-grid">
-    <section class="overview-card{{if or (eq .Kind "source") (eq .Kind "sink")}} endpoint-status-surface state-{{.State}}{{end}}" aria-label="Status">
+    <section class="overview-card component-status-surface state-{{.State}}" aria-label="Status">
       <div class="section-heading">
         <h3>Status</h3>
       </div>

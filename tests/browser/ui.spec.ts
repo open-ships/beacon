@@ -1,8 +1,12 @@
 import { expect, test } from '@playwright/test';
 
-test('operator can load the dashboard and create a source', async ({ page }) => {
+test('operator can create and visually trace a status-colored pipeline', async ({ page }) => {
   const sourceID = `browser-test-${Date.now()}`;
   const sourceName = `Playwright source ${sourceID}`;
+  const sinkID = `${sourceID}-sink`;
+  const sinkName = `Playwright sink ${sourceID}`;
+  const connectorID = `${sourceID}-connector`;
+  const connectorName = `Playwright connector ${sourceID}`;
 
   await page.goto('/');
 
@@ -26,8 +30,43 @@ test('operator can load the dashboard and create a source', async ({ page }) => 
   const sourceLink = page.getByRole('link', { name: sourceName });
   await expect(sourceLink).toBeVisible();
   const sourceRow = sourceLink.locator('xpath=ancestor::tr');
-  await expect(sourceRow).toHaveClass(/endpoint-status-row state-(up|degraded|error|restarting|disabled)/);
+  await expect(sourceRow).toHaveClass(/component-status-row state-(up|degraded|error|restarting|disabled)/);
   expect(await sourceRow.evaluate((row) => getComputedStyle(row).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
+
+  await page.getByRole('link', { name: 'New sink', exact: true }).click();
+  await page.locator('#sink-id').fill(sinkID);
+  await page.locator('#sink-name').fill(sinkName);
+  await page.locator('#sink-type').selectOption('tcp');
+  await expect(page.locator('#sink-address')).toBeVisible();
+  await page.locator('#sink-address').fill('127.0.0.1:0');
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page).toHaveURL(/\/ui\/dashboard$/);
+
+  await page.getByRole('link', { name: 'New connector', exact: true }).click();
+  await page.locator('#conn-id').fill(connectorID);
+  await page.locator('#conn-name').fill(connectorName);
+  await page.locator('#conn-source').selectOption(sourceID);
+  await page.locator('#conn-sink').selectOption(sinkID);
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page).toHaveURL(/\/ui\/dashboard$/);
+
+  const connectorNode = page.locator(`[data-connector-id="${connectorID}"]`);
+  await expect(connectorNode).toHaveClass(/component-status-surface state-(up|degraded|error|restarting|disabled)/);
+  expect(await connectorNode.evaluate((node) => getComputedStyle(node).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
+
+  const connectorState = ((await connectorNode.getAttribute('class')) ?? '').match(/state-(up|degraded|error|restarting|disabled)/)?.[1];
+  expect(connectorState).toBeTruthy();
+  const routeLinks = connectorNode.locator('xpath=ancestor::div[contains(@class,"dag-row")]').locator('.dag-link');
+  await expect(routeLinks).toHaveCount(2);
+  for (const routeLink of await routeLinks.all()) {
+    await expect(routeLink).toHaveClass(new RegExp(`state-${connectorState}`));
+    expect(await routeLink.evaluate((link) => getComputedStyle(link, '::before').backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
+  }
+
+  await page.goto('/ui/connectors');
+  const connectorRow = page.getByRole('link', { name: connectorName }).locator('xpath=ancestor::tr');
+  await expect(connectorRow).toHaveClass(/component-status-row state-(up|degraded|error|restarting|disabled)/);
+  expect(await connectorRow.evaluate((row) => getComputedStyle(row).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
 });
 
 test('connector CEL editor provides autocomplete and live diagnostics', async ({ page }) => {

@@ -370,17 +370,15 @@ code {
 
 .dag-node-connector {
   border-color: var(--border-strong);
-  background: var(--black);
-  color: #fff;
 }
 
 .dag-node-connector:hover {
-  color: #fff;
+  color: var(--gray-dark);
 }
 
 .dag-node-connector code {
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
+  background: rgba(255, 255, 255, 0.65);
+  color: var(--black);
 }
 
 .dag-node-sink {
@@ -417,7 +415,7 @@ code {
 
 .dag-metrics {
   justify-content: space-between;
-  border-top: 1px solid rgba(255, 255, 255, 0.14);
+  border-top: 1px solid rgba(96, 115, 159, 0.22);
   padding-top: var(--space-3);
 }
 
@@ -426,8 +424,25 @@ code {
 }
 
 .dag-link {
+  --dag-link-color: var(--border-strong);
   position: relative;
   min-width: 48px;
+}
+
+.dag-link.state-up {
+  --dag-link-color: var(--success);
+}
+
+.dag-link.state-degraded {
+  --dag-link-color: var(--warning);
+}
+
+.dag-link.state-error {
+  --dag-link-color: var(--error);
+}
+
+.dag-link.state-restarting {
+  --dag-link-color: var(--accent);
 }
 
 .dag-link::before {
@@ -437,7 +452,7 @@ code {
   right: var(--space-2);
   left: var(--space-2);
   height: 2px;
-  background: var(--border-strong);
+  background: var(--dag-link-color);
   transform: translateY(-50%);
 }
 
@@ -448,8 +463,8 @@ code {
   right: var(--space-2);
   width: 8px;
   height: 8px;
-  border-top: 2px solid var(--border-strong);
-  border-right: 2px solid var(--border-strong);
+  border-top: 2px solid var(--dag-link-color);
+  border-right: 2px solid var(--dag-link-color);
   transform: translateY(-50%) rotate(45deg);
 }
 
@@ -965,81 +980,72 @@ code {
   box-shadow: 0 0 0 4px var(--warning-bg);
 }
 
-/* Source/sink health surfaces share one visual language across the flow DAG,
-   metadata/config tables, and detail status card. Badges retain the explicit
-   state text, so color is never the sole status signal. */
-.endpoint-status-surface,
-.endpoint-status-row {
-  --endpoint-state-accent: var(--gray);
-  --endpoint-state-bg: var(--surface-muted);
-  --endpoint-state-hover: var(--surface-strong);
-  --endpoint-state-border: var(--border-strong);
+/* Component health surfaces share one visual language across the flow DAG,
+   route arrows, metadata/config tables, and detail status card. Badges retain
+   the explicit state text, so color is never the sole status signal. */
+.component-status-surface,
+.component-status-row {
+  --component-state-accent: var(--gray);
+  --component-state-bg: var(--surface-muted);
+  --component-state-hover: var(--surface-strong);
+  --component-state-border: var(--border-strong);
 }
 
-.endpoint-status-surface.state-up,
-.endpoint-status-row.state-up {
-  --endpoint-state-accent: var(--success);
-  --endpoint-state-bg: var(--success-bg);
-  --endpoint-state-hover: #ddf1e6;
-  --endpoint-state-border: rgba(15, 122, 79, 0.42);
+.component-status-surface.state-up,
+.component-status-row.state-up {
+  --component-state-accent: var(--success);
+  --component-state-bg: var(--success-bg);
+  --component-state-hover: #ddf1e6;
+  --component-state-border: rgba(15, 122, 79, 0.42);
 }
 
-.endpoint-status-surface.state-degraded,
-.endpoint-status-row.state-degraded {
-  --endpoint-state-accent: var(--warning);
-  --endpoint-state-bg: var(--warning-bg);
-  --endpoint-state-hover: #fbe9c8;
-  --endpoint-state-border: rgba(166, 95, 0, 0.42);
+.component-status-surface.state-degraded,
+.component-status-row.state-degraded {
+  --component-state-accent: var(--warning);
+  --component-state-bg: var(--warning-bg);
+  --component-state-hover: #fbe9c8;
+  --component-state-border: rgba(166, 95, 0, 0.42);
 }
 
-.endpoint-status-surface.state-error,
-.endpoint-status-row.state-error {
-  --endpoint-state-accent: var(--error);
-  --endpoint-state-bg: var(--error-bg);
-  --endpoint-state-hover: #f9e2df;
-  --endpoint-state-border: rgba(180, 35, 24, 0.45);
+.component-status-surface.state-error,
+.component-status-row.state-error {
+  --component-state-accent: var(--error);
+  --component-state-bg: var(--error-bg);
+  --component-state-hover: #f9e2df;
+  --component-state-border: rgba(180, 35, 24, 0.45);
 }
 
-.endpoint-status-surface.state-restarting,
-.endpoint-status-row.state-restarting {
-  --endpoint-state-accent: var(--accent);
-  --endpoint-state-bg: #edf0ff;
-  --endpoint-state-hover: #e1e6ff;
-  --endpoint-state-border: rgba(35, 55, 255, 0.35);
+.component-status-surface.state-restarting,
+.component-status-row.state-restarting {
+  --component-state-accent: var(--accent);
+  --component-state-bg: #edf0ff;
+  --component-state-hover: #e1e6ff;
+  --component-state-border: rgba(35, 55, 255, 0.35);
 }
 
-.endpoint-status-surface {
-  border-color: var(--endpoint-state-border);
-  background: var(--endpoint-state-bg);
+.component-status-surface {
+  border-color: var(--component-state-border);
+  background: var(--component-state-bg);
 }
 
-.dag-node.endpoint-status-surface {
-  box-shadow: inset 4px 0 0 var(--endpoint-state-accent);
+.dag-node.component-status-surface {
+  box-shadow: inset 4px 0 0 var(--component-state-accent);
 }
 
-.overview-card.endpoint-status-surface {
-  box-shadow: inset 4px 0 0 var(--endpoint-state-accent), var(--shadow);
+.overview-card.component-status-surface {
+  box-shadow: inset 4px 0 0 var(--component-state-accent), var(--shadow);
 }
 
-.endpoint-status-row {
-  background: var(--endpoint-state-bg);
+.component-status-row {
+  background: var(--component-state-bg);
 }
 
-.endpoint-status-row > td:first-child {
-  box-shadow: inset 4px 0 0 var(--endpoint-state-accent);
+.component-status-row > td:first-child {
+  box-shadow: inset 4px 0 0 var(--component-state-accent);
 }
 
-.table tbody tr.endpoint-status-row[data-href]:hover {
-  background: var(--endpoint-state-hover);
-}
-
-.dag-node-connector.state-error {
-  border-color: rgba(180, 35, 24, 0.45);
-}
-
-.dag-node-connector.state-degraded,
-.dag-node-connector.state-restarting {
-  border-color: rgba(166, 95, 0, 0.42);
+.table tbody tr.component-status-row[data-href]:hover {
+  background: var(--component-state-hover);
 }
 
 .btn {
@@ -2047,18 +2053,22 @@ code {
   }
 
   .metadata-section[aria-label="Connectors metadata"] td:nth-child(5)::before {
-    content: "Filters";
+    content: "State";
   }
 
   .metadata-section[aria-label="Connectors metadata"] td:nth-child(6)::before {
-    content: "Msg/s";
+    content: "Filters";
   }
 
   .metadata-section[aria-label="Connectors metadata"] td:nth-child(7)::before {
-    content: "Queue";
+    content: "Msg/s";
   }
 
   .metadata-section[aria-label="Connectors metadata"] td:nth-child(8)::before {
+    content: "Queue";
+  }
+
+  .metadata-section[aria-label="Connectors metadata"] td:nth-child(9)::before {
     content: "Action";
   }
 }

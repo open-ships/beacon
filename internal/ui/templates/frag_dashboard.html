@@ -30,7 +30,7 @@
     <div class="dag-label dag-label-sink">Sinks</div>
     {{range .Flows}}
     <div class="dag-row">
-      <a class="dag-node dag-node-source endpoint-status-surface state-{{.Source.State}}" href="/ui/sources/{{.Source.ID}}/" data-node-id="{{.Source.ID}}">
+      <a class="dag-node dag-node-source component-status-surface state-{{.Source.State}}" href="/ui/sources/{{.Source.ID}}/" data-node-id="{{.Source.ID}}">
         <div class="dag-node-header">
           <span class="dag-kind">source</span>
           {{if eq .Source.State "up"}}<span class="badge badge-success">up</span>
@@ -42,13 +42,18 @@
         <div class="dag-node-meta"><code>{{.Source.ID}}</code><span>{{.Source.Type}}</span>{{if .Source.Detail}}<span>{{.Source.Detail}}</span>{{end}}</div>
       </a>
 
-      <div class="dag-link" aria-hidden="true"></div>
+      <div class="dag-link state-{{.State}}" aria-hidden="true"></div>
 
-      <a class="dag-node dag-node-connector state-{{.State}}" href="/ui/connectors/{{.ID}}/" data-connector-id="{{.ID}}">
+      <a class="dag-node dag-node-connector component-status-surface state-{{.State}}" href="/ui/connectors/{{.ID}}/" data-connector-id="{{.ID}}">
         <div class="dag-node-header">
           <span class="dag-kind">connector</span>
           <span class="badge {{if .Enabled}}badge-success{{else}}badge-ghost{{end}}">{{if .Enabled}}enabled{{else}}disabled{{end}}</span>
-          {{if eq .State "error"}}<span class="badge badge-error">error</span>{{end}}
+          {{if .Enabled}}
+          {{if eq .State "up"}}<span class="badge badge-success">up</span>
+          {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
+          {{else if eq .State "error"}}<span class="badge badge-error">error</span>
+          {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
+          {{end}}
         </div>
         <div class="dag-node-title">{{.Name}}</div>
         <div class="dag-node-meta"><code>{{.ID}}</code><span>{{.EffectiveMode}}</span><span>{{len .Filters}} filters</span></div>
@@ -59,9 +64,9 @@
         </div>
       </a>
 
-      <div class="dag-link" aria-hidden="true"></div>
+      <div class="dag-link state-{{.State}}" aria-hidden="true"></div>
 
-      <a class="dag-node dag-node-sink endpoint-status-surface state-{{.Sink.State}}" href="/ui/sinks/{{.Sink.ID}}/" data-node-id="{{.Sink.ID}}">
+      <a class="dag-node dag-node-sink component-status-surface state-{{.Sink.State}}" href="/ui/sinks/{{.Sink.ID}}/" data-node-id="{{.Sink.ID}}">
         <div class="dag-node-header">
           <span class="dag-kind">sink</span>
           {{if eq .Sink.State "up"}}<span class="badge badge-success">up</span>
@@ -104,7 +109,7 @@
           </thead>
           <tbody>
             {{range .Sources}}
-            <tr class="endpoint-status-row state-{{.State}}" data-href="/ui/sources/{{.ID}}/">
+            <tr class="component-status-row state-{{.State}}" data-href="/ui/sources/{{.ID}}/">
               <td><a class="link" href="/ui/sources/{{.ID}}/">{{.Name}}</a></td>
               <td><code>{{.ID}}</code></td>
               <td>{{.Type}}</td>
@@ -150,7 +155,7 @@
           </thead>
           <tbody>
             {{range .Sinks}}
-            <tr class="endpoint-status-row state-{{.State}}" data-href="/ui/sinks/{{.ID}}/">
+            <tr class="component-status-row state-{{.State}}" data-href="/ui/sinks/{{.ID}}/">
               <td><a class="link" href="/ui/sinks/{{.ID}}/">{{.Name}}</a></td>
               <td><code>{{.ID}}</code></td>
               <td>{{.Type}}</td>
@@ -189,6 +194,7 @@
               <th>ID</th>
               <th>Route</th>
               <th>Enabled</th>
+              <th>State</th>
               <th>Filters</th>
               <th>Msg/s</th>
               <th>Queue</th>
@@ -197,7 +203,7 @@
           </thead>
           <tbody>
             {{range .Flows}}
-            <tr data-href="/ui/connectors/{{.ID}}/">
+            <tr class="component-status-row state-{{.State}}" data-href="/ui/connectors/{{.ID}}/">
               <td><a class="link" href="/ui/connectors/{{.ID}}/">{{.Name}}</a></td>
               <td><code>{{.ID}}</code></td>
               <td>
@@ -209,13 +215,19 @@
                 {{if .Enabled}}<span class="badge badge-success">enabled</span>
                 {{else}}<span class="badge badge-ghost">disabled</span>{{end}}
               </td>
+              <td>
+                {{if eq .State "up"}}<span class="badge badge-success">up</span>
+                {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
+                {{else if eq .State "error"}}<span class="badge badge-error">error</span>
+                {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
+              </td>
               <td>{{len .Filters}}</td>
               <td>{{printf "%.2f" .Snapshot.MsgPerSec}}</td>
               <td>{{.Snapshot.QueueDepth}}</td>
               <td><a class="btn btn-sm" href="/ui/connectors/{{.ID}}/edit">Edit</a></td>
             </tr>
             {{else}}
-            <tr><td colspan="8" class="text-center opacity-70">No connectors configured.</td></tr>
+            <tr><td colspan="9" class="text-center opacity-70">No connectors configured.</td></tr>
             {{end}}
           </tbody>
         </table>
