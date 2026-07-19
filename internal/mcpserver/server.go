@@ -43,7 +43,7 @@ var toolCatalog = []ToolInfo{
 	{Name: "get_health", Access: "read", Description: "Read rolled-up health and live source, sink, and connector states."},
 	{Name: "get_delivery_statistics", Access: "read", Description: "Read delivery rates, totals, pending delivery, retained history, limits, drops, and errors."},
 	{Name: "get_source_metrics", Access: "read", Description: "Inspect all PGNs by source and sender, including unknown raw payloads, timing, load, decode quality, addressing, gaps, anomalies, field distributions, approved baselines, and lifecycle events."},
-	{Name: "commit_source_traffic_baseline", Access: "write", Description: "Approve the currently observed PGN streams for one source as its persistent expected-traffic baseline."},
+	{Name: "commit_source_traffic_baseline", Access: "write", Description: "Replace one source's persistent expected-traffic baseline with every PGN stream observed since Beacon started."},
 	{Name: "clear_source_traffic_baseline", Access: "delete", Description: "Clear one source's approved traffic baseline without deleting its observations or event history."},
 }
 
@@ -523,7 +523,7 @@ func registerTools(server *sdkmcp.Server, svc *config.Service, reg *stats.Regist
 			return nil, out, nil
 		})
 
-	sdkmcp.AddTool(server, tool("commit_source_traffic_baseline", "Approve source traffic baseline", writeAnnotations),
+	sdkmcp.AddTool(server, tool("commit_source_traffic_baseline", "Set expected traffic baseline", writeAnnotations),
 		func(ctx context.Context, _ *sdkmcp.CallToolRequest, in sourceTrafficBaselineInput) (*sdkmcp.CallToolResult, sourceTrafficBaselineOutput, error) {
 			if _, err := svc.GetSource(ctx, in.SourceID); err != nil {
 				return nil, sourceTrafficBaselineOutput{}, publicError(log, err)

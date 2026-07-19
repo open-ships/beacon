@@ -57,7 +57,7 @@
         {{if .BaselineCount}}<span class="badge badge-success">{{.BaselineCount}} expected</span>{{end}}
         <button class="btn btn-sm" type="button" hx-post="/ui/sources/{{.ID}}/traffic-baseline"
                 hx-target="#source-overview-live" hx-swap="outerHTML"
-                hx-confirm="Approve the currently observed PGN traffic as the expected baseline?">Approve current traffic</button>
+                hx-confirm="Replace the expected traffic baseline with every PGN stream observed since Beacon started? Streams not observed in this process will no longer be expected.">Set expected traffic baseline</button>
         {{if .BaselineCount}}
         <button class="btn btn-sm" type="button" hx-post="/ui/sources/{{.ID}}/traffic-baseline/clear"
                 hx-target="#source-overview-live" hx-swap="outerHTML"

@@ -1647,7 +1647,7 @@ func TestOverviewFragmentsRenderStatsAndMessageStreams(t *testing.T) {
 		path  string
 		wants []string
 	}{
-		{"/ui/frag/sources/src1/overview", []string{"source-overview-live", "Status", "Statistics", "PGN traffic", "Rate / jitter", "Last seen / gaps", "Values / raw wire", "decoded fields", "Traffic changes", "Approve current traffic", "Message stream", "Total messages", "127250", "heading", "received"}},
+		{"/ui/frag/sources/src1/overview", []string{"source-overview-live", "Status", "Statistics", "PGN traffic", "Rate / jitter", "Last seen / gaps", "Values / raw wire", "decoded fields", "Traffic changes", "Set expected traffic baseline", "Message stream", "Total messages", "127250", "heading", "received"}},
 		{"/ui/frag/sinks/sink1/overview", []string{"sink-overview-live", "Status", "Statistics", "Message stream", "Total messages", "127250", "heading", "sent", "conn1"}},
 		{"/ui/frag/connectors/conn1/overview", []string{"connector-overview-live", "Status", "Statistics", "Message stream", "Total messages", "127250", "heading", "received", "conn1"}},
 	} {
@@ -1691,7 +1691,7 @@ func TestSourceTrafficBaselineFormActions(t *testing.T) {
 	resp = postForm(t, srv, "/ui/sources/src1/traffic-baseline/clear", url.Values{})
 	mustStatus(t, resp, http.StatusOK)
 	body = mustBody(t, resp)
-	if !strings.Contains(body, "Approve current traffic") || len(reg.SourceTrafficBaselines("src1")) != 0 {
+	if !strings.Contains(body, "Set expected traffic baseline") || len(reg.SourceTrafficBaselines("src1")) != 0 {
 		t.Fatalf("baseline clear response/state = %s / %+v", body, reg.SourceTrafficBaselines("src1"))
 	}
 }

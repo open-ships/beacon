@@ -383,7 +383,7 @@ func (r *Registry) CommitSourceTrafficBaseline(ctx context.Context, source strin
 	r.mu.Unlock()
 	r.recordSourceMetricEvent(SourceMetricEvent{Time: approvedAt, SourceID: source,
 		Kind: "baseline_committed", Severity: "info",
-		Summary: fmt.Sprintf("Approved %d source traffic streams", len(baselines))})
+		Summary: fmt.Sprintf("Set expected traffic baseline from %d observed streams", len(baselines))})
 	return baselines, nil
 }
 
