@@ -41,7 +41,7 @@ func (q *sqliteQueue) Append(ctx context.Context, envs []*msg.Envelope) error {
 		if err != nil {
 			return err
 		}
-		if _, err := stmt.ExecContext(ctx, q.connectorID, e.Timestamp.UnixNano(), string(doc), e.SizeBytes()); err != nil {
+		if _, err := stmt.ExecContext(ctx, q.connectorID, e.Timestamp.UnixNano(), string(doc), len(doc)); err != nil {
 			return err
 		}
 	}
@@ -69,6 +69,12 @@ func (q *sqliteQueue) Read(ctx context.Context, after int64, limit int) ([]Entry
 		}
 		e.Seq = seq
 		e.ConnectorID = q.connectorID
+		if e.ObservedAt.IsZero() {
+			e.ObservedAt = e.Timestamp
+		}
+		if e.Decode.Status == "" {
+			e.Decode.Status = "legacy"
+		}
 		out = append(out, Entry{Seq: seq, Env: &e})
 	}
 	return out, rows.Err()
@@ -90,31 +96,40 @@ func (q *sqliteQueue) Ack(ctx context.Context, upTo int64) error {
 	return err
 }
 
-func (q *sqliteQueue) Prune(ctx context.Context) (int64, error) {
-	var total int64
+func (q *sqliteQueue) Prune(ctx context.Context) (PruneResult, error) {
+	var result PruneResult
+	tx, err := q.db.BeginTx(ctx, nil)
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var pendingBefore int64
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM queue WHERE connector_id = ?1 AND id > COALESCE((SELECT last_seq FROM checkpoints WHERE connector_id = ?1), 0)`, q.connectorID).Scan(&pendingBefore); err != nil {
+		return result, err
+	}
 	if n := q.limits.MaxMessages; n > 0 {
-		res, err := q.db.ExecContext(ctx,
+		res, err := tx.ExecContext(ctx,
 			`DELETE FROM queue WHERE connector_id = ?1 AND id <= COALESCE(
 			   (SELECT id FROM queue WHERE connector_id = ?1 ORDER BY id DESC LIMIT 1 OFFSET ?2), 0)`,
 			q.connectorID, n)
 		if err != nil {
-			return total, err
+			return result, err
 		}
 		c, _ := res.RowsAffected()
-		total += c
+		result.Total += c
 	}
 	if d := time.Duration(q.limits.MaxAge); d > 0 {
-		res, err := q.db.ExecContext(ctx,
+		res, err := tx.ExecContext(ctx,
 			`DELETE FROM queue WHERE connector_id = ? AND ts < ?`,
 			q.connectorID, time.Now().Add(-d).UnixNano())
 		if err != nil {
-			return total, err
+			return result, err
 		}
 		c, _ := res.RowsAffected()
-		total += c
+		result.Total += c
 	}
 	if b := q.limits.MaxBytes; b > 0 {
-		res, err := q.db.ExecContext(ctx,
+		res, err := tx.ExecContext(ctx,
 			`DELETE FROM queue WHERE connector_id = ?1 AND id <= COALESCE(
 			   (SELECT id FROM (
 			      SELECT id, SUM(bytes) OVER (ORDER BY id DESC) AS running
@@ -122,12 +137,20 @@ func (q *sqliteQueue) Prune(ctx context.Context) (int64, error) {
 			    ) WHERE running > ?2 ORDER BY id DESC LIMIT 1), 0)`,
 			q.connectorID, b)
 		if err != nil {
-			return total, err
+			return result, err
 		}
 		c, _ := res.RowsAffected()
-		total += c
+		result.Total += c
 	}
-	return total, nil
+	var pendingAfter int64
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM queue WHERE connector_id = ?1 AND id > COALESCE((SELECT last_seq FROM checkpoints WHERE connector_id = ?1), 0)`, q.connectorID).Scan(&pendingAfter); err != nil {
+		return result, err
+	}
+	result.Pending = max(int64(0), pendingBefore-pendingAfter)
+	if err := tx.Commit(); err != nil {
+		return PruneResult{}, err
+	}
+	return result, nil
 }
 
 func (q *sqliteQueue) Purge(ctx context.Context) error {
@@ -147,12 +170,35 @@ func (q *sqliteQueue) Purge(ctx context.Context) error {
 
 func (q *sqliteQueue) Stats(ctx context.Context) (Stats, error) {
 	var s Stats
-	var oldest sql.NullInt64
+	var oldestPending, oldestRetained sql.NullInt64
 	err := q.db.QueryRowContext(ctx,
-		`SELECT COUNT(*), COALESCE(SUM(bytes), 0), MIN(ts) FROM queue WHERE connector_id = ?`,
-		q.connectorID).Scan(&s.Depth, &s.Bytes, &oldest)
-	if oldest.Valid {
-		s.Oldest = time.Unix(0, oldest.Int64)
+		`WITH checkpoint AS (
+		   SELECT COALESCE((SELECT last_seq FROM checkpoints WHERE connector_id = ?1), 0) AS cursor
+		 )
+		 SELECT
+		   COALESCE(SUM(CASE WHEN q.id > checkpoint.cursor THEN 1 ELSE 0 END), 0),
+		   COALESCE(SUM(CASE WHEN q.id > checkpoint.cursor THEN q.bytes ELSE 0 END), 0),
+		   MIN(CASE WHEN q.id > checkpoint.cursor THEN q.ts END),
+		   COUNT(q.id), COALESCE(SUM(q.bytes), 0), MIN(q.ts),
+		   checkpoint.cursor, COALESCE(MAX(q.id), 0)
+		 FROM checkpoint LEFT JOIN queue q ON q.connector_id = ?1`,
+		q.connectorID).Scan(
+		&s.Depth, &s.Bytes, &oldestPending,
+		&s.RetainedDepth, &s.RetainedBytes, &oldestRetained,
+		&s.Cursor, &s.Tail,
+	)
+	if oldestPending.Valid {
+		s.Oldest = time.Unix(0, oldestPending.Int64)
+	}
+	if oldestRetained.Valid {
+		s.OldestRetained = time.Unix(0, oldestRetained.Int64)
+	}
+	s.LimitMessages, s.LimitBytes = q.limits.MaxMessages, q.limits.MaxBytes
+	if s.LimitMessages > 0 {
+		s.HeadroomMessages = max(int64(0), s.LimitMessages-s.RetainedDepth)
+	}
+	if s.LimitBytes > 0 {
+		s.HeadroomBytes = max(int64(0), s.LimitBytes-s.RetainedBytes)
 	}
 	return s, err
 }

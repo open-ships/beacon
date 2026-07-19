@@ -15,12 +15,20 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 
 	"github.com/open-ships/beacon/internal/bus"
 	"github.com/open-ships/beacon/internal/config"
+	"github.com/open-ships/beacon/internal/inventory"
 	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/supervisor"
+	"github.com/open-ships/beacon/internal/sysinfo"
 )
+
+type RuntimeInfo struct {
+	Inventory  *inventory.Registry
+	CANDetails func() []sysinfo.CANInterface
+}
 
 // assetsFS embeds every vendored/compiled static file this package serves
 // under /ui/assets/ — see the package doc comment and assets/README.md.
@@ -63,11 +71,15 @@ var assetsFS embed.FS
 // exact-path registration for "/ui" already exists at that outer mux.
 // Routes below are registered with the full "/ui/..." path since the mux
 // they're added to isn't stripped.
-func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, devices func() []bus.DeviceInfo, version string, log *slog.Logger) http.Handler {
+func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, devices func() []bus.DeviceInfo, version string, log *slog.Logger, runtimeInfo ...RuntimeInfo) http.Handler {
 	if log == nil {
 		log = slog.Default()
 	}
 	assetVersion := assetCacheVersion(version)
+	var runtime RuntimeInfo
+	if len(runtimeInfo) > 0 {
+		runtime = runtimeInfo[0]
+	}
 	mux := http.NewServeMux()
 
 	// GET /ui and GET /ui/ both land the operator on the dashboard. Both
@@ -91,7 +103,42 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 		data.Flash = takeFlash(w, r)
 		renderPage(w, log, "dashboard", data)
 	})
-	mux.HandleFunc("GET /ui/frag/dashboard", handleDashboardFrag(svc, reg, statuses, devices, log))
+	mux.HandleFunc("GET /ui/frag/dashboard", handleDashboardFrag(svc, reg, statuses, devices, runtime, log))
+	mux.HandleFunc("POST /ui/n2k/inventory/baseline", func(w http.ResponseWriter, r *http.Request) {
+		if runtime.Inventory == nil {
+			http.Error(w, "inventory unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if err := runtime.Inventory.CommitBaseline(r.Context()); err != nil {
+			log.Error("commit N2K baseline", "err", err)
+			http.Error(w, "baseline failed", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("HX-Redirect", "/ui/dashboard")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /ui/n2k/inventory/{name}/label", func(w http.ResponseWriter, r *http.Request) {
+		if runtime.Inventory == nil {
+			http.Error(w, "inventory unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		name, err := strconv.ParseUint(r.PathValue("name"), 16, 64)
+		if err != nil {
+			http.Error(w, "invalid Device NAME", http.StatusBadRequest)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		if err := runtime.Inventory.SetLabel(r.Context(), r.PostFormValue("endpoint"), name, r.PostFormValue("label")); err != nil {
+			log.Error("label N2K device", "err", err)
+			http.Error(w, "label failed", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("HX-Redirect", "/ui/dashboard")
+		w.WriteHeader(http.StatusNoContent)
+	})
 
 	// Sources: full page, its "add/edit" form + type-fields fragments, and
 	// its create/update/delete write endpoints. See forms.go for every

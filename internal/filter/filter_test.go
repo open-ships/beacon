@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/open-ships/beacon/internal/msg"
+	"github.com/open-ships/beacon/internal/n2kcatalog"
 )
 
 func env(pgnNum uint32, source uint8, payload string) *msg.Envelope {
@@ -51,6 +52,20 @@ func TestPayloadField(t *testing.T) {
 	}
 	if ok, _ := c.Match(env(128259, 1, `{"speed": 1.0}`)); ok {
 		t.Fatal("payload threshold should reject")
+	}
+}
+
+func TestPhysicalAndProvenanceFields(t *testing.T) {
+	c, err := Compile([]string{`msg.ingress == "socketcan:can0"`, `msg.device_name_hex == "FEDCBA9876543210"`, `msg.physical.speed.value > 2.0`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := env(128259, 1, `{}`)
+	e.Ingress = "socketcan:can0"
+	e.DeviceNameHex = "FEDCBA9876543210"
+	e.Physical = map[string]n2kcatalog.PhysicalField{"speed": {Value: 2.5, Unit: "m/s"}}
+	if ok, err := c.Match(e); err != nil || !ok {
+		t.Fatalf("match = %v, %v", ok, err)
 	}
 }
 

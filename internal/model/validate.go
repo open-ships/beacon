@@ -162,6 +162,14 @@ func (c Connector) Validate() error {
 	if c.Buffer.MaxMessages < 0 || c.Buffer.MaxAge < 0 || c.Buffer.MaxBytes < 0 {
 		return fmt.Errorf("connector %q: buffer limits must not be negative", c.ID)
 	}
+	switch c.EffectiveMode() {
+	case BridgeSemantic, BridgeTransparent, BridgeObserve:
+	default:
+		return fmt.Errorf("connector %q: mode must be %q, %q, or %q", c.ID, BridgeSemantic, BridgeTransparent, BridgeObserve)
+	}
+	if c.ForwardManagement && c.EffectiveMode() != BridgeTransparent {
+		return fmt.Errorf("connector %q: forward_management is only valid in transparent mode", c.ID)
+	}
 	return nil
 }
 
@@ -181,6 +189,7 @@ func (c *Config) Validate() error {
 		srcIDs[s.ID] = true
 	}
 	sinkIDs := map[string]bool{}
+	sinksByID := map[string]Sink{}
 	paths := map[string]string{}
 	for _, s := range c.Sinks {
 		if err := s.Validate(); err != nil {
@@ -191,6 +200,7 @@ func (c *Config) Validate() error {
 		}
 		ids["snk:"+s.ID] = true
 		sinkIDs[s.ID] = true
+		sinksByID[s.ID] = s
 		if s.Path != "" {
 			if other, dup := paths[s.Path]; dup {
 				return fmt.Errorf("sinks %q and %q share path %q", other, s.ID, s.Path)
@@ -211,6 +221,17 @@ func (c *Config) Validate() error {
 		}
 		if !sinkIDs[cn.SinkID] {
 			return fmt.Errorf("connector %q: unknown sink %q", cn.ID, cn.SinkID)
+		}
+		if cn.EffectiveMode() == BridgeTransparent {
+			sink := sinksByID[cn.SinkID]
+			if sink.Type != SinkSocketCAN {
+				return fmt.Errorf("connector %q: transparent mode currently requires a socketcan sink", cn.ID)
+			}
+			for _, source := range c.Sources {
+				if source.ID == cn.SourceID && source.Type == SourceSocketCAN && source.Interface == sink.Interface {
+					return fmt.Errorf("connector %q: transparent source and sink cannot use the same socketcan interface", cn.ID)
+				}
+			}
 		}
 	}
 	return nil

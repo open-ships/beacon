@@ -21,6 +21,13 @@ Check it took:
 ip -details link show can0
 ```
 
+The Beacon dashboard reports the same controller state plus bitrate, link
+state, RX/TX/error/drop counters, and a sampled bus-load estimate. Its device
+inventory decodes ISO NAME, manufacturer/class/function/instances,
+product/configuration information, and advertised transmit/receive PGNs.
+Once the vessel is correct, use **Commit baseline**; later new, changed, or
+missing devices are flagged by stable NAME even if their source address moves.
+
 Use the interface name (`can0`, `can1`, ...) as a source or sink's
 `interface` field. A `socketcan` sink pushes each message onto the bus with
 confirmation and retry (see the concepts page); a `socketcan` source

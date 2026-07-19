@@ -51,7 +51,7 @@
           {{if eq .State "error"}}<span class="badge badge-error">error</span>{{end}}
         </div>
         <div class="dag-node-title">{{.Name}}</div>
-        <div class="dag-node-meta"><code>{{.ID}}</code><span>{{len .Filters}} filters</span></div>
+        <div class="dag-node-meta"><code>{{.ID}}</code><span>{{.EffectiveMode}}</span><span>{{len .Filters}} filters</span></div>
         <div class="dag-metrics">
           <span><strong>{{printf "%.2f" .Snapshot.MsgPerSec}}</strong> msg/s</span>
           <span><strong>{{.BytesPerSecText}}</strong></span>
@@ -222,22 +222,54 @@
       </div>
     </section>
 
+    {{if .CANInterfaces}}
+    <section class="metadata-section" aria-label="SocketCAN diagnostics">
+      <div class="section-heading">
+        <h3>SocketCAN diagnostics</h3>
+        <a class="btn btn-sm" href="/api/v1/n2k/commissioning-report">Commissioning report</a>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="table metadata-table">
+          <thead><tr><th>Interface</th><th>Link</th><th>CAN state</th><th>Bitrate</th><th>Bus load</th><th>RX / TX</th><th>Errors</th><th>Dropped</th></tr></thead>
+          <tbody>{{range .CANInterfaces}}<tr>
+            <td><code>{{.Name}}</code></td><td>{{.OperationalState}}</td><td>{{if .CANState}}{{.CANState}}{{else}}-{{end}}</td>
+            <td>{{if .Bitrate}}{{.Bitrate}} bit/s{{else}}-{{end}}</td>
+            <td>{{if .BusLoadPercent}}{{printf "%.1f%%" .BusLoadPercent}}{{else}}sampling{{end}}</td>
+            <td>{{.RXPackets}} / {{.TXPackets}}</td><td>{{.RXErrors}} / {{.TXErrors}}</td><td>{{.RXDropped}} / {{.TXDropped}}</td>
+          </tr>{{end}}</tbody>
+        </table>
+      </div>
+    </section>
+    {{end}}
+
     {{if .Devices}}
     {{/* Bus devices are discovered automatically by the n2k client (v0.2.0
          registry); this section only appears once a CAN bus has seen any. */}}
     <section class="metadata-section" aria-label="Bus devices">
       <div class="section-heading">
         <h3>Bus devices</h3>
+        <div class="home-flow-actions">
+          <a class="btn btn-sm" href="/api/v1/n2k/commissioning-report">Download report</a>
+          {{if .CanCommitBaseline}}<button class="btn btn-sm btn-primary" hx-post="/ui/n2k/inventory/baseline" hx-confirm="Accept every currently online device as the commissioning baseline?">Commit baseline</button>{{end}}
+        </div>
       </div>
       <div class="overflow-x-auto">
         <table class="table metadata-table">
           <thead>
             <tr>
               <th>Endpoint</th>
+              <th>Status</th>
+              <th>Label</th>
               <th>Address</th>
               <th>NAME</th>
+              <th>Manufacturer</th>
+              <th>Class / function</th>
+              <th>Instances</th>
               <th>Model</th>
+              <th>Software</th>
               <th>Serial</th>
+              <th>Installation</th>
+              <th>PGNs</th>
               <th>Last seen</th>
             </tr>
           </thead>
@@ -245,10 +277,18 @@
             {{range .Devices}}
             <tr>
               <td><code>{{.Endpoint}}</code></td>
+              <td>{{if eq .Status "online"}}<span class="badge badge-success">online</span>{{else if eq .Status "new"}}<span class="badge badge-warning">new</span>{{else if eq .Status "changed"}}<span class="badge badge-error">changed</span>{{else if eq .Status "missing"}}<span class="badge badge-error">missing</span>{{else}}<span class="badge badge-ghost">{{if .Status}}{{.Status}}{{else}}live{{end}}</span>{{end}}</td>
+              <td><form class="flex gap-1" hx-post="/ui/n2k/inventory/{{.NameKey}}/label"><input type="hidden" name="endpoint" value="{{.Endpoint}}"><input class="input input-sm" name="label" value="{{.Label}}" aria-label="Device label"><button class="btn btn-sm" type="submit">Set</button></form></td>
               <td>{{.Address}}</td>
               <td><code>{{.Name}}</code></td>
+              <td>{{if .Manufacturer}}{{.Manufacturer}}{{else}}<span class="opacity-70">-</span>{{end}}</td>
+              <td>{{if .Role}}{{.Role}}{{else}}<span class="opacity-70">-</span>{{end}}</td>
+              <td>{{.Instances}}</td>
               <td>{{if .Model}}{{.Model}}{{else}}<span class="opacity-70">-</span>{{end}}</td>
+              <td>{{if .Software}}{{.Software}}{{else}}<span class="opacity-70">-</span>{{end}}</td>
               <td>{{if .Serial}}<code>{{.Serial}}</code>{{else}}<span class="opacity-70">-</span>{{end}}</td>
+              <td>{{if .Installation}}{{.Installation}}{{else}}<span class="opacity-70">-</span>{{end}}</td>
+              <td>{{.Supported}}</td>
               <td>{{.LastSeen}}</td>
             </tr>
             {{end}}

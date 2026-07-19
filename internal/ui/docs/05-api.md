@@ -121,7 +121,7 @@ for scraping/alerting rather than point queries.
 
 ```
 GET /api/v1/health   {"status": "ok"|"degraded", "components": [...]}
-GET /api/v1/system   {"version": "...", "can_interfaces": [...], "serial_ports": [...]}
+GET /api/v1/system   version, persistent N2K identity, live devices, CAN/serial discovery and CAN diagnostics
 ```
 
 `/api/v1/health` mirrors the admin server's top-level `GET /health`
@@ -129,3 +129,20 @@ exactly — use whichever is more convenient. `/api/v1/system` is a
 best-effort hardware inventory (detected SocketCAN interfaces and
 USB-serial device paths) — the same data this UI's add-source/add-sink
 forms use to offer choices instead of a blank text field.
+
+## NMEA 2000 catalog and commissioning
+
+```
+GET  /api/v1/n2k/pgns                         complete machine-readable PGN/variant/field catalog
+GET  /api/v1/n2k/pgns/{pgn}                   one PGN and every variant
+GET  /api/v1/n2k/inventory                    persistent devices and baseline state
+POST /api/v1/n2k/inventory/baseline           accept all online devices as expected
+PUT  /api/v1/n2k/inventory/{hex-name}/label?endpoint=socketcan:can0
+GET  /api/v1/n2k/commissioning-report          identity, bus health, inventory, routes, and components
+```
+
+Inventory keys are endpoint plus stable Device NAME, never the dynamic source
+address. Status is `new`, `online`, `changed`, `missing`, or `historical`.
+Device and envelope responses retain numeric NAME fields for compatibility and
+also expose `name_hex` / `device_name_hex`; JavaScript clients should use the
+16-digit hex form to avoid IEEE-754 integer precision loss.

@@ -56,6 +56,19 @@
       </select>
     </fieldset>
     <fieldset class="fieldset">
+      <legend class="fieldset-legend">Bridge mode</legend>
+      <select id="conn-mode" name="mode" class="select w-full">
+        <option value="semantic" {{if or (eq .Mode "") (eq .Mode "semantic")}}selected{{end}}>Semantic — decode and re-originate as Beacon</option>
+        <option value="transparent" {{if eq .Mode "transparent"}}selected{{end}}>Transparent — preserve source address and raw payload (SocketCAN sink)</option>
+        <option value="observe" {{if eq .Mode "observe"}}selected{{end}}>Observe — retain and inspect without forwarding</option>
+      </select>
+      <p class="field-help">Transparent mode blocks N2K management traffic by default and cannot target the source interface.</p>
+    </fieldset>
+    <label class="label cursor-pointer justify-start gap-2">
+      <input type="checkbox" name="forward_management" value="1" class="checkbox" {{if .ForwardManagement}}checked{{end}}>
+      Forward N2K management PGNs in transparent mode
+    </label>
+    <fieldset class="fieldset">
       <legend class="fieldset-legend">Filters (one CEL expression per line)</legend>
       <div class="cel-autocomplete" data-cel-autocomplete>
         <div class="cel-filter-editor">

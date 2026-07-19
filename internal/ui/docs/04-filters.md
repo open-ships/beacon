@@ -17,6 +17,14 @@ Every expression sees a single variable, `msg`, matching the envelope shape
 | `msg.dest` | int | destination address (255 = broadcast) |
 | `msg.priority` | int | 0 (highest) to 7 (lowest) |
 | `msg.timestamp` | string | RFC 3339 |
+| `msg.observed_at` | string | RFC 3339 time at this ingress |
+| `msg.ingress` / `msg.origin_ingress` | string | current and first-known ingress |
+| `msg.device_name` | uint | stable ISO Device NAME, or zero until known |
+| `msg.device_name_hex` | string | the same NAME as 16 uppercase hex digits, or empty until known |
+| `msg.pgn_name` / `msg.variant` | string | catalog name and decoded variant |
+| `msg.manufacturer_code` | int | proprietary manufacturer code, or zero |
+| `msg.decode_status` | string | `decoded` or `unknown` |
+| `msg.physical` | map | scaled fields keyed like payload, each with `value`, `unit`, and `physical_quantity` |
 | `msg.payload` | map | decoded PGN fields, keyed by their JSON field name (camelCase, e.g. `heading`, `speedWaterReferenced`) |
 
 `msg.payload`'s keys depend entirely on which PGN the message is — check
@@ -26,13 +34,17 @@ payload field is only present for messages of the PGN(s) that define it;
 referencing a key absent from the current message's payload is a runtime
 evaluation error, not `false` — see "Missing payload fields" below.
 
-**Units: payload numbers are raw wire values, not scaled physical units.**
+**Payload numbers remain raw wire values.**
 Each NMEA 2000 field has a per-field resolution the decoder does *not*
 apply — e.g. PGN 128259's `speedWaterReferenced` has a resolution of
 0.01 m/s, so a boat doing 2 m/s reports a raw value of 200; PGN 127250's
 `heading` has a resolution of 0.0001 radians, so 90 degrees is roughly
 15708. Write thresholds against the raw value (physical value divided by
-the field's resolution), not the physical one.
+the field's resolution), or use the additive physical map. For example:
+
+```
+has(msg.physical.speedWaterReferenced) && msg.physical.speedWaterReferenced.value > 2.0
+```
 
 ## List semantics: AND across entries, OR within one
 

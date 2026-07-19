@@ -20,6 +20,7 @@ import (
 	"github.com/open-ships/beacon/internal/metrics"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/msg"
+	"github.com/open-ships/beacon/internal/stats"
 )
 
 // ErrNotEncodable marks an envelope that cannot be re-encoded onto a CAN
@@ -91,34 +92,16 @@ type Manager struct {
 	log       *slog.Logger
 	met       *metrics.Set
 	extraOpts []n2k.Option
+	st        *stats.Registry
 
 	mu      sync.Mutex
 	clients map[Endpoint]*busClient
 }
 
+func (m *Manager) SetStatsRegistry(st *stats.Registry) { m.st = st }
+
 func NewManager(log *slog.Logger, met *metrics.Set, extraOpts ...n2k.Option) *Manager {
 	return &Manager{log: log, met: met, extraOpts: extraOpts, clients: map[Endpoint]*busClient{}}
-}
-
-// Identity returns the n2k options that make beacon present itself as a named
-// NMEA-2000 device — answering ISO product (126996) and configuration (126998)
-// requests with a real identity instead of the library's anonymous defaults.
-// n2k v0.2.0 makes every bus client answer those requests automatically; this
-// just fills in who is answering. Callers apply it ahead of any user-supplied
-// options so those can still override (see internal/app).
-func Identity(version string) []n2k.Option {
-	return []n2k.Option{
-		n2k.WithProductInfo(n2k.ProductInfo{
-			ModelID:         "Open Ships beacon",
-			SoftwareVersion: version,
-			ModelVersion:    "gateway",
-			LoadEquivalency: 1,
-		}),
-		n2k.WithConfigInfo(n2k.ConfigInfo{
-			InstallationDescription1: "Open Ships beacon gateway",
-			ManufacturerInformation:  "openships.ai",
-		}),
-	}
 }
 
 func (m *Manager) clientCount() int {
@@ -149,8 +132,10 @@ func (m *Manager) Acquire(ctx context.Context, ep Endpoint) (*Handle, error) {
 		runCtx, cancel := context.WithCancel(context.Background())
 		bc = &busClient{
 			mgr: m, ep: ep, opts: opts, cancel: cancel,
-			subs:  map[int64]chan *msg.Envelope{},
-			state: "degraded",
+			subs:      map[int64]busSubscriber{},
+			supported: map[uint64]SupportedPGNs{},
+			requested: map[uint64]time.Time{},
+			state:     "degraded",
 		}
 		m.clients[ep] = bc
 		bc.wg.Add(1)
@@ -174,10 +159,19 @@ type busClient struct {
 
 	mu      sync.Mutex
 	client  *n2k.Client
-	subs    map[int64]chan *msg.Envelope
+	subs    map[int64]busSubscriber
 	nextSub int64
 	state   string
 	lastErr error
+
+	supported map[uint64]SupportedPGNs
+	requested map[uint64]time.Time
+	requestWG sync.WaitGroup
+}
+
+type busSubscriber struct {
+	label string
+	ch    chan *msg.Envelope
 }
 
 // run maintains the client: (re)connect, pump Receive into subscribers,
@@ -249,8 +243,20 @@ func (bc *busClient) run(ctx context.Context) {
 				bc.mgr.log.Debug("envelope conversion error", "err", err)
 				continue
 			}
+			e.Ingress = bc.ep.Kind + ":" + bc.ep.Name
+			e.OriginIngress = e.Ingress
+			if device, ok := client.DeviceAt(e.Source); ok {
+				name := device.RawName
+				e.DeviceName = &name
+				e.DeviceNameHex = fmt.Sprintf("%016X", name)
+				if list, ok := m.(*pgn.ParameterGroupNumberListTransmitAndReceive); ok {
+					bc.recordSupportedPGNs(name, list)
+				}
+			}
+			bc.maybeRequestPGNList(ctx, client, e.Source)
 			bc.broadcast(ctx, e)
 		}
+		bc.requestWG.Wait()
 		// Receive ended: client dead or ctx cancelled.
 		_ = client.Close()
 		close(iterDone) // retire this iteration's close watchdog
@@ -291,15 +297,23 @@ func (bc *busClient) broadcast(ctx context.Context, e *msg.Envelope) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 	var dropped int64
-	for _, ch := range bc.subs {
+	droppedBySource := map[string]int64{}
+	for _, sub := range bc.subs {
 		select {
-		case ch <- e:
+		case sub.ch <- e:
 		default: // slow subscriber: drop rather than block the bus
 			dropped++
+			if sub.label != "" {
+				droppedBySource[sub.label]++
+			}
 		}
 	}
 	if dropped > 0 {
 		bc.mgr.met.SourceDrops(ctx, "bus:"+bc.ep.Kind+":"+bc.ep.Name, dropped)
+	}
+	for source, count := range droppedBySource {
+		bc.mgr.met.SourceDrops(ctx, source, count)
+		bc.mgr.st.RecordSourceDrops(source, count)
 	}
 }
 
@@ -321,12 +335,107 @@ func (bc *busClient) setState(state string, err error) {
 // client tracks every claimed NAME automatically (from address-claim traffic),
 // so this data comes for free once a bus client is running.
 type DeviceInfo struct {
-	Endpoint string    `json:"endpoint"`         // "socketcan:can0"
-	Address  uint8     `json:"address"`          // current claimed bus address
-	Name     uint64    `json:"name"`             // packed ISO 11783 NAME
-	LastSeen time.Time `json:"last_seen"`        // last transmission from this device
-	Model    string    `json:"model,omitempty"`  // from PGN 126996, once observed
-	Serial   string    `json:"serial,omitempty"` // from PGN 126996, once observed
+	Endpoint                 string    `json:"endpoint"`
+	Address                  uint8     `json:"address"`
+	Name                     uint64    `json:"name"`
+	NameHex                  string    `json:"name_hex"`
+	LastSeen                 time.Time `json:"last_seen"`
+	IdentityNumber           uint32    `json:"identity_number"`
+	ManufacturerCode         uint16    `json:"manufacturer_code"`
+	Manufacturer             string    `json:"manufacturer,omitempty"`
+	DeviceInstance           uint8     `json:"device_instance"`
+	SystemInstance           uint8     `json:"system_instance"`
+	DeviceClass              uint8     `json:"device_class"`
+	DeviceClassName          string    `json:"device_class_name,omitempty"`
+	DeviceFunction           uint8     `json:"device_function"`
+	DeviceFunctionName       string    `json:"device_function_name,omitempty"`
+	IndustryGroup            uint8     `json:"industry_group"`
+	IndustryGroupName        string    `json:"industry_group_name,omitempty"`
+	ArbitraryAddressCapable  bool      `json:"arbitrary_address_capable"`
+	N2KVersion               uint64    `json:"n2k_version,omitempty"`
+	ProductCode              uint64    `json:"product_code,omitempty"`
+	Model                    string    `json:"model,omitempty"`
+	SoftwareVersion          string    `json:"software_version,omitempty"`
+	ModelVersion             string    `json:"model_version,omitempty"`
+	Serial                   string    `json:"serial,omitempty"`
+	CertificationLevel       uint64    `json:"certification_level,omitempty"`
+	LoadEquivalency          uint64    `json:"load_equivalency,omitempty"`
+	InstallationDescription1 string    `json:"installation_description_1,omitempty"`
+	InstallationDescription2 string    `json:"installation_description_2,omitempty"`
+	ManufacturerInformation  string    `json:"manufacturer_information,omitempty"`
+	TransmitPGNs             []uint32  `json:"transmit_pgns,omitempty"`
+	ReceivePGNs              []uint32  `json:"receive_pgns,omitempty"`
+}
+
+type SupportedPGNs struct {
+	Transmit []uint32
+	Receive  []uint32
+}
+
+func uint64Value(v *uint64) uint64 {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
+func (bc *busClient) recordSupportedPGNs(name uint64, resp *pgn.ParameterGroupNumberListTransmitAndReceive) {
+	seen := make(map[uint32]struct{}, len(resp.Repeating1))
+	values := make([]uint32, 0, len(resp.Repeating1))
+	for _, item := range resp.Repeating1 {
+		if item.Pgn == nil {
+			continue
+		}
+		value := uint32(*item.Pgn)
+		if _, duplicate := seen[value]; duplicate {
+			continue
+		}
+		seen[value] = struct{}{}
+		values = append(values, value)
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+
+	bc.mu.Lock()
+	lists := bc.supported[name]
+	switch uint64Value(resp.FunctionCode) {
+	case uint64(pgn.TransmitPGNList):
+		lists.Transmit = values
+	case uint64(pgn.ReceivePGNList):
+		lists.Receive = values
+	default:
+		bc.mu.Unlock()
+		return
+	}
+	bc.supported[name] = lists
+	bc.mu.Unlock()
+}
+
+func (bc *busClient) maybeRequestPGNList(ctx context.Context, client *n2k.Client, source uint8) {
+	device, ok := client.DeviceAt(source)
+	if !ok {
+		return
+	}
+	bc.mu.Lock()
+	if time.Since(bc.requested[device.RawName]) < time.Minute {
+		bc.mu.Unlock()
+		return
+	}
+	bc.requested[device.RawName] = time.Now()
+	bc.requestWG.Add(1)
+	bc.mu.Unlock()
+
+	go func(name uint64, target uint8) {
+		defer bc.requestWG.Done()
+		resp, err := n2k.Request[*pgn.ParameterGroupNumberListTransmitAndReceive](ctx, client, target)
+		if err != nil {
+			return
+		}
+		// Request returns the first matching reply. Devices commonly answer
+		// PGN 126464 with both transmit and receive lists; the normal Receive
+		// loop records every reply, while this call also records the first so
+		// neither response ordering nor scheduler timing can hide it.
+		bc.recordSupportedPGNs(name, resp)
+	}(device.RawName, source)
 }
 
 // Devices returns every device currently known across all running bus
@@ -351,16 +460,48 @@ func (m *Manager) Devices() []DeviceInfo {
 			continue
 		}
 		for _, d := range client.Devices() {
+			name := d.Name
 			di := DeviceInfo{
-				Endpoint: ep.Kind + ":" + ep.Name,
-				Address:  d.Address,
-				Name:     d.RawName,
-				LastSeen: d.LastSeen,
+				Endpoint:                ep.Kind + ":" + ep.Name,
+				Address:                 d.Address,
+				Name:                    d.RawName,
+				NameHex:                 fmt.Sprintf("%016X", d.RawName),
+				LastSeen:                d.LastSeen,
+				IdentityNumber:          name.IdentityNumber,
+				ManufacturerCode:        name.ManufacturerCode,
+				Manufacturer:            pgn.ManufacturerCodeConst(name.ManufacturerCode).String(),
+				DeviceInstance:          name.DeviceInstance,
+				SystemInstance:          name.SystemInstance,
+				DeviceClass:             name.DeviceClass,
+				DeviceClassName:         pgn.DeviceClassConst(name.DeviceClass).String(),
+				DeviceFunction:          name.DeviceFunction,
+				IndustryGroup:           name.IndustryGroup,
+				IndustryGroupName:       pgn.IndustryCodeConst(name.IndustryGroup).String(),
+				ArbitraryAddressCapable: d.RawName&(uint64(1)<<63) != 0,
+			}
+			if functions := pgn.DeviceFunctionConstMap[int(name.DeviceClass)]; functions != nil {
+				di.DeviceFunctionName = functions[int(name.DeviceFunction)]
 			}
 			if d.ProductInfo != nil {
 				di.Model = strings.TrimSpace(d.ProductInfo.ModelId)
 				di.Serial = strings.TrimSpace(d.ProductInfo.ModelSerialCode)
+				di.N2KVersion = uint64Value(d.ProductInfo.Nmea2000Version)
+				di.ProductCode = uint64Value(d.ProductInfo.ProductCode)
+				di.SoftwareVersion = strings.TrimSpace(d.ProductInfo.SoftwareVersionCode)
+				di.ModelVersion = strings.TrimSpace(d.ProductInfo.ModelVersion)
+				di.CertificationLevel = uint64Value(d.ProductInfo.CertificationLevel)
+				di.LoadEquivalency = uint64Value(d.ProductInfo.LoadEquivalency)
 			}
+			if d.ConfigInfo != nil {
+				di.InstallationDescription1 = strings.TrimSpace(d.ConfigInfo.InstallationDescription1)
+				di.InstallationDescription2 = strings.TrimSpace(d.ConfigInfo.InstallationDescription2)
+				di.ManufacturerInformation = strings.TrimSpace(d.ConfigInfo.ManufacturerInformation)
+			}
+			bc.mu.Lock()
+			lists := bc.supported[d.RawName]
+			bc.mu.Unlock()
+			di.TransmitPGNs = append([]uint32(nil), lists.Transmit...)
+			di.ReceivePGNs = append([]uint32(nil), lists.Receive...)
 			out = append(out, di)
 		}
 	}
@@ -382,12 +523,16 @@ type Handle struct {
 // broadcast loop when it runs). Consumers must select on their own
 // context/done signal alongside the channel — never bare-range over it.
 func (h *Handle) Subscribe(buf int) (<-chan *msg.Envelope, func()) {
+	return h.SubscribeNamed("", buf)
+}
+
+func (h *Handle) SubscribeNamed(label string, buf int) (<-chan *msg.Envelope, func()) {
 	bc := h.bc
 	bc.mu.Lock()
 	id := bc.nextSub
 	bc.nextSub++
 	ch := make(chan *msg.Envelope, buf)
-	bc.subs[id] = ch
+	bc.subs[id] = busSubscriber{label: label, ch: ch}
 	bc.mu.Unlock()
 	return ch, func() {
 		bc.mu.Lock()

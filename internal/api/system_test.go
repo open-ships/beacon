@@ -89,6 +89,37 @@ func TestGetSystem(t *testing.T) {
 	}
 }
 
+func TestGetN2KCatalogPGN(t *testing.T) {
+	srv, _, _ := newStatsServer(t)
+	resp := doJSON(t, http.MethodGet, srv.URL+"/api/v1/n2k/pgns/127250", nil)
+	mustStatus(t, resp, http.StatusOK)
+	var body struct {
+		PGN      uint32 `json:"pgn"`
+		Variants []struct {
+			Description string         `json:"description"`
+			Fields      map[string]any `json:"fields"`
+		} `json:"variants"`
+	}
+	decodeInto(t, resp, &body)
+	if body.PGN != 127250 || len(body.Variants) == 0 || body.Variants[0].Description != "Vessel Heading" || len(body.Variants[0].Fields) == 0 {
+		t.Fatalf("catalog response = %+v", body)
+	}
+}
+
+func TestCommissioningReportIsAvailableWithoutHardware(t *testing.T) {
+	srv, _, _ := newStatsServer(t)
+	resp := doJSON(t, http.MethodGet, srv.URL+"/api/v1/n2k/commissioning-report", nil)
+	mustStatus(t, resp, http.StatusOK)
+	var body struct {
+		Devices    []any                     `json:"devices"`
+		Connectors map[string]stats.Snapshot `json:"connectors"`
+	}
+	decodeInto(t, resp, &body)
+	if body.Devices == nil || body.Connectors == nil {
+		t.Fatalf("report contains null collections: %+v", body)
+	}
+}
+
 // --- Metrics ---
 
 func TestConnectorMetrics(t *testing.T) {

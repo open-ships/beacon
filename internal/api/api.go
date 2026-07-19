@@ -16,9 +16,20 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
 
+	"github.com/open-ships/beacon/internal/bus"
 	"github.com/open-ships/beacon/internal/config"
+	"github.com/open-ships/beacon/internal/identity"
+	"github.com/open-ships/beacon/internal/inventory"
 	"github.com/open-ships/beacon/internal/stats"
+	"github.com/open-ships/beacon/internal/supervisor"
 )
+
+type RuntimeInfo struct {
+	Identity  identity.Appliance
+	Devices   func() []bus.DeviceInfo
+	Inventory *inventory.Registry
+	Statuses  func() []supervisor.Status
+}
 
 // New builds beacon's config REST API: a chi router with huma registered
 // on it. Every operation is registered with its full "/api/v1/..." path
@@ -35,7 +46,7 @@ import (
 // log receives the underlying error whenever a handler is about to answer
 // 500 (the client only ever sees a sanitized "internal error" body); nil
 // defaults to slog.Default(), the same convention as config.NewService.
-func New(svc *config.Service, reg *stats.Registry, version string, log *slog.Logger) (http.Handler, huma.API) {
+func New(svc *config.Service, reg *stats.Registry, version string, log *slog.Logger, runtimeInfo ...RuntimeInfo) (http.Handler, huma.API) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -59,12 +70,18 @@ func New(svc *config.Service, reg *stats.Registry, version string, log *slog.Log
 	humaConfig.SchemasPath = "/api/schemas"
 
 	humaAPI := humachi.New(router, humaConfig)
+	var runtime RuntimeInfo
+	if len(runtimeInfo) > 0 {
+		runtime = runtimeInfo[0]
+	}
 
 	registerSourceRoutes(humaAPI, svc, log)
 	registerSinkRoutes(humaAPI, svc, log)
 	registerConnectorRoutes(humaAPI, svc, log)
 	registerFilterRoutes(humaAPI, svc, log)
-	registerSystemInfoRoutes(humaAPI, version)
+	registerCatalogRoutes(humaAPI)
+	registerSystemInfoRoutes(humaAPI, version, runtime)
+	registerCommissioningRoutes(humaAPI, runtime, reg)
 	registerMetricsRoutes(humaAPI, svc, reg, log)
 	registerConfigIORoutes(humaAPI, svc, log)
 	registerHealthRoutes(humaAPI, svc)

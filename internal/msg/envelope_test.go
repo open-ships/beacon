@@ -36,6 +36,13 @@ func TestFromPGNKnown(t *testing.T) {
 	if e.PayloadMap()["heading"] == nil {
 		t.Fatalf("payload heading missing: %s", e.Payload)
 	}
+	if e.PGNName != "Vessel Heading" || e.Variant != "vesselHeading" || e.Decode.Status != "decoded" || !e.Decode.Complete {
+		t.Fatalf("semantic metadata missing: %+v", e)
+	}
+	physical, ok := e.Physical["heading"]
+	if !ok || physical.Unit != "rad" || physical.Value < 1.5707 || physical.Value > 1.5709 {
+		t.Fatalf("physical heading = %+v", physical)
+	}
 	// Raw must round-trip through the codec back to the same PGN
 	back, err := pgn.DecodeMessage(e.Info(), e.Raw)
 	if err != nil {
@@ -77,6 +84,9 @@ func TestFromPGNUnknown(t *testing.T) {
 	if e.Dest != 255 || e.Priority != 6 {
 		t.Fatalf("defaults not applied: %+v", e)
 	}
+	if e.Decode.Status != "unknown" {
+		t.Fatalf("decode status = %q", e.Decode.Status)
+	}
 }
 
 func TestEnvelopeJSONShape(t *testing.T) {
@@ -86,7 +96,7 @@ func TestEnvelopeJSONShape(t *testing.T) {
 	b, _ := json.Marshal(e)
 	var m map[string]any
 	_ = json.Unmarshal(b, &m)
-	for _, k := range []string{"id", "connector", "pgn", "source", "dest", "priority", "timestamp", "payload", "raw"} {
+	for _, k := range []string{"id", "connector", "pgn", "source", "dest", "priority", "timestamp", "observed_at", "pgn_name", "decode", "physical", "payload", "raw"} {
 		if _, ok := m[k]; !ok {
 			t.Fatalf("marshaled envelope missing %q: %s", k, b)
 		}

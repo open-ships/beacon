@@ -40,9 +40,20 @@ type dialerSource struct {
 
 func newDialerSource(ctx context.Context, cfg model.Source, log *slog.Logger, met *metrics.Set, reg *stats.Registry, run runFunc) (Runtime, error) {
 	runCtx, cancel := context.WithCancel(ctx)
-	s := &dialerSource{id: cfg.ID, hub: newHub(met, cfg.ID), cancel: cancel, state: "degraded"}
+	s := &dialerSource{id: cfg.ID, hub: newHub(met, cfg.ID, reg), cancel: cancel, state: "degraded"}
 	publish := func(e *msg.Envelope) {
 		e.Seq, e.ConnectorID = 0, "" // upstream identifiers do not survive re-ingest
+		if e.DeviceName != nil && e.DeviceNameHex == "" {
+			e.DeviceNameHex = fmt.Sprintf("%016X", *e.DeviceName)
+		}
+		if e.OriginIngress == "" {
+			e.OriginIngress = e.Ingress
+			if e.OriginIngress == "" {
+				e.OriginIngress = cfg.ID
+			}
+		}
+		e.Ingress = cfg.ID
+		e.ObservedAt = time.Now().UTC()
 		met.SourceMessages(runCtx, cfg.ID, 1)
 		reg.RecordSource(cfg.ID, e)
 		s.hub.publish(e)

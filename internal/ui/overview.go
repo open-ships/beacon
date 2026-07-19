@@ -44,6 +44,7 @@ type overviewEventRow struct {
 	Stage         string
 	ConnectorID   string
 	PGN           uint32
+	PGNName       string
 	Source        uint8
 	Dest          uint8
 	Priority      uint8
@@ -53,19 +54,20 @@ type overviewEventRow struct {
 }
 
 type overviewLiveData struct {
-	DOMID           string
-	RefreshHref     string
-	Kind            string
-	ID              string
-	State           string
-	Err             string
-	Logs            []overviewLogRow
-	Snapshot        stats.Snapshot
-	BytesPerSecText string
-	TotalBytesText  string
-	QueueBytesText  string
-	Events          []overviewEventRow
-	EmptyStream     string
+	DOMID             string
+	RefreshHref       string
+	Kind              string
+	ID                string
+	State             string
+	Err               string
+	Logs              []overviewLogRow
+	Snapshot          stats.Snapshot
+	BytesPerSecText   string
+	TotalBytesText    string
+	QueueBytesText    string
+	RetainedBytesText string
+	Events            []overviewEventRow
+	EmptyStream       string
 }
 
 func sourceOverviewPageData(version string, s model.Source) overviewPageData {
@@ -180,6 +182,8 @@ func connectorConfigRows(c model.Connector) []configRow {
 		{"Enabled", boolText(c.Enabled), false},
 		{"Source", c.SourceID, true},
 		{"Sink", c.SinkID, true},
+		{"Bridge mode", string(c.EffectiveMode()), true},
+		{"Forward management", boolText(c.ForwardManagement), false},
 		{"Filters", strconv.Itoa(len(c.Filters)), false},
 	}
 	if len(c.Filters) > 0 {
@@ -240,6 +244,7 @@ func overviewEvents(events []stats.Event) []overviewEventRow {
 			Stage:         e.Stage,
 			ConnectorID:   e.ConnectorID,
 			PGN:           e.PGN,
+			PGNName:       e.PGNName,
 			Source:        e.Source,
 			Dest:          e.Dest,
 			Priority:      e.Priority,
@@ -263,19 +268,20 @@ func sourceOverviewLiveData(s model.Source, reg *stats.Registry, statuses []supe
 	snap, _ := reg.SourceSnapshot(s.ID)
 	state, errText := overviewStatus(statuses, "source", s.ID, s.Enabled)
 	return overviewLiveData{
-		DOMID:           "source-overview-live",
-		RefreshHref:     "/ui/frag/sources/" + s.ID + "/overview",
-		Kind:            "source",
-		ID:              s.ID,
-		State:           state,
-		Err:             errText,
-		Logs:            overviewLogs("source", state, errText),
-		Snapshot:        snap,
-		BytesPerSecText: humanizeBytes(snap.BytesPerSec, "/s"),
-		TotalBytesText:  humanizeBytes(float64(snap.TotalBytes), ""),
-		QueueBytesText:  humanizeBytes(float64(snap.QueueBytes), ""),
-		Events:          overviewEvents(reg.Recent("source", s.ID, overviewEventLimit)),
-		EmptyStream:     "No decoded messages have been received from this source in this process.",
+		DOMID:             "source-overview-live",
+		RefreshHref:       "/ui/frag/sources/" + s.ID + "/overview",
+		Kind:              "source",
+		ID:                s.ID,
+		State:             state,
+		Err:               errText,
+		Logs:              overviewLogs("source", state, errText),
+		Snapshot:          snap,
+		BytesPerSecText:   humanizeBytes(snap.BytesPerSec, "/s"),
+		TotalBytesText:    humanizeBytes(float64(snap.TotalBytes), ""),
+		QueueBytesText:    humanizeBytes(float64(snap.QueueBytes), ""),
+		RetainedBytesText: humanizeBytes(float64(snap.RetainedBytes), ""),
+		Events:            overviewEvents(reg.Recent("source", s.ID, overviewEventLimit)),
+		EmptyStream:       "No decoded messages have been received from this source in this process.",
 	}
 }
 
@@ -283,19 +289,20 @@ func sinkOverviewLiveData(s model.Sink, reg *stats.Registry, statuses []supervis
 	snap, _ := reg.SinkSnapshot(s.ID)
 	state, errText := overviewStatus(statuses, "sink", s.ID, s.Enabled)
 	return overviewLiveData{
-		DOMID:           "sink-overview-live",
-		RefreshHref:     "/ui/frag/sinks/" + s.ID + "/overview",
-		Kind:            "sink",
-		ID:              s.ID,
-		State:           state,
-		Err:             errText,
-		Logs:            overviewLogs("sink", state, errText),
-		Snapshot:        snap,
-		BytesPerSecText: humanizeBytes(snap.BytesPerSec, "/s"),
-		TotalBytesText:  humanizeBytes(float64(snap.TotalBytes), ""),
-		QueueBytesText:  humanizeBytes(float64(snap.QueueBytes), ""),
-		Events:          overviewEvents(reg.Recent("sink", s.ID, overviewEventLimit)),
-		EmptyStream:     "No messages have been sent to this sink in this process.",
+		DOMID:             "sink-overview-live",
+		RefreshHref:       "/ui/frag/sinks/" + s.ID + "/overview",
+		Kind:              "sink",
+		ID:                s.ID,
+		State:             state,
+		Err:               errText,
+		Logs:              overviewLogs("sink", state, errText),
+		Snapshot:          snap,
+		BytesPerSecText:   humanizeBytes(snap.BytesPerSec, "/s"),
+		TotalBytesText:    humanizeBytes(float64(snap.TotalBytes), ""),
+		QueueBytesText:    humanizeBytes(float64(snap.QueueBytes), ""),
+		RetainedBytesText: humanizeBytes(float64(snap.RetainedBytes), ""),
+		Events:            overviewEvents(reg.Recent("sink", s.ID, overviewEventLimit)),
+		EmptyStream:       "No messages have been sent to this sink in this process.",
 	}
 }
 
@@ -303,19 +310,20 @@ func connectorOverviewLiveData(c model.Connector, reg *stats.Registry, statuses 
 	snap, _ := reg.Snapshot(c.ID)
 	state, errText := overviewStatus(statuses, "connector", c.ID, c.Enabled)
 	return overviewLiveData{
-		DOMID:           "connector-overview-live",
-		RefreshHref:     "/ui/frag/connectors/" + c.ID + "/overview",
-		Kind:            "connector",
-		ID:              c.ID,
-		State:           state,
-		Err:             errText,
-		Logs:            overviewLogs("connector", state, errText),
-		Snapshot:        snap,
-		BytesPerSecText: humanizeBytes(snap.BytesPerSec, "/s"),
-		TotalBytesText:  humanizeBytes(float64(snap.TotalBytes), ""),
-		QueueBytesText:  humanizeBytes(float64(snap.QueueBytes), ""),
-		Events:          overviewEvents(reg.Recent("connector", c.ID, overviewEventLimit)),
-		EmptyStream:     "No messages have moved through this connector in this process.",
+		DOMID:             "connector-overview-live",
+		RefreshHref:       "/ui/frag/connectors/" + c.ID + "/overview",
+		Kind:              "connector",
+		ID:                c.ID,
+		State:             state,
+		Err:               errText,
+		Logs:              overviewLogs("connector", state, errText),
+		Snapshot:          snap,
+		BytesPerSecText:   humanizeBytes(snap.BytesPerSec, "/s"),
+		TotalBytesText:    humanizeBytes(float64(snap.TotalBytes), ""),
+		QueueBytesText:    humanizeBytes(float64(snap.QueueBytes), ""),
+		RetainedBytesText: humanizeBytes(float64(snap.RetainedBytes), ""),
+		Events:            overviewEvents(reg.Recent("connector", c.ID, overviewEventLimit)),
+		EmptyStream:       "No messages have moved through this connector in this process.",
 	}
 }
 

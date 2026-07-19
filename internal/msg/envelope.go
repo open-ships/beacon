@@ -9,18 +9,38 @@ import (
 	"time"
 
 	"github.com/open-ships/n2k/pgn"
+
+	"github.com/open-ships/beacon/internal/n2kcatalog"
 )
 
+type DecodeInfo struct {
+	Status   string   `json:"status"`
+	Complete bool     `json:"complete"`
+	Fallback bool     `json:"fallback,omitempty"`
+	Missing  []string `json:"missing,omitempty"`
+}
+
 type Envelope struct {
-	Seq         int64           `json:"id,omitempty"`
-	ConnectorID string          `json:"connector,omitempty"`
-	PGN         uint32          `json:"pgn"`
-	Source      uint8           `json:"source"`
-	Dest        uint8           `json:"dest"`
-	Priority    uint8           `json:"priority"`
-	Timestamp   time.Time       `json:"timestamp"`
-	Payload     json.RawMessage `json:"payload"`
-	Raw         []byte          `json:"raw,omitempty"`
+	Seq              int64                               `json:"id,omitempty"`
+	ConnectorID      string                              `json:"connector,omitempty"`
+	PGN              uint32                              `json:"pgn"`
+	Source           uint8                               `json:"source"`
+	Dest             uint8                               `json:"dest"`
+	Priority         uint8                               `json:"priority"`
+	Timestamp        time.Time                           `json:"timestamp"`
+	ObservedAt       time.Time                           `json:"observed_at"`
+	Ingress          string                              `json:"ingress,omitempty"`
+	OriginIngress    string                              `json:"origin_ingress,omitempty"`
+	DeviceName       *uint64                             `json:"device_name,omitempty"`
+	DeviceNameHex    string                              `json:"device_name_hex,omitempty"`
+	PGNName          string                              `json:"pgn_name,omitempty"`
+	Variant          string                              `json:"variant,omitempty"`
+	Transport        string                              `json:"transport,omitempty"`
+	ManufacturerCode *uint16                             `json:"manufacturer_code,omitempty"`
+	Decode           DecodeInfo                          `json:"decode"`
+	Physical         map[string]n2kcatalog.PhysicalField `json:"physical,omitempty"`
+	Payload          json.RawMessage                     `json:"payload"`
+	Raw              []byte                              `json:"raw,omitempty"`
 
 	payloadOnce sync.Once
 	payloadMap  map[string]any // lazy cache for CEL
@@ -38,13 +58,15 @@ func FromPGN(m pgn.Message) (*Envelope, error) {
 	// Handle UnknownPGN separately since it doesn't implement pgn.PGN
 	if u, isUnknown := m.(*pgn.UnknownPGN); isUnknown {
 		e := &Envelope{
-			PGN:       u.Info.PGN,
-			Source:    u.Info.SourceId,
-			Dest:      broadcastDest,
-			Priority:  defaultPriority,
-			Timestamp: u.Info.Timestamp,
-			Payload:   json.RawMessage("null"),
-			Raw:       append([]byte(nil), u.Data...),
+			PGN:        u.Info.PGN,
+			Source:     u.Info.SourceId,
+			Dest:       broadcastDest,
+			Priority:   defaultPriority,
+			Timestamp:  u.Info.Timestamp,
+			ObservedAt: time.Now().UTC(),
+			Payload:    json.RawMessage("null"),
+			Raw:        append([]byte(nil), u.Data...),
+			Decode:     DecodeInfo{Status: "unknown"},
 		}
 		if e.Timestamp.IsZero() {
 			e.Timestamp = time.Now()
@@ -55,6 +77,11 @@ func FromPGN(m pgn.Message) (*Envelope, error) {
 		if u.Info.Priority != nil {
 			e.Priority = *u.Info.Priority
 		}
+		metadata := n2kcatalog.DescribeUnknown(e.PGN, e.Raw)
+		e.PGNName, e.Variant, e.Transport = metadata.Name, metadata.Variant, metadata.Transport
+		e.ManufacturerCode = metadata.ManufacturerCode
+		e.Decode.Complete, e.Decode.Fallback = metadata.Complete, metadata.Fallback
+		e.Decode.Missing = metadata.Missing
 		return e, nil
 	}
 
@@ -64,11 +91,13 @@ func FromPGN(m pgn.Message) (*Envelope, error) {
 	}
 	info := p.MessageInfo()
 	e := &Envelope{
-		PGN:       info.PGN,
-		Source:    info.SourceId,
-		Dest:      broadcastDest,
-		Priority:  defaultPriority,
-		Timestamp: info.Timestamp,
+		PGN:        info.PGN,
+		Source:     info.SourceId,
+		Dest:       broadcastDest,
+		Priority:   defaultPriority,
+		Timestamp:  info.Timestamp,
+		ObservedAt: time.Now().UTC(),
+		Decode:     DecodeInfo{Status: "decoded"},
 	}
 	if e.PGN == 0 {
 		e.PGN = m.PGNNumber()
@@ -99,6 +128,12 @@ func FromPGN(m pgn.Message) (*Envelope, error) {
 	} else {
 		e.Raw = raw
 	}
+	metadata, physical := n2kcatalog.Describe(p, e.Raw)
+	e.PGNName, e.Variant, e.Transport = metadata.Name, metadata.Variant, metadata.Transport
+	e.ManufacturerCode = metadata.ManufacturerCode
+	e.Decode.Complete, e.Decode.Fallback = metadata.Complete, metadata.Fallback
+	e.Decode.Missing = metadata.Missing
+	e.Physical = physical
 	return e, nil
 }
 
@@ -143,5 +178,9 @@ func (e *Envelope) PayloadMap() map[string]any {
 
 // SizeBytes approximates the stored size for buffer byte-limit accounting.
 func (e *Envelope) SizeBytes() int {
-	return len(e.Payload) + len(e.Raw) + 64
+	doc, err := json.Marshal(e)
+	if err != nil {
+		return len(e.Payload) + len(e.Raw) + 64
+	}
+	return len(doc)
 }

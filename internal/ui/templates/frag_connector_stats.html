@@ -31,12 +31,21 @@
     <div class="stat-value">{{.BytesPerSecText}}</div>
   </div>
   <div class="stat">
-    <div class="stat-title">Queue depth</div>
+    <div class="stat-title">Pending delivery</div>
     <div class="stat-value">{{.Snapshot.QueueDepth}}</div>
   </div>
   <div class="stat">
-    <div class="stat-title">Queue bytes</div>
+    <div class="stat-title">Pending bytes</div>
     <div class="stat-value">{{.QueueBytesText}}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-title">Retained history</div>
+    <div class="stat-value">{{.Snapshot.RetainedDepth}}</div>
+    <div class="stat-desc">{{.RetainedBytesText}}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-title">Delivery class</div>
+    <div class="stat-value text-lg">{{if .Snapshot.DeliveryClass}}{{.Snapshot.DeliveryClass}}{{else}}-{{end}}</div>
   </div>
   {{/* Queue-depth sparkline: points is precomputed in Go (forms.go's
        sparklinePoints) from Snapshot.DepthHistory, already scaled to this

@@ -1,4 +1,4 @@
-// Package stats tracks live per-connector counters and rolling delivery
+// Package stats tracks live per-connector counters and rolling boundary-acceptance
 // rates for the config API and the future UI dashboard. It is independent
 // of OTel (which serves Prometheus via internal/metrics): this registry
 // exists for cheap, synchronous, in-process reads from HTTP handlers.
@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/open-ships/beacon/internal/msg"
+	"github.com/open-ships/beacon/internal/queue"
 )
 
 const (
@@ -29,12 +30,27 @@ const (
 // by Snapshot and All. Rates are computed over the trailing 10-second
 // window; totals never decay.
 type Snapshot struct {
-	TotalMessages int64   `json:"total_messages"`
-	TotalBytes    int64   `json:"total_bytes"`
-	MsgPerSec     float64 `json:"msg_per_sec"`   // over last 10s window
-	BytesPerSec   float64 `json:"bytes_per_sec"` // over last 10s window
-	QueueDepth    int64   `json:"queue_depth"`
-	QueueBytes    int64   `json:"queue_bytes"`
+	TotalMessages    int64            `json:"total_messages"`
+	TotalBytes       int64            `json:"total_bytes"`
+	MsgPerSec        float64          `json:"msg_per_sec"`   // over last 10s window
+	BytesPerSec      float64          `json:"bytes_per_sec"` // over last 10s window
+	QueueDepth       int64            `json:"queue_depth"`
+	QueueBytes       int64            `json:"queue_bytes"`
+	RetainedDepth    int64            `json:"retained_depth"`
+	RetainedBytes    int64            `json:"retained_bytes"`
+	QueueCursor      int64            `json:"queue_cursor"`
+	QueueTail        int64            `json:"queue_tail"`
+	OldestPending    *time.Time       `json:"oldest_pending,omitempty"`
+	OldestRetained   *time.Time       `json:"oldest_retained,omitempty"`
+	LimitMessages    int64            `json:"limit_messages,omitempty"`
+	LimitBytes       int64            `json:"limit_bytes,omitempty"`
+	HeadroomMessages int64            `json:"headroom_messages,omitempty"`
+	HeadroomBytes    int64            `json:"headroom_bytes,omitempty"`
+	DeliveryClass    string           `json:"delivery_class,omitempty"`
+	State            string           `json:"state,omitempty"`
+	LastError        string           `json:"last_error,omitempty"`
+	Drops            int64            `json:"drops"`
+	StageTotals      map[string]int64 `json:"stage_totals,omitempty"`
 
 	// DepthHistory is the last depthRingSize QueueDepth readings, oldest
 	// first, as recorded by successive SetQueue calls. Absent (nil/omitted
@@ -50,6 +66,7 @@ type Event struct {
 	Stage       string    `json:"stage"`
 	ConnectorID string    `json:"connector_id,omitempty"`
 	PGN         uint32    `json:"pgn"`
+	PGNName     string    `json:"pgn_name,omitempty"`
 	Source      uint8     `json:"source"`
 	Dest        uint8     `json:"dest"`
 	Priority    uint8     `json:"priority"`
@@ -84,7 +101,7 @@ func (r *eventRing) recent(limit int) []Event {
 	return out
 }
 
-// bucket accumulates delivered messages/bytes for one 1-second slot.
+// bucket accumulates boundary-accepted messages/bytes for one 1-second slot.
 type bucket struct {
 	start time.Time
 	msgs  int64
@@ -104,8 +121,23 @@ type counters struct {
 	buckets [numBuckets]bucket
 	head    int // index of the most recently written bucket
 
-	queueDepth int64
-	queueBytes int64
+	queueDepth       int64
+	queueBytes       int64
+	retainedDepth    int64
+	retainedBytes    int64
+	queueCursor      int64
+	queueTail        int64
+	oldestPending    time.Time
+	oldestRetained   time.Time
+	limitMessages    int64
+	limitBytes       int64
+	headroomMessages int64
+	headroomBytes    int64
+	deliveryClass    string
+	state            string
+	lastError        string
+	drops            int64
+	stageTotals      map[string]int64
 
 	// depthRing/depthHead/depthLen implement a fixed-capacity FIFO ring of
 	// queue-depth readings, one per SetQueue call, oldest overwritten first
@@ -186,14 +218,48 @@ func (c *counters) snapshot(now time.Time) Snapshot {
 		bytes += b.bytes
 	}
 	return Snapshot{
-		TotalMessages: c.totalMessages,
-		TotalBytes:    c.totalBytes,
-		MsgPerSec:     float64(msgs) / window.Seconds(),
-		BytesPerSec:   float64(bytes) / window.Seconds(),
-		QueueDepth:    c.queueDepth,
-		QueueBytes:    c.queueBytes,
-		DepthHistory:  c.depthHistoryLocked(),
+		TotalMessages:    c.totalMessages,
+		TotalBytes:       c.totalBytes,
+		MsgPerSec:        float64(msgs) / window.Seconds(),
+		BytesPerSec:      float64(bytes) / window.Seconds(),
+		QueueDepth:       c.queueDepth,
+		QueueBytes:       c.queueBytes,
+		RetainedDepth:    c.retainedDepth,
+		RetainedBytes:    c.retainedBytes,
+		QueueCursor:      c.queueCursor,
+		QueueTail:        c.queueTail,
+		OldestPending:    timePtr(c.oldestPending),
+		OldestRetained:   timePtr(c.oldestRetained),
+		LimitMessages:    c.limitMessages,
+		LimitBytes:       c.limitBytes,
+		HeadroomMessages: c.headroomMessages,
+		HeadroomBytes:    c.headroomBytes,
+		DeliveryClass:    c.deliveryClass,
+		State:            c.state,
+		LastError:        c.lastError,
+		Drops:            c.drops,
+		StageTotals:      cloneTotals(c.stageTotals),
+		DepthHistory:     c.depthHistoryLocked(),
 	}
+}
+
+func timePtr(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	v := t
+	return &v
+}
+
+func cloneTotals(in map[string]int64) map[string]int64 {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func (c *counters) setQueue(depth, bytes int64) {
@@ -205,6 +271,54 @@ func (c *counters) setQueue(depth, bytes int64) {
 	if c.depthLen < depthRingSize {
 		c.depthLen++
 	}
+	c.mu.Unlock()
+}
+
+func (c *counters) setQueueStats(s queue.Stats) {
+	c.mu.Lock()
+	c.queueDepth, c.queueBytes = s.Depth, s.Bytes
+	c.retainedDepth, c.retainedBytes = s.RetainedDepth, s.RetainedBytes
+	c.queueCursor, c.queueTail = s.Cursor, s.Tail
+	c.oldestPending = s.Oldest
+	c.oldestRetained = s.OldestRetained
+	c.limitMessages, c.limitBytes = s.LimitMessages, s.LimitBytes
+	c.headroomMessages, c.headroomBytes = s.HeadroomMessages, s.HeadroomBytes
+	c.depthRing[c.depthHead] = s.Depth
+	c.depthHead = (c.depthHead + 1) % depthRingSize
+	if c.depthLen < depthRingSize {
+		c.depthLen++
+	}
+	c.mu.Unlock()
+}
+
+func (c *counters) setRuntime(deliveryClass, state string, err error) {
+	c.mu.Lock()
+	if deliveryClass != "" {
+		c.deliveryClass = deliveryClass
+	}
+	if state != "" {
+		c.state = state
+	}
+	if err == nil {
+		c.lastError = ""
+	} else {
+		c.lastError = err.Error()
+	}
+	c.mu.Unlock()
+}
+
+func (c *counters) recordStage(stage string, n int64) {
+	c.mu.Lock()
+	if c.stageTotals == nil {
+		c.stageTotals = map[string]int64{}
+	}
+	c.stageTotals[stage] += n
+	c.mu.Unlock()
+}
+
+func (c *counters) recordDrops(n int64) {
+	c.mu.Lock()
+	c.drops += n
 	c.mu.Unlock()
 }
 
@@ -295,6 +409,7 @@ func eventFromEnvelope(now time.Time, stage, connectorID string, e *msg.Envelope
 		return ev
 	}
 	ev.PGN = e.PGN
+	ev.PGNName = e.PGNName
 	ev.Source = e.Source
 	ev.Dest = e.Dest
 	ev.Priority = e.Priority
@@ -351,6 +466,22 @@ func (r *Registry) RecordConnectorEvent(connector, stage string, e *msg.Envelope
 	r.recordEvent("connector", connector, eventFromEnvelope(r.now(), stage, connector, e))
 }
 
+// RecordStage counts a route-runtime transition without assuming that every
+// terminal transition is confirmed delivery.
+func (r *Registry) RecordStage(connector, stage string, n int64) {
+	if r == nil || n == 0 {
+		return
+	}
+	r.get(connector).recordStage(stage, n)
+}
+
+func (r *Registry) RecordSourceDrops(source string, n int64) {
+	if r == nil || n == 0 {
+		return
+	}
+	r.getSource(source).recordDrops(n)
+}
+
 func (r *Registry) SourceSnapshot(source string) (Snapshot, bool) {
 	if r == nil {
 		return Snapshot{}, false
@@ -394,7 +525,7 @@ func (r *Registry) Recent(kind, id string, limit int) []Event {
 	return out
 }
 
-// Record adds delivered messages/bytes for a connector at time now.
+// Record adds boundary-accepted messages/bytes for a connector at time now.
 func (r *Registry) Record(connector string, msgs, bytes int64) {
 	if r == nil {
 		return
@@ -412,6 +543,20 @@ func (r *Registry) SetQueue(connector string, depth, bytes int64) {
 		return
 	}
 	r.get(connector).setQueue(depth, bytes)
+}
+
+func (r *Registry) SetQueueStats(connector string, s queue.Stats) {
+	if r == nil {
+		return
+	}
+	r.get(connector).setQueueStats(s)
+}
+
+func (r *Registry) SetRuntime(connector, deliveryClass, state string, err error) {
+	if r == nil {
+		return
+	}
+	r.get(connector).setRuntime(deliveryClass, state, err)
 }
 
 // Touch ensures a connector's entry exists (so it shows up in All()/

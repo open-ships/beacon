@@ -13,6 +13,7 @@ import (
 
 	"github.com/brutella/can"
 	n2k "github.com/open-ships/n2k"
+	"github.com/open-ships/n2k/pgn"
 
 	"github.com/open-ships/beacon/internal/bus/busfake"
 	"github.com/open-ships/beacon/internal/msg"
@@ -79,6 +80,32 @@ func TestSharedClientRefcount(t *testing.T) {
 	h2.Release()
 	if m.clientCount() != 0 {
 		t.Fatal("client not closed after last release")
+	}
+}
+
+func TestRecordSupportedPGNsKeepsBothSortedLists(t *testing.T) {
+	bc := &busClient{supported: map[uint64]SupportedPGNs{}}
+	name := uint64(0xFEDCBA9876543210)
+	tx, rx := uint64(pgn.TransmitPGNList), uint64(pgn.ReceivePGNList)
+	p127250, p126992, duplicate := uint64(127250), uint64(126992), uint64(127250)
+	bc.recordSupportedPGNs(name, &pgn.ParameterGroupNumberListTransmitAndReceive{
+		FunctionCode: &tx,
+		Repeating1: []pgn.ParameterGroupNumberListTransmitAndReceiveRepeating1{
+			{Pgn: &p127250}, {Pgn: &p126992}, {Pgn: &duplicate},
+		},
+	})
+	p59904 := uint64(59904)
+	bc.recordSupportedPGNs(name, &pgn.ParameterGroupNumberListTransmitAndReceive{
+		FunctionCode: &rx,
+		Repeating1:   []pgn.ParameterGroupNumberListTransmitAndReceiveRepeating1{{Pgn: &p59904}},
+	})
+
+	lists := bc.supported[name]
+	if len(lists.Transmit) != 2 || lists.Transmit[0] != 126992 || lists.Transmit[1] != 127250 {
+		t.Fatalf("transmit list = %v", lists.Transmit)
+	}
+	if len(lists.Receive) != 1 || lists.Receive[0] != 59904 {
+		t.Fatalf("receive list = %v", lists.Receive)
 	}
 }
 

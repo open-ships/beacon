@@ -10,13 +10,16 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/open-ships/beacon/internal/bus"
 	"github.com/open-ships/beacon/internal/config"
+	"github.com/open-ships/beacon/internal/inventory"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/supervisor"
+	"github.com/open-ships/beacon/internal/sysinfo"
 )
 
 // relativeAge renders a timestamp as a compact "Ns/m/h ago" for the live
@@ -187,26 +190,37 @@ func dashboardFlows(connectors []model.Connector, reg *stats.Registry, statuses 
 // dashboardEmptyState) — frag_dashboard.html renders the DAG when Flows is
 // non-empty and this setup prompt otherwise.
 type dashboardData struct {
-	Sources      []dashboardEndpointNode
-	Sinks        []dashboardEndpointNode
-	Flows        []dashboardFlow
-	Devices      []busDeviceRow
-	EmptyTitle   string
-	EmptyMessage string
-	EmptyCTA     string
-	EmptyHref    string
+	Sources           []dashboardEndpointNode
+	Sinks             []dashboardEndpointNode
+	Flows             []dashboardFlow
+	Devices           []busDeviceRow
+	CANInterfaces     []sysinfo.CANInterface
+	CanCommitBaseline bool
+	EmptyTitle        string
+	EmptyMessage      string
+	EmptyCTA          string
+	EmptyHref         string
 }
 
 // busDeviceRow is one NMEA-2000 device observed on a CAN bus, rendered in the
 // dashboard's "Bus devices" table. Name is formatted as hex so a device is
 // recognizable across address changes.
 type busDeviceRow struct {
-	Endpoint string
-	Address  uint8
-	Name     string
-	Model    string
-	Serial   string
-	LastSeen string
+	Endpoint     string
+	Address      uint8
+	Name         string
+	NameKey      string
+	Model        string
+	Serial       string
+	LastSeen     string
+	Status       string
+	Label        string
+	Manufacturer string
+	Role         string
+	Instances    string
+	Software     string
+	Installation string
+	Supported    string
 }
 
 // busDeviceRows adapts the supervisor's device snapshot for the template,
@@ -215,13 +229,32 @@ func busDeviceRows(devices []bus.DeviceInfo) []busDeviceRow {
 	rows := make([]busDeviceRow, 0, len(devices))
 	for _, d := range devices {
 		rows = append(rows, busDeviceRow{
-			Endpoint: d.Endpoint,
-			Address:  d.Address,
-			Name:     fmt.Sprintf("0x%016X", d.Name),
-			Model:    d.Model,
-			Serial:   d.Serial,
-			LastSeen: relativeAge(d.LastSeen),
+			Endpoint:     d.Endpoint,
+			Address:      d.Address,
+			Name:         fmt.Sprintf("0x%016X", d.Name),
+			NameKey:      fmt.Sprintf("%016X", d.Name),
+			Model:        d.Model,
+			Serial:       d.Serial,
+			LastSeen:     relativeAge(d.LastSeen),
+			Manufacturer: d.Manufacturer,
+			Role:         strings.TrimSpace(d.DeviceClassName + " / " + d.DeviceFunctionName),
+			Instances:    fmt.Sprintf("device %d / system %d", d.DeviceInstance, d.SystemInstance),
+			Software:     strings.TrimSpace(d.SoftwareVersion + " " + d.ModelVersion),
+			Installation: strings.TrimSpace(d.InstallationDescription1 + " " + d.InstallationDescription2),
+			Supported:    fmt.Sprintf("%d TX / %d RX", len(d.TransmitPGNs), len(d.ReceivePGNs)),
 		})
+	}
+	return rows
+}
+
+func inventoryDeviceRows(records []inventory.Record) []busDeviceRow {
+	devices := make([]bus.DeviceInfo, len(records))
+	for i := range records {
+		devices[i] = records[i].DeviceInfo
+	}
+	rows := busDeviceRows(devices)
+	for i := range records {
+		rows[i].Status, rows[i].Label = records[i].Status, records[i].Label
 	}
 	return rows
 }
@@ -250,7 +283,7 @@ func dashboardEmptyState(hasSources, hasSinks bool) (title, message, cta, href s
 // statuses() snapshot (used for endpoint node state and connector error
 // badges, so both reflect the exact same instant) and reg's live
 // per-connector counters.
-func handleDashboardFrag(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, devices func() []bus.DeviceInfo, log *slog.Logger) http.HandlerFunc {
+func handleDashboardFrag(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, devices func() []bus.DeviceInfo, runtime RuntimeInfo, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sources, err := svc.ListSources(r.Context())
 		if err != nil {
@@ -291,6 +324,13 @@ func handleDashboardFrag(svc *config.Service, reg *stats.Registry, statuses func
 		}
 		if devices != nil {
 			data.Devices = busDeviceRows(devices())
+		}
+		if runtime.Inventory != nil {
+			data.Devices = inventoryDeviceRows(runtime.Inventory.Records())
+			data.CanCommitBaseline = true
+		}
+		if runtime.CANDetails != nil {
+			data.CANInterfaces = runtime.CANDetails()
 		}
 		renderFragment(w, log, "dashboard-content", data)
 	}

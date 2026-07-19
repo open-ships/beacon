@@ -80,7 +80,8 @@ func newMQTTSink(ctx context.Context, cfg model.Sink, log *slog.Logger, _ *metri
 	return s, nil
 }
 
-func (s *mqttSink) ID() string { return s.id }
+func (s *mqttSink) ID() string                   { return s.id }
+func (s *mqttSink) DeliveryClass() DeliveryClass { return DeliveryBestEffort }
 
 func (s *mqttSink) State() (string, error) {
 	s.mu.Lock()
@@ -94,27 +95,36 @@ func (s *mqttSink) setState(state string, err error) {
 	s.mu.Unlock()
 }
 
-func (s *mqttSink) Broadcast(entries []queue.Entry) {
+func (s *mqttSink) Broadcast(entries []queue.Entry) BroadcastReport {
+	report := BroadcastReport{Accepted: make([]bool, len(entries))}
 	if !s.client.IsConnected() {
-		s.setState("degraded", errors.New("mqtt broker not connected"))
-		return
+		err := errors.New("mqtt broker not connected")
+		s.setState("degraded", err)
+		report.Err = err
+		return report
 	}
-	for _, e := range entries {
+	for i, e := range entries {
 		doc, err := json.Marshal(e.Env)
 		if err != nil {
+			report.Err = err
 			continue
 		}
 		token := s.client.Publish(s.topic, 0, false, doc)
 		if !token.WaitTimeout(mqttPublishWait) {
-			s.setState("degraded", errors.New("mqtt publish timed out"))
+			err := errors.New("mqtt publish timed out")
+			s.setState("degraded", err)
+			report.Err = err
 			continue
 		}
 		if err := token.Error(); err != nil {
 			s.setState("degraded", err)
+			report.Err = err
 			continue
 		}
 		s.setState("up", nil)
+		report.Accepted[i] = true
 	}
+	return report
 }
 
 func (s *mqttSink) Stop() {

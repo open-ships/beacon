@@ -71,6 +71,33 @@ func TestAppendReadAck(t *testing.T) {
 	if err != nil || cur != entries[4].Seq {
 		t.Fatalf("cursor = %d, %v; want %d", cur, err, entries[4].Seq)
 	}
+	stats, err := q.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Depth != 0 || stats.RetainedDepth != 5 || stats.Cursor != entries[4].Seq {
+		t.Fatalf("stats after ack = %+v; want 0 pending, 5 retained", stats)
+	}
+}
+
+func TestStatsSeparatesPendingFromRetainedHistory(t *testing.T) {
+	q := testQueue(t, model.BufferLimits{MaxMessages: 100})
+	ctx := context.Background()
+	appendN(t, q, 5, time.Now())
+	entries, err := q.Read(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Ack(ctx, entries[1].Seq); err != nil {
+		t.Fatal(err)
+	}
+	got, err := q.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Depth != 3 || got.RetainedDepth != 5 || got.Tail != entries[4].Seq {
+		t.Fatalf("stats = %+v; want 3 pending and 5 retained", got)
+	}
 }
 
 func TestPruneByCount(t *testing.T) {
@@ -81,12 +108,32 @@ func TestPruneByCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pruned != 7 {
-		t.Fatalf("pruned %d, want 7", pruned)
+	if pruned.Total != 7 || pruned.Pending != 7 {
+		t.Fatalf("pruned %+v, want total/pending 7", pruned)
 	}
 	st, _ := q.Stats(ctx)
 	if st.Depth != 3 {
 		t.Fatalf("depth = %d, want 3", st.Depth)
+	}
+}
+
+func TestPruneReportsRetainedVersusPendingLoss(t *testing.T) {
+	q := testQueue(t, model.BufferLimits{MaxMessages: 3})
+	ctx := context.Background()
+	appendN(t, q, 10, time.Now())
+	entries, err := q.Read(ctx, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Ack(ctx, entries[len(entries)-1].Seq); err != nil {
+		t.Fatal(err)
+	}
+	pruned, err := q.Prune(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned.Total != 7 || pruned.Pending != 0 {
+		t.Fatalf("pruned = %+v; want retained-only removal", pruned)
 	}
 }
 
@@ -100,8 +147,8 @@ func TestPruneByAge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pruned != 4 {
-		t.Fatalf("pruned %d, want 4", pruned)
+	if pruned.Total != 4 || pruned.Pending != 4 {
+		t.Fatalf("pruned %+v, want total/pending 4", pruned)
 	}
 }
 

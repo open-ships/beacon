@@ -4,10 +4,15 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"github.com/open-ships/beacon/internal/bus"
 	"github.com/open-ships/beacon/internal/config"
+	"github.com/open-ships/beacon/internal/identity"
+	"github.com/open-ships/beacon/internal/inventory"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/supervisor"
@@ -52,9 +57,12 @@ func registerFilterRoutes(api huma.API, svc *config.Service, log *slog.Logger) {
 
 type systemOutput struct {
 	Body struct {
-		Version       string   `json:"version" doc:"beacon server version."`
-		CANInterfaces []string `json:"can_interfaces" doc:"Detected SocketCAN network interfaces (Linux only; empty elsewhere)."`
-		SerialPorts   []string `json:"serial_ports" doc:"Detected USB-serial device paths (typical USB-CAN/NMEA-0183 adapters)."`
+		Version       string                 `json:"version" doc:"beacon server version."`
+		CANInterfaces []string               `json:"can_interfaces" doc:"Detected SocketCAN network interfaces (Linux only; empty elsewhere)."`
+		SerialPorts   []string               `json:"serial_ports" doc:"Detected USB-serial device paths (typical USB-CAN/NMEA-0183 adapters)."`
+		CANDetails    []sysinfo.CANInterface `json:"can_details" doc:"SocketCAN controller state, bitrate, counters, and sampled bus load."`
+		Identity      identity.Appliance     `json:"n2k_identity" doc:"Beacon's persistent ISO 11783/NMEA 2000 appliance identity."`
+		Devices       []bus.DeviceInfo       `json:"n2k_devices" doc:"Devices currently observed on attached NMEA 2000 networks."`
 	}
 }
 
@@ -65,7 +73,7 @@ type systemOutput struct {
 // directly for that same inventory rather than going through this package —
 // see internal/sysinfo's package doc comment for why discovery lives in its
 // own leaf package instead of here.
-func registerSystemInfoRoutes(api huma.API, version string) {
+func registerSystemInfoRoutes(api huma.API, version string, runtime RuntimeInfo) {
 	huma.Register(api, huma.Operation{
 		OperationID: "get-system",
 		Method:      http.MethodGet,
@@ -75,9 +83,111 @@ func registerSystemInfoRoutes(api huma.API, version string) {
 		out := &systemOutput{}
 		out.Body.Version = version
 		out.Body.CANInterfaces = sysinfo.DiscoverCAN()
+		out.Body.CANDetails = sysinfo.DiscoverCANDetails()
 		out.Body.SerialPorts = sysinfo.DiscoverSerial()
+		out.Body.Identity = runtime.Identity
+		if runtime.Devices != nil {
+			out.Body.Devices = runtime.Devices()
+		} else {
+			out.Body.Devices = []bus.DeviceInfo{}
+		}
 		return out, nil
 	})
+}
+
+type inventoryOutput struct {
+	Body struct {
+		Devices []inventory.Record `json:"devices"`
+	}
+}
+type baselineOutput struct {
+	Body struct {
+		Devices []inventory.Record `json:"devices"`
+		Status  string             `json:"status"`
+	}
+}
+type labelInput struct {
+	Endpoint string `query:"endpoint"`
+	Name     string `path:"name"`
+	Body     struct {
+		Label string `json:"label"`
+	}
+}
+type commissioningOutput struct {
+	Body struct {
+		GeneratedAt   time.Time                 `json:"generated_at"`
+		Identity      identity.Appliance        `json:"identity"`
+		CANInterfaces []sysinfo.CANInterface    `json:"can_interfaces"`
+		Devices       []inventory.Record        `json:"devices"`
+		Components    []supervisor.Status       `json:"components"`
+		Connectors    map[string]stats.Snapshot `json:"connectors"`
+	}
+}
+
+func registerCommissioningRoutes(api huma.API, runtime RuntimeInfo, reg *stats.Registry) {
+	huma.Register(api, huma.Operation{OperationID: "list-n2k-inventory", Method: http.MethodGet,
+		Path: "/api/v1/n2k/inventory", Summary: "List discovered devices and commissioning baseline status"},
+		func(ctx context.Context, _ *struct{}) (*inventoryOutput, error) {
+			out := &inventoryOutput{}
+			if runtime.Inventory != nil {
+				out.Body.Devices = runtime.Inventory.Records()
+			} else {
+				out.Body.Devices = []inventory.Record{}
+			}
+			return out, nil
+		})
+	huma.Register(api, huma.Operation{OperationID: "commit-n2k-baseline", Method: http.MethodPost,
+		Path: "/api/v1/n2k/inventory/baseline", Summary: "Accept currently online devices as the commissioning baseline"},
+		func(ctx context.Context, _ *struct{}) (*baselineOutput, error) {
+			if runtime.Inventory == nil {
+				return nil, huma.Error503ServiceUnavailable("inventory is unavailable")
+			}
+			if err := runtime.Inventory.CommitBaseline(ctx); err != nil {
+				return nil, huma.Error500InternalServerError("inventory baseline failed")
+			}
+			out := &baselineOutput{}
+			out.Body.Status = "committed"
+			out.Body.Devices = runtime.Inventory.Records()
+			return out, nil
+		})
+	huma.Register(api, huma.Operation{OperationID: "label-n2k-device", Method: http.MethodPut,
+		Path: "/api/v1/n2k/inventory/{name}/label", Summary: "Set an operator label for a stable Device NAME"},
+		func(ctx context.Context, in *labelInput) (*baselineOutput, error) {
+			if runtime.Inventory == nil {
+				return nil, huma.Error503ServiceUnavailable("inventory is unavailable")
+			}
+			name, err := strconv.ParseUint(in.Name, 16, 64)
+			if err != nil {
+				return nil, huma.Error422UnprocessableEntity("name must be a hexadecimal Device NAME")
+			}
+			if err := runtime.Inventory.SetLabel(ctx, in.Endpoint, name, in.Body.Label); err != nil {
+				return nil, huma.Error404NotFound("device not found")
+			}
+			out := &baselineOutput{}
+			out.Body.Status = "updated"
+			out.Body.Devices = runtime.Inventory.Records()
+			return out, nil
+		})
+	huma.Register(api, huma.Operation{OperationID: "get-n2k-commissioning-report", Method: http.MethodGet,
+		Path: "/api/v1/n2k/commissioning-report", Summary: "Generate a machine-readable NMEA 2000 commissioning report"},
+		func(ctx context.Context, _ *struct{}) (*commissioningOutput, error) {
+			out := &commissioningOutput{}
+			out.Body.GeneratedAt = time.Now().UTC()
+			out.Body.Identity = runtime.Identity
+			out.Body.CANInterfaces = sysinfo.DiscoverCANDetails()
+			out.Body.Connectors = reg.All()
+			if runtime.Inventory != nil {
+				out.Body.Devices = runtime.Inventory.Records()
+			} else {
+				out.Body.Devices = []inventory.Record{}
+			}
+			if runtime.Statuses != nil {
+				out.Body.Components = runtime.Statuses()
+			} else {
+				out.Body.Components = []supervisor.Status{}
+			}
+			return out, nil
+		})
 }
 
 // --- Live metrics ---
