@@ -39,3 +39,5 @@ changelog:
 release:
   # Semver tags, CalVer release names.
   name_template: '{{ .Tag }} ({{ .Now.Format "2006.01.02" }})'
+  # A rerun can repair a partially uploaded release without creating a new tag.
+  replace_existing_artifacts: true
