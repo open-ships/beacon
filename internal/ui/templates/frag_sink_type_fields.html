@@ -38,6 +38,17 @@
   <input type="text" id="sink-address" name="address" value="{{.Address}}"
          placeholder="0.0.0.0:2000" class="input w-full" required>
 </fieldset>
+{{else if eq .Type "mqtt"}}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Broker URL</legend>
+  <input type="text" id="sink-url" name="url" value="{{.URL}}"
+         placeholder="mqtt://broker.local:1883" class="input w-full" required>
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Topic</legend>
+  <input type="text" id="sink-topic" name="topic" value="{{.Topic}}"
+         placeholder="vessels/main/engine/json" class="input w-full" required>
+</fieldset>
 {{else if eq .Type "file"}}
 <fieldset class="fieldset">
   <legend class="fieldset-legend">File path</legend>
@@ -62,6 +73,20 @@
   <input type="number" id="sink-max-files" name="max_files" value="{{.MaxFiles}}"
          placeholder="{{.DefaultMaxFiles}}" class="input w-full" min="0">
   <p class="text-xs opacity-70">0 or blank = default ({{.DefaultMaxFiles}} files)</p>
+</fieldset>
+{{else if eq .Type "tcp_gateway"}}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Gateway address</legend>
+  <input type="text" id="sink-gateway-address" name="address" value="{{.Address}}"
+         placeholder="192.168.4.1:1457" class="input w-full" required>
+  <p class="text-xs opacity-70">Transmits onto the remote NMEA 2000 bus through a Yacht Devices or Actisense TCP gateway.</p>
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Format</legend>
+  <select id="sink-gateway-format" name="format" class="select w-full">
+    <option value="ydraw" {{if or (eq .Format "ydraw") (eq .Format "")}}selected{{end}}>ydraw (Yacht Devices RAW)</option>
+    <option value="actisense" {{if eq .Format "actisense"}}selected{{end}}>actisense</option>
+  </select>
 </fieldset>
 {{end}}
 {{end}}

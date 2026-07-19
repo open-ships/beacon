@@ -2,8 +2,8 @@
 
 beacon is an offline NMEA 2000 gateway. It reads frames from CAN sources,
 decodes them, optionally filters them, and delivers them to sinks — HTTP
-streams, another CAN bus, or a plain TCP feed. Everything is configured
-through one HTTP API (and this UI, which is a thin layer over that same
+streams, MQTT topics, another CAN bus, or a plain TCP feed. Everything is
+configured through one HTTP API (and this UI, which is a thin layer over that same
 API), stored in a single SQLite file, and served with no dependency on
 internet access.
 
@@ -14,13 +14,15 @@ source --> [connector: CEL filters] --> sink
 ```
 
 - **Sources** read decoded NMEA 2000 messages onto beacon: a physical CAN
-  interface (`socketcan`), a USB-CAN adapter (`usbcan`), or an HTTP stream
-  from somewhere else (`http_sse` / `http_ws` — including another beacon's
-  own SSE/WS sink, useful for chaining gateways).
+  interface (`socketcan`), USB-CAN adapter (`usbcan`), HTTP stream
+  (`http_sse` / `http_ws`), MQTT topic (`mqtt`), capture file (`file`), or a
+  passive Yacht Devices/Actisense gateway stream (`tcp` / `udp`).
 - **Sinks** deliver messages somewhere: back onto a CAN bus (`socketcan` /
   `usbcan`, confirmed at-least-once delivery), or out over HTTP
-  (`http_sse` / `http_ws`, with replay for reconnecting clients) or a plain
-  `tcp` NDJSON feed (live-only, no replay).
+  (`http_sse` / `http_ws`, with replay for reconnecting clients), a plain
+  `tcp` NDJSON feed (live-only, no replay), or an MQTT topic (`mqtt`,
+  live-only), or a remote NMEA 2000 bus through a claiming TCP gateway client
+  (`tcp_gateway`).
 - **Connectors** wire one source to one sink, with an optional list of CEL
   filter expressions (see the filters page) and a durable per-connector
   buffer (see the concepts page) that survives a restart and absorbs a slow
@@ -28,6 +30,13 @@ source --> [connector: CEL filters] --> sink
 
 Nothing flows until all three exist: a source and a sink alone deliver
 nothing — a connector has to name both.
+
+Gateway streams use an `address` in `host:port` form and a `format` of
+`ydraw` or `actisense`. A `tcp`/`udp` source is passive and never claims an
+NMEA 2000 address; a `tcp_gateway` sink is writable, claims an address, and
+participates on the remote bus. A `file` source takes an absolute
+`file_path`, replays its capture once at the recorded timing, then remains
+up and idle.
 
 ## Running beacon
 
@@ -43,7 +52,7 @@ Flags (all optional; shown with their defaults):
 | Flag | Default | Purpose |
 |---|---|---|
 | `--db` | `beacon.db` | SQLite database path — configuration and every connector's message buffer live here |
-| `--data-address` | `0.0.0.0:8080` | Bind address for sink endpoints (SSE/WS/TCP) |
+| `--data-address` | `0.0.0.0:8080` | Bind address for sink endpoints (SSE/WS; TCP sinks bind their own address) |
 | `--admin-address` | `0.0.0.0:2112` | Bind address for this UI, the config API, `/health`, and `/metrics` |
 | `--seed` | (none) | JSON config file to load into an empty database on first boot |
 | `--log-level` | `info` | `debug`, `info`, `warn`, or `error` |
@@ -76,8 +85,8 @@ exists on the host (see the CAN setup page). The image's healthcheck polls
 4. **Connectors** → Add connector, pick the source and sink you just made,
    leave filters empty (everything passes), and enable it.
 
-The dashboard's components strip and connector card update within a couple
-of seconds and show live throughput once messages start flowing.
+The dashboard's source -> connector -> sink graph updates within a couple of
+seconds and shows live throughput once messages start flowing.
 
 ## Your first pipeline, via curl
 
@@ -118,4 +127,5 @@ Each line is a `data:` frame carrying one JSON-encoded envelope (see the
 concepts page for its exact shape) and an `id:` you can hand back as
 `Last-Event-ID` on reconnect to resume where you left off. A `tcp` sink
 instead accepts a plain socket connection (`nc localhost <port>`) streaming
-one JSON envelope per line, live only.
+one JSON envelope per line, live only. An `mqtt` sink publishes the same
+envelope JSON to its configured broker topic, live only.

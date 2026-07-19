@@ -36,5 +36,36 @@
   <textarea id="src-headers" name="headers" rows="3" class="textarea w-full"
             placeholder="Authorization: Bearer token">{{.HeadersText}}</textarea>
 </fieldset>
+{{else if eq .Type "mqtt"}}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Broker URL</legend>
+  <input type="text" id="src-url" name="url" value="{{.URL}}"
+         placeholder="mqtt://broker.local:1883" class="input w-full" required>
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Topic</legend>
+  <input type="text" id="src-topic" name="topic" value="{{.Topic}}"
+         placeholder="vessels/main/engine/#" class="input w-full" required>
+</fieldset>
+{{else if or (eq .Type "tcp") (eq .Type "udp")}}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Gateway address</legend>
+  <input type="text" id="src-address" name="address" value="{{.Address}}"
+         placeholder="192.168.4.1:1457" class="input w-full" required>
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Format</legend>
+  <select id="src-format" name="format" class="select w-full">
+    <option value="ydraw" {{if or (eq .Format "ydraw") (eq .Format "")}}selected{{end}}>ydraw (Yacht Devices RAW)</option>
+    <option value="actisense" {{if eq .Format "actisense"}}selected{{end}}>actisense</option>
+  </select>
+</fieldset>
+{{else if eq .Type "file"}}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Capture file path</legend>
+  <input type="text" id="src-file-path" name="file_path" value="{{.FilePath}}"
+         placeholder="/data/capture.log" class="input w-full" required>
+  <p class="text-xs opacity-70">Replays a candump/canboat/YD/Actisense log at its recorded timing.</p>
+</fieldset>
 {{end}}
 {{end}}

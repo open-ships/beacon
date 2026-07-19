@@ -36,6 +36,8 @@
         <option value="http_ws" {{if eq .TypeFields.Type "http_ws"}}selected{{end}}>http_ws</option>
         <option value="tcp" {{if eq .TypeFields.Type "tcp"}}selected{{end}}>tcp</option>
         <option value="file" {{if eq .TypeFields.Type "file"}}selected{{end}}>file</option>
+        <option value="mqtt" {{if eq .TypeFields.Type "mqtt"}}selected{{end}}>mqtt</option>
+        <option value="tcp_gateway" {{if eq .TypeFields.Type "tcp_gateway"}}selected{{end}}>tcp_gateway</option>
       </select>
     </fieldset>
     <label class="label cursor-pointer justify-start gap-2">
@@ -46,9 +48,7 @@
       {{template "sink-type-fields" .TypeFields}}
     </div>
     <div class="card-actions justify-end">
-      <button type="button" class="btn" onclick="document.getElementById('sink-form-container').innerHTML=''">
-        Cancel
-      </button>
+      <a class="btn" href="/ui/sinks">Cancel</a>
       <button type="submit" class="btn btn-primary">Save</button>
     </div>
   </div>

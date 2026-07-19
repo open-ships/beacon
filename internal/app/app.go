@@ -89,7 +89,9 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 		return nil, fmt.Errorf("init metrics: %w", err)
 	}
 
-	busMgr := bus.NewManager(log, met, opts.ExtraN2KOpts...)
+	// Identity options go first so any caller-supplied ExtraN2KOpts (tests use
+	// WithBus/WithClaimTimeout) still override.
+	busMgr := bus.NewManager(log, met, append(bus.Identity(version), opts.ExtraN2KOpts...)...)
 	ds := sink.NewDataServer(opts.DataAddr, log)
 	if err := ds.Start(); err != nil {
 		_ = st.Close()
@@ -109,7 +111,7 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 	a := &App{log: log, st: st, ds: ds, sup: sup, reg: reg, cfgSvc: cfgSvc}
 
 	apiHandler, _ := api.New(cfgSvc, reg, version, log)
-	uiHandler := ui.Handler(cfgSvc, reg, sup.Statuses, version, log)
+	uiHandler := ui.Handler(cfgSvc, reg, sup.Statuses, sup.BusDevices, version, log)
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", promHandler)

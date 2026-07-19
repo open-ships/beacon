@@ -7,6 +7,8 @@ package stats
 import (
 	"sync"
 	"time"
+
+	"github.com/open-ships/beacon/internal/msg"
 )
 
 const (
@@ -20,6 +22,7 @@ const (
 	// sparkline. It's a plain sample-count cap, not a time window — old
 	// samples fall off in FIFO order regardless of any gap between calls.
 	depthRingSize = 60
+	eventRingSize = 80
 )
 
 // Snapshot is the point-in-time view of one connector's counters, returned
@@ -40,6 +43,45 @@ type Snapshot struct {
 	// metrics endpoints, the connector detail/dashboard UI fragments) that
 	// don't know this field simply ignore it.
 	DepthHistory []int64 `json:"depth_history,omitempty"`
+}
+
+type Event struct {
+	Time        time.Time `json:"time"`
+	Stage       string    `json:"stage"`
+	ConnectorID string    `json:"connector_id,omitempty"`
+	PGN         uint32    `json:"pgn"`
+	Source      uint8     `json:"source"`
+	Dest        uint8     `json:"dest"`
+	Priority    uint8     `json:"priority"`
+	Timestamp   time.Time `json:"timestamp"`
+	Payload     string    `json:"payload,omitempty"`
+	SizeBytes   int       `json:"size_bytes"`
+}
+
+type eventRing struct {
+	items [eventRingSize]Event
+	head  int
+	len   int
+}
+
+func (r *eventRing) add(e Event) {
+	r.items[r.head] = e
+	r.head = (r.head + 1) % eventRingSize
+	if r.len < eventRingSize {
+		r.len++
+	}
+}
+
+func (r *eventRing) recent(limit int) []Event {
+	if limit <= 0 || limit > r.len {
+		limit = r.len
+	}
+	out := make([]Event, 0, limit)
+	for i := 0; i < limit; i++ {
+		idx := (r.head - 1 - i + eventRingSize) % eventRingSize
+		out = append(out, r.items[idx])
+	}
+	return out
 }
 
 // bucket accumulates delivered messages/bytes for one 1-second slot.
@@ -200,8 +242,11 @@ func (c *counters) depthHistoryLocked() []int64 {
 type Registry struct {
 	now func() time.Time
 
-	mu   sync.Mutex
-	conn map[string]*counters
+	mu     sync.Mutex
+	conn   map[string]*counters
+	source map[string]*counters
+	sink   map[string]*counters
+	events map[string]*eventRing
 }
 
 // NewRegistry returns an empty Registry using the real wall clock.
@@ -212,18 +257,141 @@ func NewRegistry() *Registry {
 // newRegistryAt is the test constructor: it lets tests inject a fake clock
 // (via r.now) to exercise rate decay deterministically.
 func newRegistryAt(now func() time.Time) *Registry {
-	return &Registry{now: now, conn: map[string]*counters{}}
+	return &Registry{
+		now:    now,
+		conn:   map[string]*counters{},
+		source: map[string]*counters{},
+		sink:   map[string]*counters{},
+		events: map[string]*eventRing{},
+	}
 }
 
 func (r *Registry) get(connector string) *counters {
+	return r.getFrom(r.conn, connector)
+}
+
+func (r *Registry) getSource(source string) *counters {
+	return r.getFrom(r.source, source)
+}
+
+func (r *Registry) getSink(sink string) *counters {
+	return r.getFrom(r.sink, sink)
+}
+
+func (r *Registry) getFrom(m map[string]*counters, id string) *counters {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	c, ok := r.conn[connector]
+	c, ok := m[id]
 	if !ok {
 		c = &counters{}
-		r.conn[connector] = c
+		m[id] = c
 	}
 	return c
+}
+
+func eventFromEnvelope(now time.Time, stage, connectorID string, e *msg.Envelope) Event {
+	ev := Event{Time: now, Stage: stage, ConnectorID: connectorID}
+	if e == nil {
+		return ev
+	}
+	ev.PGN = e.PGN
+	ev.Source = e.Source
+	ev.Dest = e.Dest
+	ev.Priority = e.Priority
+	ev.Timestamp = e.Timestamp
+	ev.SizeBytes = e.SizeBytes()
+	if len(e.Payload) > 0 {
+		ev.Payload = string(e.Payload)
+		if len(ev.Payload) > 240 {
+			ev.Payload = ev.Payload[:240] + "..."
+		}
+	}
+	return ev
+}
+
+func (r *Registry) recordEvent(kind, id string, e Event) {
+	if r == nil || id == "" {
+		return
+	}
+	key := kind + ":" + id
+	r.mu.Lock()
+	ring, ok := r.events[key]
+	if !ok {
+		ring = &eventRing{}
+		r.events[key] = ring
+	}
+	ring.add(e)
+	r.mu.Unlock()
+}
+
+func (r *Registry) RecordSource(source string, e *msg.Envelope) {
+	if r == nil {
+		return
+	}
+	now := r.now()
+	ev := eventFromEnvelope(now, "received", "", e)
+	r.getSource(source).record(now, 1, int64(ev.SizeBytes))
+	r.recordEvent("source", source, ev)
+}
+
+func (r *Registry) RecordSink(sink, connector string, e *msg.Envelope) {
+	if r == nil {
+		return
+	}
+	now := r.now()
+	ev := eventFromEnvelope(now, "sent", connector, e)
+	r.getSink(sink).record(now, 1, int64(ev.SizeBytes))
+	r.recordEvent("sink", sink, ev)
+}
+
+func (r *Registry) RecordConnectorEvent(connector, stage string, e *msg.Envelope) {
+	if r == nil {
+		return
+	}
+	r.recordEvent("connector", connector, eventFromEnvelope(r.now(), stage, connector, e))
+}
+
+func (r *Registry) SourceSnapshot(source string) (Snapshot, bool) {
+	if r == nil {
+		return Snapshot{}, false
+	}
+	return r.componentSnapshot(r.source, source)
+}
+
+func (r *Registry) SinkSnapshot(sink string) (Snapshot, bool) {
+	if r == nil {
+		return Snapshot{}, false
+	}
+	return r.componentSnapshot(r.sink, sink)
+}
+
+func (r *Registry) componentSnapshot(m map[string]*counters, id string) (Snapshot, bool) {
+	if r == nil {
+		return Snapshot{}, false
+	}
+	r.mu.Lock()
+	c, ok := m[id]
+	r.mu.Unlock()
+	if !ok {
+		return Snapshot{}, false
+	}
+	return c.snapshot(r.now()), true
+}
+
+func (r *Registry) Recent(kind, id string, limit int) []Event {
+	if r == nil {
+		return nil
+	}
+	key := kind + ":" + id
+	r.mu.Lock()
+	ring := r.events[key]
+	if ring == nil {
+		r.mu.Unlock()
+		return nil
+	}
+	out := ring.recent(limit)
+	r.mu.Unlock()
+	return out
 }
 
 // Record adds delivered messages/bytes for a connector at time now.
@@ -264,9 +432,9 @@ func (r *Registry) Touch(connector string) {
 	r.get(connector).zeroQueue()
 }
 
-// Remove drops a connector's stats (deleted connectors), including its
-// queue-depth history ring — the whole *counters entry (totals, rate
-// buckets, and depth ring alike) is deleted as one unit, so there's no
+// Remove drops a connector's stats and recent events (deleted connectors),
+// including its queue-depth history ring — the whole *counters entry (totals,
+// rate buckets, and depth ring alike) is deleted as one unit, so there's no
 // separate ring-eviction step to keep in sync with this method.
 //
 // Ordering contract: callers must ensure the connector's pipeline is fully
@@ -286,6 +454,31 @@ func (r *Registry) Remove(connector string) {
 	}
 	r.mu.Lock()
 	delete(r.conn, connector)
+	delete(r.events, "connector:"+connector)
+	r.mu.Unlock()
+}
+
+// RemoveSource and RemoveSink drop process-local counters and recent payload
+// events for an entity deleted from config. Disabled or hot-restarted entities
+// deliberately keep their history; the supervisor calls these only after it
+// observes the configured id disappear entirely.
+func (r *Registry) RemoveSource(source string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	delete(r.source, source)
+	delete(r.events, "source:"+source)
+	r.mu.Unlock()
+}
+
+func (r *Registry) RemoveSink(sink string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	delete(r.sink, sink)
+	delete(r.events, "sink:"+sink)
 	r.mu.Unlock()
 }
 

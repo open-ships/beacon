@@ -45,7 +45,7 @@ func newAppMountedServer(t *testing.T) *httptest.Server {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	svc := config.NewService(st, fakeReconciler{}, nil)
-	handler := ui.Handler(svc, stats.NewRegistry(), fakeReconciler{}.Statuses, "test", nil)
+	handler := ui.Handler(svc, stats.NewRegistry(), fakeReconciler{}.Statuses, nil, "test", nil)
 
 	mux := http.NewServeMux()
 	mux.Handle("/ui/", handler)
@@ -251,18 +251,43 @@ func TestDashboardPageIsSelfContained(t *testing.T) {
 	}
 	html := string(body)
 
-	for _, want := range []string{"<obc-top-bar", "<obc-brilliance-menu", "Dashboard"} {
+	for _, want := range []string{"openships.ai", "beacon", "docs", "Home"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard page does not contain %q:\n%s", want, html)
 		}
 	}
-	for _, nav := range []string{"/ui/dashboard", "/ui/sources", "/ui/sinks", "/ui/connectors"} {
-		if !strings.Contains(html, nav) {
-			t.Fatalf("dashboard page nav does not link to %q:\n%s", nav, html)
+	for _, forbidden := range []string{"obc-", "openbridge.bundle.js", "palettes.css", "NotoSans.ttf"} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard page still references %q:\n%s", forbidden, html)
 		}
 	}
-	if ext := externalURLs(html); len(ext) > 0 {
-		t.Fatalf("dashboard page references external URL(s), violating the offline constraint: %v", ext)
+	if strings.Contains(html, "app-sidebar") {
+		t.Fatalf("dashboard page should not render a sidebar:\n%s", html)
+	}
+	if !strings.Contains(html, `href="/ui/assets/favicon.svg`) {
+		t.Fatalf("dashboard page does not reference the site favicon:\n%s", html)
+	}
+	for _, nav := range []string{`href="https://openships.ai"`, `href="/ui/dashboard"`, `href="/ui/docs"`} {
+		if !strings.Contains(html, nav) {
+			t.Fatalf("dashboard page header does not link to %q:\n%s", nav, html)
+		}
+	}
+	brandStart := strings.Index(html, `<div class="brand-strip">`)
+	navStart := strings.Index(html, `<nav class="app-nav"`)
+	if brandStart == -1 || navStart == -1 {
+		t.Fatalf("dashboard page header lost brand/nav structure:\n%s", html)
+	}
+	if site := strings.Index(html, `href="https://openships.ai"`); site < navStart {
+		t.Fatalf("openships.ai should render in the right nav, not the left brand strip:\n%s", html)
+	}
+	if strings.Contains(html, `class="nav-link brand-site" href="https://openships.ai"`) {
+		t.Fatalf("openships.ai should use the same nav-link text styling as docs:\n%s", html)
+	}
+	if product := strings.Index(html, `href="/ui/dashboard"`); product < brandStart || product > navStart {
+		t.Fatalf("beacon should be the only left-side brand link:\n%s", html)
+	}
+	if ext := externalURLs(html); len(ext) != 1 || ext[0] != "https://openships.ai" {
+		t.Fatalf("dashboard page external links = %v, want only https://openships.ai", ext)
 	}
 }
 
@@ -275,10 +300,8 @@ func TestAssetsServed(t *testing.T) {
 		minSize    int // 0 means "just check >0 bytes"
 	}{
 		{"htmx.min.js", "javascript", 0},
-		{"openbridge.bundle.js", "javascript", 1024},
-		{"palettes.css", "css", 1024},
-		{"NotoSans.ttf", "font", 1024},
 		{"app.css", "css", 1024},
+		{"favicon.svg", "image/svg", 1024},
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {
@@ -313,72 +336,25 @@ func TestAssetsServed(t *testing.T) {
 	}
 }
 
-// TestAppCSSFontURLHasCacheBuster guards the one asset URL that can't carry
-// layout.html's runtime "?v=" version: the @font-face src baked into the
-// compiled app.css. Assets are served immutable/max-age=1y, so a bare
-// /ui/assets/NotoSans.ttf reference would pin browsers to a stale font
-// forever across re-vendors; uisrc/input.css hand-pins the vendored
-// OpenBridge package version as the cache-buster instead (see its comment).
-// This test fails if a rebuild of app.css drops that query parameter.
-func TestAppCSSFontURLHasCacheBuster(t *testing.T) {
+func TestOpenBridgeAssetsAreNotServed(t *testing.T) {
 	srv := newAppMountedServer(t)
 
-	resp, err := http.Get(srv.URL + "/ui/assets/app.css")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	mustStatus(t, resp, http.StatusOK)
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	css := string(body)
-	if !strings.Contains(css, "NotoSans.ttf") {
-		t.Fatal("app.css has no NotoSans.ttf @font-face reference")
-	}
-	if !strings.Contains(css, "NotoSans.ttf?v=") {
-		t.Fatal("app.css references NotoSans.ttf without a ?v= cache-buster; " +
-			"immutable-cached assets need one (see uisrc/input.css)")
-	}
-}
-
-// TestOpenBridgeBundleIsMinified guards the vendoring pipeline: the upstream
-// @oicl/openbridge-webcomponents bundle ships unminified (~11.9MB) and MUST
-// be minified when vendored (`just vendor-openbridge` does both steps) —
-// beacon serves assets uncompressed, so an unminified bundle quadruples the
-// UI's first-load transfer. The threshold sits far above the minified size
-// (~2.9MB) and far below the unminified one, so it only trips on a re-vendor
-// that skipped the minify step.
-func TestOpenBridgeBundleIsMinified(t *testing.T) {
-	const maxBundleBytes = 6 << 20 // 6MB
-
-	srv := newAppMountedServer(t)
-	resp, err := http.Get(srv.URL + "/ui/assets/openbridge.bundle.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	mustStatus(t, resp, http.StatusOK)
-
-	n, err := io.Copy(io.Discard, resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n > maxBundleBytes {
-		t.Fatalf("openbridge.bundle.js is %dMB (> %dMB): it looks unminified — "+
-			"re-vendor with `just vendor-openbridge`, which minifies via esbuild",
-			n>>20, maxBundleBytes>>20)
+	for _, path := range []string{"openbridge.bundle.js", "palettes.css", "NotoSans.ttf"} {
+		t.Run(path, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/ui/assets/" + path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			mustStatus(t, resp, http.StatusNotFound)
+		})
 	}
 }
 
 // TestNoInlineStylingInTemplates enforces beacon UI's no-inline-CSS rule:
 // templates must contain no style= attributes and no <style> blocks (every
-// visual rule lives in the compiled Tailwind/daisyUI stylesheet or
-// OpenBridge's own component CSS, not scattered across templates). A small
-// inline <script> for brilliance persistence is fine — this only checks for
-// CSS.
+// visual rule lives in app.css, not scattered across templates). Inline
+// event handlers used by htmx fragments are outside this CSS-only check.
 func TestNoInlineStylingInTemplates(t *testing.T) {
 	entries, err := os.ReadDir("templates")
 	if err != nil {
@@ -517,11 +493,10 @@ func TestDocsSidebarListsAllPages(t *testing.T) {
 }
 
 // TestDocsPagesAreSelfContained extends TestDashboardPageIsSelfContained's
-// offline check to every manual page: none may reference an absolute
-// http(s) URL via src=/href=, since that would require network access
-// beyond beacon itself to render (see docsMarkdown's doc comment — content
-// cites URLs as inline code, never as markdown/HTML links, specifically to
-// keep this passing).
+// external-link check to every manual page: the only absolute http(s) href
+// allowed is the requested openships.ai header link. Docs content itself
+// cites URLs as inline code, never as markdown/HTML links (see
+// docsMarkdown's doc comment).
 func TestDocsPagesAreSelfContained(t *testing.T) {
 	srv := newAppMountedServer(t)
 	for _, p := range wantDocPages {
@@ -537,8 +512,8 @@ func TestDocsPagesAreSelfContained(t *testing.T) {
 				t.Fatal(err)
 			}
 			html := string(body)
-			if ext := externalURLs(html); len(ext) > 0 {
-				t.Fatalf("docs page %q references external URL(s), violating the offline constraint: %v", p.slug, ext)
+			if ext := externalURLs(html); len(ext) != 1 || ext[0] != "https://openships.ai" {
+				t.Fatalf("docs page %q external links = %v, want only https://openships.ai", p.slug, ext)
 			}
 		})
 	}
@@ -578,11 +553,8 @@ func TestDocsPagesContainNoInlineStyling(t *testing.T) {
 	}
 }
 
-// TestDocsNavItemPresent checks layout.html's main sidebar nav (shared by
-// every full page, not just docs) gained the "Docs" entry pointing at
-// /ui/docs, alongside the pre-existing Dashboard/Sources/Sinks/Connectors
-// items TestDashboardPageIsSelfContained already checks for on the
-// dashboard page.
+// TestDocsNavItemPresent checks layout.html's main nav (shared by every
+// full page, not just docs) has the docs entry pointing at /ui/docs.
 func TestDocsNavItemPresent(t *testing.T) {
 	srv := newAppMountedServer(t)
 	resp, err := http.Get(srv.URL + "/ui/dashboard")
@@ -598,7 +570,7 @@ func TestDocsNavItemPresent(t *testing.T) {
 	if !strings.Contains(html, `href="/ui/docs"`) {
 		t.Fatalf("main nav does not link to /ui/docs:\n%s", html)
 	}
-	if !strings.Contains(html, ">Docs<") {
-		t.Fatalf("main nav does not label the docs link \"Docs\":\n%s", html)
+	if !strings.Contains(html, ">docs<") {
+		t.Fatalf("main nav does not label the docs link \"docs\":\n%s", html)
 	}
 }

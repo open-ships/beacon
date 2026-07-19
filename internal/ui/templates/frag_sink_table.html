@@ -1,10 +1,7 @@
 {{/* Mirrors frag_source_table.html; see its comments for rationale. Data:
-     internal/ui/forms.go's sinkTableData. Unlike the sources table, this
-     one has a Detail column: sinks have a sixth type (file) whose whole
-     point is WHERE it writes to, so each row's Detail (forms.go's
-     sinkDetail: Interface/Port/Path/Address/FilePath depending on .Type)
-     renders that value directly in the table instead of requiring an Edit
-     click to see it. */}}
+     internal/ui/forms.go's sinkTableData. The Detail column renders the
+     endpoint-specific location (forms.go's sinkDetail) directly in the
+     table instead of requiring an Edit click to see it. */}}
 {{define "sink-panel-inner"}}
 {{if .Alert}}
 {{if eq .Alert.Kind "success"}}
@@ -34,11 +31,11 @@
     </thead>
     <tbody>
       {{range .Sinks}}
-      <tr>
-        <td>{{.Name}}</td>
+      <tr data-href="/ui/sinks/{{.ID}}/">
+        <td><a class="link" href="/ui/sinks/{{.ID}}/">{{.Name}}</a></td>
         <td><code>{{.ID}}</code></td>
         <td>{{.Type}}</td>
-        <td><code>{{.Detail}}</code></td>
+        <td>{{if .Detail}}<code>{{.Detail}}</code>{{else}}<span class="opacity-70">-</span>{{end}}</td>
         <td>
           {{if .Enabled}}<span class="badge badge-success">enabled</span>
           {{else}}<span class="badge badge-ghost">disabled</span>{{end}}
@@ -50,10 +47,7 @@
           {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
         </td>
         <td class="flex gap-2 justify-end">
-          <button type="button" class="btn btn-sm"
-                  hx-get="/ui/frag/sink-form?id={{.ID}}" hx-target="#sink-form-container" hx-swap="innerHTML">
-            Edit
-          </button>
+          <a class="btn btn-sm" href="/ui/sinks/{{.ID}}/edit">Edit</a>
           <button type="button" class="btn btn-sm btn-error"
                   hx-post="/ui/sinks/{{.ID}}/delete" hx-target="#sink-panel" hx-swap="outerHTML"
                   hx-confirm="Delete sink &quot;{{.ID}}&quot;? Connectors using it must be removed or repointed first.">

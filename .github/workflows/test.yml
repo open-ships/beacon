@@ -62,14 +62,10 @@ jobs:
       - name: Test (browser)
         run: npm test
 
-  # race is a separate job (rather than another step in `test`, above)
-  # restricted to the packages that don't transitively import n2k/pgn: that
-  # package ICEs the Go compiler under -race (an upstream bug — see
-  # internal/msg for the import boundary that contains it). Confirmed via
-  # `go list -deps -test <pkg>` for every package in `go list ./...`: this is
-  # the exact set with zero transitive dependency on n2k/pgn (including test
-  # files) — re-verify it whenever a package's imports change. Everything
-  # else is still covered without -race by the `test` job above.
+  # n2k v0.2.0 split its generated PGN catalog into compiler-sized chunks,
+  # removing the race-build compiler ICE that previously forced this job to
+  # cover only a small package allow-list. Keep the full repository under the
+  # detector so new packages cannot silently miss race coverage.
   race:
     runs-on: ubuntu-latest
 
@@ -83,11 +79,4 @@ jobs:
           go-version-file: go.mod
 
       - name: Test (race)
-        run: |
-          go test -race \
-            ./internal/bus/busfake \
-            ./internal/metrics \
-            ./internal/model \
-            ./internal/stats \
-            ./internal/store \
-            ./internal/sysinfo
+        run: go test -race ./... -timeout 300s

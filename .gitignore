@@ -55,3 +55,9 @@ beacon.db
 *.db-wal
 *.db-shm
 .claude/
+
+# impeccable design hook: design.json is shared config (committed); the
+# cache, per-user consent, and live-session state are local only.
+.impeccable/hook.cache.json
+.impeccable/config.local.json
+.impeccable/live/

@@ -108,11 +108,11 @@ func TestUIDrivenLifecycle(t *testing.T) {
 
 	// Step 0: a brand-new, unseeded store starts with zero components, so
 	// the dashboard fragment renders its empty state pointing at
-	// /ui/sources (nothing configured at all yet).
-	t.Log("step 0: dashboard fragment shows the initial empty state, CTA -> /ui/sources")
+	// /ui/sources/new (nothing configured at all yet).
+	t.Log("step 0: dashboard fragment shows the initial empty state, CTA -> /ui/sources/new")
 	dash := getBody(t, adminBase+"/ui/frag/dashboard")
-	if !strings.Contains(dash, `href="/ui/sources"`) {
-		t.Fatalf("initial dashboard fragment = %s, want empty-state CTA linking /ui/sources", dash)
+	if !strings.Contains(dash, `href="/ui/sources/new"`) {
+		t.Fatalf("initial dashboard fragment = %s, want empty-state CTA linking /ui/sources/new", dash)
 	}
 
 	// Step 1: POST /ui/sources creates source can0 (socketcan), the UI's
@@ -142,12 +142,12 @@ func TestUIDrivenLifecycle(t *testing.T) {
 	}), http.StatusOK)
 
 	// Step 2b: with a source configured but no connector yet, the dashboard
-	// empty-state CTA switches from /ui/sources to /ui/connectors (see
+	// empty-state CTA switches from /ui/sources/new to /ui/connectors/new (see
 	// internal/ui/dashboard.go's dashboardEmptyState).
-	t.Log("step 2b: dashboard empty state now points at /ui/connectors")
+	t.Log("step 2b: dashboard empty state now points at /ui/connectors/new")
 	dash = getBody(t, adminBase+"/ui/frag/dashboard")
-	if !strings.Contains(dash, `href="/ui/connectors"`) {
-		t.Fatalf("dashboard fragment (source configured, no connector) = %s, want empty-state CTA linking /ui/connectors", dash)
+	if !strings.Contains(dash, `href="/ui/connectors/new"`) {
+		t.Fatalf("dashboard fragment (source configured, no connector) = %s, want empty-state CTA linking /ui/connectors/new", dash)
 	}
 
 	// Step 3: POST /ui/connectors creates connector heading (filter
@@ -165,13 +165,13 @@ func TestUIDrivenLifecycle(t *testing.T) {
 		"max_messages": {"1000"},
 	}), http.StatusOK)
 
-	// Step 4: the dashboard fragment's connector grid now shows the
-	// heading card instead of the empty-state hero.
-	t.Log("step 4: dashboard fragment contains the connector card")
+	// Step 4: the dashboard fragment's DAG now shows the heading connector
+	// path instead of the empty-state hero.
+	t.Log("step 4: dashboard fragment contains the connector path")
 	dash = getBody(t, adminBase+"/ui/frag/dashboard")
-	for _, want := range []string{"Heading only", `href="/ui/connectors/heading"`} {
+	for _, want := range []string{"Heading only", `href="/ui/connectors/heading/"`} {
 		if !strings.Contains(dash, want) {
-			t.Fatalf("dashboard fragment = %s, want connector card containing %q", dash, want)
+			t.Fatalf("dashboard fragment = %s, want connector path containing %q", dash, want)
 		}
 	}
 	if strings.Contains(dash, "Add your first") {
@@ -222,13 +222,13 @@ func TestUIDrivenLifecycle(t *testing.T) {
 
 	// Step 8: the dashboard fragment falls back to its empty state — with
 	// the source (and sink) still configured, the CTA still points at
-	// /ui/connectors rather than back to /ui/sources.
+	// /ui/connectors/new rather than back to /ui/sources/new.
 	t.Log("step 8: dashboard fragment shows the empty state again")
 	dash = getBody(t, adminBase+"/ui/frag/dashboard")
 	if strings.Contains(dash, "Heading only") {
 		t.Fatalf("dashboard fragment still shows the deleted connector's card:\n%s", dash)
 	}
-	if !strings.Contains(dash, `href="/ui/connectors"`) || !strings.Contains(dash, "Add your first connector") {
-		t.Fatalf("post-delete dashboard fragment = %s, want the empty-state hero linking /ui/connectors", dash)
+	if !strings.Contains(dash, `href="/ui/connectors/new"`) || !strings.Contains(dash, "Add your first connector") {
+		t.Fatalf("post-delete dashboard fragment = %s, want the empty-state hero linking /ui/connectors/new", dash)
 	}
 }

@@ -6,6 +6,14 @@
       "type": "socketcan",
       "enabled": true,
       "interface": "can0"
+    },
+    {
+      "id": "engine-mqtt-in",
+      "name": "Engine MQTT input",
+      "type": "mqtt",
+      "enabled": false,
+      "url": "mqtt://broker.local:1883",
+      "topic": "vessels/main/engine/#"
     }
   ],
   "sinks": [
@@ -22,6 +30,14 @@
       "type": "tcp",
       "enabled": true,
       "address": "0.0.0.0:9090"
+    },
+    {
+      "id": "engine-mqtt",
+      "name": "Engine feed (MQTT)",
+      "type": "mqtt",
+      "enabled": false,
+      "url": "mqtt://broker.local:1883",
+      "topic": "vessels/main/engine/json"
     }
   ],
   "connectors": [

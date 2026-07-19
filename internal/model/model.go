@@ -16,17 +16,29 @@ const (
 	SourceUSBCAN    SourceType = "usbcan"
 	SourceHTTPSSE   SourceType = "http_sse"
 	SourceHTTPWS    SourceType = "http_ws"
+	SourceMQTT      SourceType = "mqtt"
+	SourceFile      SourceType = "file" // replay an NMEA-2000 capture log (candump/canboat/YD/Actisense)
+	SourceTCP       SourceType = "tcp"  // ingest from a TCP NMEA-2000 gateway (Yacht Devices / Actisense)
+	SourceUDP       SourceType = "udp"  // ingest from a UDP NMEA-2000 gateway
+)
+
+// Gateway stream formats (Source.Format, source types tcp/udp only).
+const (
+	StreamFormatYDRaw     = "ydraw"     // Yacht Devices RAW ASCII line protocol
+	StreamFormatActisense = "actisense" // Actisense binary stream protocol
 )
 
 type SinkType string
 
 const (
-	SinkSocketCAN SinkType = "socketcan"
-	SinkUSBCAN    SinkType = "usbcan"
-	SinkHTTPSSE   SinkType = "http_sse"
-	SinkHTTPWS    SinkType = "http_ws"
-	SinkTCP       SinkType = "tcp"
-	SinkFile      SinkType = "file"
+	SinkSocketCAN  SinkType = "socketcan"
+	SinkUSBCAN     SinkType = "usbcan"
+	SinkHTTPSSE    SinkType = "http_sse"
+	SinkHTTPWS     SinkType = "http_ws"
+	SinkTCP        SinkType = "tcp" // TCP listener serving NDJSON to connecting clients
+	SinkFile       SinkType = "file"
+	SinkMQTT       SinkType = "mqtt"
+	SinkTCPGateway SinkType = "tcp_gateway" // transmit onto an NMEA-2000 bus via a TCP gateway (YD / Actisense)
 )
 
 // File sink formats (Sink.Format, sink type file only).
@@ -73,8 +85,12 @@ type Source struct {
 	Enabled   bool              `json:"enabled"`
 	Interface string            `json:"interface,omitempty"` // socketcan
 	Port      string            `json:"port,omitempty"`      // usbcan (serial device path)
-	URL       string            `json:"url,omitempty"`       // http_sse / http_ws
+	URL       string            `json:"url,omitempty"`       // http_sse / http_ws / mqtt broker
+	Topic     string            `json:"topic,omitempty"`     // mqtt
 	Headers   map[string]string `json:"headers,omitempty"`   // http_sse / http_ws
+	FilePath  string            `json:"file_path,omitempty"` // file: capture log to replay
+	Address   string            `json:"address,omitempty"`   // tcp/udp: gateway host:port
+	Format    string            `json:"format,omitempty"`    // tcp/udp: "ydraw" or "actisense"
 }
 
 type Sink struct {
@@ -85,9 +101,11 @@ type Sink struct {
 	Interface    string   `json:"interface,omitempty"`      // socketcan
 	Port         string   `json:"port,omitempty"`           // usbcan
 	Path         string   `json:"path,omitempty"`           // http_sse / http_ws (served on data server)
-	Address      string   `json:"address,omitempty"`        // tcp listen address
+	Address      string   `json:"address,omitempty"`        // tcp listen address; tcp_gateway: gateway host:port
+	URL          string   `json:"url,omitempty"`            // mqtt broker
+	Topic        string   `json:"topic,omitempty"`          // mqtt
 	FilePath     string   `json:"file_path,omitempty"`      // file: absolute output path
-	Format       string   `json:"format,omitempty"`         // file: "ndjson" or "candump"
+	Format       string   `json:"format,omitempty"`         // file: "ndjson"/"candump"; tcp_gateway: "ydraw"/"actisense"
 	MaxFileBytes int64    `json:"max_file_bytes,omitempty"` // file: rotate threshold, 0 = default
 	MaxFiles     int      `json:"max_files,omitempty"`      // file: total files kept, 0 = default
 }

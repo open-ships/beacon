@@ -8,6 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +18,7 @@ import (
 	"github.com/open-ships/n2k/pgn"
 
 	"github.com/open-ships/beacon/internal/metrics"
+	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/msg"
 )
 
@@ -26,19 +30,61 @@ import (
 var ErrNotEncodable = errors.New("envelope cannot be encoded for CAN transmission")
 
 type Endpoint struct {
-	Kind string // "socketcan" | "usbcan"
-	Name string // interface name or serial port path
+	Kind   string // "socketcan" | "usbcan" | "tcp" (NMEA-2000 gateway)
+	Name   string // interface name, serial port path, or gateway host:port
+	Format string // tcp only: model.StreamFormatYDRaw / model.StreamFormatActisense
 }
 
-func (ep Endpoint) option() (n2k.Option, error) {
+// StreamFormat maps beacon's config stream-format string to n2k's enum,
+// shared by the tcp endpoint here and the read-only tcp/udp sources in
+// internal/source.
+func StreamFormat(f string) (n2k.StreamFormat, error) {
+	switch f {
+	case model.StreamFormatYDRaw:
+		return n2k.FormatYDRaw, nil
+	case model.StreamFormatActisense:
+		return n2k.FormatActisense, nil
+	default:
+		return 0, fmt.Errorf("unknown stream format %q", f)
+	}
+}
+
+func (ep Endpoint) options() ([]n2k.Option, error) {
 	switch ep.Kind {
 	case "socketcan":
-		return n2k.CAN(ep.Name), nil
+		return []n2k.Option{n2k.CAN(ep.Name)}, nil
 	case "usbcan":
-		return n2k.USB(ep.Name), nil
+		return []n2k.Option{n2k.USB(ep.Name)}, nil
+	case "tcp":
+		f, err := StreamFormat(ep.Format)
+		if err != nil {
+			return nil, fmt.Errorf("tcp endpoint %q: %w", ep.Name, err)
+		}
+		// WithReconnect keeps the gateway transport alive across drops
+		// inside one client, so a brief WiFi blip doesn't force a full
+		// client teardown + re-claim; only a dead client (Receive ending)
+		// falls back to the manager's own reconnect loop.
+		return []n2k.Option{n2k.TCP(ep.Name, f), n2k.WithReconnect(n2k.ReconnectPolicy{})}, nil
 	default:
 		return nil, fmt.Errorf("unknown CAN endpoint kind %q", ep.Kind)
 	}
+}
+
+func (ep Endpoint) preflight() error {
+	if ep.Kind != "usbcan" {
+		return nil
+	}
+	info, err := os.Stat(ep.Name)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("usbcan port %q does not exist", ep.Name)
+		}
+		return fmt.Errorf("usbcan port %q is not accessible: %w", ep.Name, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("usbcan port %q is a directory", ep.Name)
+	}
+	return nil
 }
 
 type Manager struct {
@@ -52,6 +98,27 @@ type Manager struct {
 
 func NewManager(log *slog.Logger, met *metrics.Set, extraOpts ...n2k.Option) *Manager {
 	return &Manager{log: log, met: met, extraOpts: extraOpts, clients: map[Endpoint]*busClient{}}
+}
+
+// Identity returns the n2k options that make beacon present itself as a named
+// NMEA-2000 device — answering ISO product (126996) and configuration (126998)
+// requests with a real identity instead of the library's anonymous defaults.
+// n2k v0.2.0 makes every bus client answer those requests automatically; this
+// just fills in who is answering. Callers apply it ahead of any user-supplied
+// options so those can still override (see internal/app).
+func Identity(version string) []n2k.Option {
+	return []n2k.Option{
+		n2k.WithProductInfo(n2k.ProductInfo{
+			ModelID:         "Open Ships beacon",
+			SoftwareVersion: version,
+			ModelVersion:    "gateway",
+			LoadEquivalency: 1,
+		}),
+		n2k.WithConfigInfo(n2k.ConfigInfo{
+			InstallationDescription1: "Open Ships beacon gateway",
+			ManufacturerInformation:  "openships.ai",
+		}),
+	}
 }
 
 func (m *Manager) clientCount() int {
@@ -75,13 +142,13 @@ func (m *Manager) Acquire(ctx context.Context, ep Endpoint) (*Handle, error) {
 	defer m.mu.Unlock()
 	bc, ok := m.clients[ep]
 	if !ok {
-		opt, err := ep.option()
+		opts, err := ep.options()
 		if err != nil {
 			return nil, err
 		}
 		runCtx, cancel := context.WithCancel(context.Background())
 		bc = &busClient{
-			mgr: m, ep: ep, opt: opt, cancel: cancel,
+			mgr: m, ep: ep, opts: opts, cancel: cancel,
 			subs:  map[int64]chan *msg.Envelope{},
 			state: "degraded",
 		}
@@ -96,7 +163,7 @@ func (m *Manager) Acquire(ctx context.Context, ep Endpoint) (*Handle, error) {
 type busClient struct {
 	mgr    *Manager
 	ep     Endpoint
-	opt    n2k.Option
+	opts   []n2k.Option
 	cancel context.CancelFunc
 	wg     sync.WaitGroup // tracks the run goroutine; waited on by the last Release
 
@@ -119,9 +186,24 @@ func (bc *busClient) run(ctx context.Context) {
 	defer bc.wg.Done()
 	backoff := 250 * time.Millisecond
 	for ctx.Err() == nil {
-		opts := append([]n2k.Option{bc.opt, n2k.IncludeUnknown(), n2k.WithLogger(bc.mgr.log)},
-			bc.mgr.extraOpts...)
-		client, err := n2k.NewClient(ctx, opts...)
+		if err := bc.ep.preflight(); err != nil {
+			bc.setState("error", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < 5*time.Second {
+				backoff *= 2
+				if backoff > 5*time.Second {
+					backoff = 5 * time.Second
+				}
+			}
+			continue
+		}
+		opts := append(append([]n2k.Option{}, bc.opts...), n2k.IncludeUnknown(), n2k.WithLogger(bc.mgr.log))
+		opts = append(opts, bc.mgr.extraOpts...)
+		client, err := bc.newClient(ctx, opts...)
 		if err != nil {
 			bc.setState("error", err)
 			select {
@@ -192,6 +274,19 @@ func (bc *busClient) run(ctx context.Context) {
 	}
 }
 
+func (bc *busClient) newClient(ctx context.Context, opts ...n2k.Option) (client *n2k.Client, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if client != nil {
+				_ = client.Close()
+			}
+			client = nil
+			err = fmt.Errorf("bus %s:%s: n2k client startup panic: %v", bc.ep.Kind, bc.ep.Name, r)
+		}
+	}()
+	return n2k.NewClient(ctx, opts...)
+}
+
 func (bc *busClient) broadcast(ctx context.Context, e *msg.Envelope) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
@@ -220,6 +315,57 @@ func (bc *busClient) setState(state string, err error) {
 		v = 1
 	}
 	bc.mgr.met.SetComponentState("bus", bc.ep.Kind+":"+bc.ep.Name, v)
+}
+
+// DeviceInfo is one device observed on a CAN endpoint's bus. n2k v0.2.0's
+// client tracks every claimed NAME automatically (from address-claim traffic),
+// so this data comes for free once a bus client is running.
+type DeviceInfo struct {
+	Endpoint string    `json:"endpoint"`         // "socketcan:can0"
+	Address  uint8     `json:"address"`          // current claimed bus address
+	Name     uint64    `json:"name"`             // packed ISO 11783 NAME
+	LastSeen time.Time `json:"last_seen"`        // last transmission from this device
+	Model    string    `json:"model,omitempty"`  // from PGN 126996, once observed
+	Serial   string    `json:"serial,omitempty"` // from PGN 126996, once observed
+}
+
+// Devices returns every device currently known across all running bus
+// endpoints, newest activity first. Safe to call concurrently with Acquire/
+// Release; it snapshots the client set under mgr.mu, then reads each client's
+// registry without holding the manager lock.
+func (m *Manager) Devices() []DeviceInfo {
+	m.mu.Lock()
+	clients := make([]*busClient, 0, len(m.clients))
+	for _, bc := range m.clients {
+		clients = append(clients, bc)
+	}
+	m.mu.Unlock()
+
+	var out []DeviceInfo
+	for _, bc := range clients {
+		bc.mu.Lock()
+		client := bc.client
+		ep := bc.ep
+		bc.mu.Unlock()
+		if client == nil {
+			continue
+		}
+		for _, d := range client.Devices() {
+			di := DeviceInfo{
+				Endpoint: ep.Kind + ":" + ep.Name,
+				Address:  d.Address,
+				Name:     d.RawName,
+				LastSeen: d.LastSeen,
+			}
+			if d.ProductInfo != nil {
+				di.Model = strings.TrimSpace(d.ProductInfo.ModelId)
+				di.Serial = strings.TrimSpace(d.ProductInfo.ModelSerialCode)
+			}
+			out = append(out, di)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastSeen.After(out[j].LastSeen) })
+	return out
 }
 
 type Handle struct {
@@ -269,26 +415,18 @@ func (h *Handle) Write(ctx context.Context, e *msg.Envelope) error {
 	}
 
 	// client may be concurrently Closed by run()'s reconnect path after we
-	// captured it above. n2k's Client.Write has a check-then-act race on its
-	// closed flag that can panic ("send on closed channel") in that window,
-	// so run it in a goroutine that converts a panic into an error. The
-	// goroutine cannot leak: n2k's Close drains every accepted write job
-	// (completing its WriteResult with an error) before returning, and a
-	// send blocked on the client's full write queue panics — and is
-	// recovered here — when Close closes that channel.
-	done := make(chan error, 1)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				done <- fmt.Errorf("bus %s: client closed during write of pgn %d: %v",
-					h.bc.ep.Name, e.PGN, r)
-			}
-		}()
-		done <- client.Write(m).Wait()
-	}()
+	// captured it above. As of n2k v0.2.0 that is safe: Client.Write registers
+	// as an in-flight sender under the same lock Close takes, and Close drains
+	// those senders before closing its write channel, so the old "send on
+	// closed channel" panic can no longer occur (a write racing Close simply
+	// returns an "n2k: client closed" error). We therefore no longer need the
+	// recover-wrapped goroutine that used to guard it. Selecting on the write's
+	// Done channel still lets ctx cancellation abandon the wait; a write already
+	// handed to the client is not retracted.
+	wr := client.Write(m)
 	select {
-	case err := <-done:
-		return err
+	case <-wr.Done():
+		return wr.Wait() // Done is closed, so Wait returns the result without blocking
 	case <-ctx.Done():
 		return ctx.Err()
 	}

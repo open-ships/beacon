@@ -28,6 +28,7 @@
         <th>Name</th>
         <th>ID</th>
         <th>Type</th>
+        <th>Detail</th>
         <th>Enabled</th>
         <th>State</th>
         <th></th>
@@ -35,10 +36,11 @@
     </thead>
     <tbody>
       {{range .Sources}}
-      <tr>
-        <td>{{.Name}}</td>
+      <tr data-href="/ui/sources/{{.ID}}/">
+        <td><a class="link" href="/ui/sources/{{.ID}}/">{{.Name}}</a></td>
         <td><code>{{.ID}}</code></td>
         <td>{{.Type}}</td>
+        <td>{{if .Detail}}<code>{{.Detail}}</code>{{else}}<span class="opacity-70">-</span>{{end}}</td>
         <td>
           {{if .Enabled}}<span class="badge badge-success">enabled</span>
           {{else}}<span class="badge badge-ghost">disabled</span>{{end}}
@@ -50,10 +52,7 @@
           {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
         </td>
         <td class="flex gap-2 justify-end">
-          <button type="button" class="btn btn-sm"
-                  hx-get="/ui/frag/source-form?id={{.ID}}" hx-target="#source-form-container" hx-swap="innerHTML">
-            Edit
-          </button>
+          <a class="btn btn-sm" href="/ui/sources/{{.ID}}/edit">Edit</a>
           <button type="button" class="btn btn-sm btn-error"
                   hx-post="/ui/sources/{{.ID}}/delete" hx-target="#source-panel" hx-swap="outerHTML"
                   hx-confirm="Delete source &quot;{{.ID}}&quot;? Connectors using it must be removed or repointed first.">
@@ -62,7 +61,7 @@
         </td>
       </tr>
       {{else}}
-      <tr><td colspan="6" class="text-center opacity-70">No sources configured.</td></tr>
+      <tr><td colspan="7" class="text-center opacity-70">No sources configured.</td></tr>
       {{end}}
     </tbody>
   </table>
@@ -70,8 +69,8 @@
 {{end}}
 
 {{/* The hx-on::load timer on both wrappers below auto-dismisses a success
-     alert 4s after the panel is swapped in, per the plan's "success toast
-     (daisyUI alert, auto-dismiss)". It lives on the wrapper, NOT on the
+     alert 4s after the panel is swapped in, per the plan's success toast
+     behavior. It lives on the wrapper, NOT on the
      alert itself, because htmx (2.0.10, verified in the vendored
      assets/htmx.min.js) triggers htmx:load only on the TOP-LEVEL nodes a
      swap inserts — regular and OOB swaps both route through the same

@@ -1,0 +1,197 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-15T17:52:52Z",
+  "title": "Design System: Beacon",
+  "extensions": {
+    "colorMeta": {
+      "accent": {
+        "role": "primary",
+        "displayName": "Open Ships Action Blue",
+        "canonical": "#2337ff",
+        "tonalRamp": ["oklch(18% 0.10 270)", "oklch(28% 0.16 270)", "oklch(40% 0.22 270)", "oklch(52% 0.28 270)", "oklch(62% 0.26 270)", "oklch(74% 0.18 270)", "oklch(86% 0.10 270)", "oklch(96% 0.035 270)"]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Bridge Ink",
+        "canonical": "#0f1219",
+        "tonalRamp": ["#0f1219", "#222939", "#37435c", "#60739f", "#8795b8", "#c8d2e1", "#e5e9f0", "#f6f8fb"]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Console Surface",
+        "canonical": "#ffffff",
+        "tonalRamp": ["#0f1219", "#222939", "#60739f", "#c8d2e1", "#d9e0eb", "#e5e9f0", "#f6f8fb", "#ffffff"]
+      },
+      "success": {
+        "role": "tertiary",
+        "displayName": "Up Green",
+        "canonical": "#0f7a4f",
+        "tonalRamp": ["oklch(18% 0.06 155)", "oklch(28% 0.09 155)", "oklch(38% 0.11 155)", "oklch(48% 0.12 155)", "oklch(60% 0.10 155)", "oklch(74% 0.07 155)", "oklch(88% 0.04 155)", "oklch(96% 0.02 155)"]
+      },
+      "warning": {
+        "role": "tertiary",
+        "displayName": "Caution Amber",
+        "canonical": "#a65f00",
+        "tonalRamp": ["oklch(20% 0.06 70)", "oklch(30% 0.09 70)", "oklch(42% 0.12 70)", "oklch(54% 0.14 70)", "oklch(66% 0.11 70)", "oklch(78% 0.08 70)", "oklch(90% 0.04 70)", "oklch(97% 0.02 70)"]
+      },
+      "error": {
+        "role": "tertiary",
+        "displayName": "Fault Red",
+        "canonical": "#b42318",
+        "tonalRamp": ["oklch(18% 0.06 25)", "oklch(28% 0.10 25)", "oklch(40% 0.14 25)", "oklch(52% 0.16 25)", "oklch(64% 0.12 25)", "oklch(76% 0.08 25)", "oklch(88% 0.04 25)", "oklch(96% 0.02 25)"]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Dashboard and empty-state headings that name the current operational task."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Card, section, form, and compact panel titles."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Default UI copy, table content, and form text."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Badges, table heads, graph labels, stat labels, and compact metadata."
+      },
+      "mono": {
+        "displayName": "Code",
+        "purpose": "IDs, paths, protocol values, headers, filters, and message examples."
+      }
+    },
+    "shadows": [
+      {
+        "name": "panel-shadow",
+        "value": "0 2px 6px rgba(96, 115, 159, 0.16), 0 12px 32px rgba(96, 115, 159, 0.12)",
+        "purpose": "Ambient lift for major boards, cards, metadata sections, and tables."
+      }
+    ],
+    "motion": [
+      {
+        "name": "state-transition",
+        "value": "150ms-250ms ease-out",
+        "purpose": "Feedback for hover, focus, expansion, and state changes only."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "mobile",
+        "value": "640px"
+      },
+      {
+        "name": "content-wide",
+        "value": "1440px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Main create, save, or route action on an operator surface.",
+      "html": "<button class=\"ds-btn ds-btn-primary\">Save route</button>",
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;min-height:2.35rem;border:1px solid var(--border-strong,#c8d2e1);border-radius:6px;font:750 1rem/1 Inter,ui-sans-serif,system-ui,sans-serif;padding:.55rem .86rem;white-space:nowrap}.ds-btn-primary{border-color:var(--accent,#2337ff);background:var(--accent,#2337ff);color:#fff}.ds-btn-primary:hover{border-color:var(--accent-dark,#000d8a);background:var(--accent-dark,#000d8a)}.ds-btn-primary:focus-visible{outline:3px solid rgba(35,55,255,.18);outline-offset:2px}"
+    },
+    {
+      "name": "Default Button",
+      "kind": "button",
+      "refersTo": "button-default",
+      "description": "Secondary action for navigation, cancel, edit, or non-primary commands.",
+      "html": "<button class=\"ds-btn ds-btn-default\">Edit</button>",
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;min-height:2.35rem;border:1px solid var(--border-strong,#c8d2e1);border-radius:6px;font:750 1rem/1 Inter,ui-sans-serif,system-ui,sans-serif;padding:.55rem .86rem;white-space:nowrap}.ds-btn-default{background:var(--surface,#fff);color:var(--text,#222939)}.ds-btn-default:hover{border-color:var(--blue-gray,#60739f);background:var(--surface-muted,#f6f8fb);color:var(--ink,#0f1219)}.ds-btn-default:focus-visible{outline:3px solid rgba(35,55,255,.14);outline-offset:2px}"
+    },
+    {
+      "name": "Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Standard text field for ids, names, paths, URLs, and addresses.",
+      "html": "<label class=\"ds-field\"><span>Name</span><input class=\"ds-input\" value=\"navigation-feed\" /></label>",
+      "css": ".ds-field{display:grid;gap:.35rem;color:var(--ink,#0f1219);font:750 1rem/1.2 Inter,ui-sans-serif,system-ui,sans-serif}.ds-input{width:100%;min-height:2.45rem;border:1px solid var(--border-strong,#c8d2e1);border-radius:6px;background:var(--surface,#fff);color:var(--text,#222939);font:400 1rem/1.5 Inter,ui-sans-serif,system-ui,sans-serif;padding:.55rem .7rem}.ds-input:focus{border-color:var(--accent,#2337ff);outline:3px solid rgba(35,55,255,.12)}"
+    },
+    {
+      "name": "Status Badge",
+      "kind": "chip",
+      "refersTo": "badge",
+      "description": "Compact state label for live component status and enabled state.",
+      "html": "<span class=\"ds-badge ds-badge-success\">up</span>",
+      "css": ".ds-badge{display:inline-flex;align-items:center;min-height:1.35rem;border:1px solid var(--border-strong,#c8d2e1);border-radius:999px;background:var(--surface-muted,#f6f8fb);color:var(--muted-text,#555);font:800 .72rem/1 Inter,ui-sans-serif,system-ui,sans-serif;padding:.22rem .5rem;text-transform:uppercase}.ds-badge-success{border-color:rgba(15,122,79,.3);background:var(--success-bg,#e8f7ef);color:var(--success,#0f7a4f)}.ds-badge-warning{border-color:rgba(166,95,0,.3);background:var(--warning-bg,#fff4df);color:var(--warning,#a65f00)}.ds-badge-error{border-color:rgba(180,35,24,.3);background:var(--error-bg,#fff0ef);color:var(--error,#b42318)}"
+    },
+    {
+      "name": "Panel Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Major form, metadata, or dashboard container.",
+      "html": "<section class=\"ds-card\"><h3>Connector</h3><p>Route source data through a filtered durable buffer.</p></section>",
+      "css": ".ds-card{display:grid;gap:1rem;border:1px solid var(--border,#d9e0eb);border-radius:8px;background:var(--surface,#fff);box-shadow:0 2px 6px rgba(96,115,159,.16),0 12px 32px rgba(96,115,159,.12);color:var(--text,#222939);font:400 1rem/1.5 Inter,ui-sans-serif,system-ui,sans-serif;padding:18px}.ds-card h3{margin:0;color:var(--ink,#0f1219);font:800 1.12rem/1.2 Inter,ui-sans-serif,system-ui,sans-serif}.ds-card p{margin:0;color:var(--muted-text,#555)}"
+    },
+    {
+      "name": "Top Navigation Link",
+      "kind": "nav",
+      "refersTo": "nav-link",
+      "description": "Compact product navigation link with active dark inversion.",
+      "html": "<nav class=\"ds-nav\"><a class=\"ds-nav-link\" href=\"#\">docs</a><a class=\"ds-nav-link ds-nav-link-active\" href=\"#\">dashboard</a></nav>",
+      "css": ".ds-nav{display:flex;align-items:center;flex-wrap:wrap;gap:.35rem;font-family:Inter,ui-sans-serif,system-ui,sans-serif}.ds-nav-link{display:block;border-radius:6px;color:var(--muted-text,#555);font-size:.95rem;font-weight:700;padding:.58rem .72rem;text-decoration:none}.ds-nav-link:hover{background:var(--surface-muted,#f6f8fb);color:var(--ink,#0f1219)}.ds-nav-link-active{background:var(--ink,#0f1219)!important;color:#fff!important}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Quiet Bridge Console",
+    "overview": "Beacon extends the Open Ships visual system into an operational product surface. It uses the same white field, blue accent, gray text system, Inter/system sans typography, and compact technical tone as openships.ai, then tightens the density for repeated ship-board configuration work.\n\nThe design should feel like quiet industrial control: precise, stable, and readable under pressure. The interface is allowed to be dense because the domain is dense, but hierarchy must keep the source -> connector -> sink routing model obvious for operators, developers, and maritime AI systems.\n\nIt explicitly rejects generic SaaS dashboard styling, ornamental nautical theming, cloud-first marketing posture, heavy hero composition, and any treatment that makes routing state harder to scan.",
+    "keyCharacteristics": [
+      "White surfaces with cool gray tonal layers and a restrained blue action accent.",
+      "Compact navigation, tables, forms, and badges built for scanning rather than promotion.",
+      "High-confidence state language for up, degraded, error, disabled, restarting, queued, and replay behavior.",
+      "Existing Open Ships vocabulary carried through without decorative maritime motifs."
+    ],
+    "rules": [
+      {
+        "name": "The One Accent Rule",
+        "body": "The blue accent is for action and selection, not decoration. If a screen looks blue at a glance, the accent has been overused.",
+        "section": "colors"
+      },
+      {
+        "name": "The State Earns Color Rule",
+        "body": "Green, amber, and red appear only when they communicate live state, validation, or destructive consequence.",
+        "section": "colors"
+      },
+      {
+        "name": "The Product Sans Rule",
+        "body": "Do not introduce display fonts, serif accents, or decorative type treatments inside the operator UI.",
+        "section": "typography"
+      },
+      {
+        "name": "The Zero Tracking Rule",
+        "body": "Beacon uses uppercase labels with letter-spacing: 0; do not add wide-tracked eyebrows or marketing kickers.",
+        "section": "typography"
+      },
+      {
+        "name": "The Border-First Rule",
+        "body": "Reach for a one-pixel border before a shadow. Shadows are for major containers, not routine controls.",
+        "section": "elevation"
+      },
+      {
+        "name": "The No Glass Rule",
+        "body": "Backdrop blur belongs only to the fixed header treatment already in the system. Do not add glass cards or blurred decorative panels.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do preserve openships.ai's white surface, compact navigation, gray text system, blue accent, and practical documentation tone.",
+      "Do keep source -> connector -> sink visible whenever the task is about routing or setup.",
+      "Do use blue only for links, primary actions, focus, and active selection.",
+      "Do make degraded, disabled, restarting, queued, and error states explicit in text, not color alone.",
+      "Do favor dense, stable controls and tables for repeated operator workflows."
+    ],
+    "donts": [
+      "Don't drift away from the openships.ai visual system.",
+      "Don't use generic SaaS dashboard styling, ornamental nautical styling, cloud-first positioning, or heavy marketing composition.",
+      "Don't add wide-tracked section eyebrows, gradient text, glass cards, decorative motion, or full-saturation inactive states.",
+      "Don't add new border-left or border-right colored stripes greater than 1px; replace that pattern with full borders, badges, icons, or background tints when touching graph nodes.",
+      "Don't introduce display fonts, decorative icons, or invented controls where a standard product affordance already works."
+    ]
+  }
+}

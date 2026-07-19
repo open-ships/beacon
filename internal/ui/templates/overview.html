@@ -1,0 +1,27 @@
+{{define "content"}}
+<div class="overview-page">
+  <div class="page-heading">
+    <div>
+      <p class="eyebrow">{{.Kind}} overview</p>
+      <h1>{{.Heading}}</h1>
+      <p>{{.Description}}</p>
+    </div>
+    <a class="btn" href="{{.EditHref}}">Edit</a>
+  </div>
+
+  <section class="overview-card" aria-label="Configuration">
+    <div class="section-heading">
+      <h3>Configuration</h3>
+    </div>
+    <dl class="config-list">
+      {{range .ConfigRows}}
+      <dt>{{.Label}}</dt>
+      <dd>{{if .Code}}<code>{{.Value}}</code>{{else}}{{.Value}}{{end}}</dd>
+      {{end}}
+    </dl>
+  </section>
+
+  <div id="{{.LiveDOMID}}" class="overview-live"
+       hx-get="{{.LiveHref}}" hx-trigger="load, every 2s" hx-swap="outerHTML"></div>
+</div>
+{{end}}

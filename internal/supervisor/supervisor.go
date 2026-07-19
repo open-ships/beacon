@@ -111,7 +111,7 @@ type Supervisor struct {
 	runCancel context.CancelFunc
 
 	// reconcileMu serializes Reconcile and Stop bodies. It also guards
-	// `stopped`, `needsPurgeSweep`, and `prevConfigured`, all of which are
+	// `stopped`, `needsPurgeSweep`, and the prevConfigured* sets, all of which are
 	// only ever read/written from within those two methods (Statuses never
 	// touches them, so stateMu is not involved).
 	reconcileMu sync.Mutex
@@ -122,9 +122,11 @@ type Supervisor struct {
 	// the configured-connector id set shrinks, and is disarmed only after a
 	// fully successful sweep so a failed purge retries next Reconcile.
 	needsPurgeSweep bool
-	// prevConfigured is the configured-connector id set (enabled or not)
-	// seen by the previous Reconcile, used to detect shrinkage.
-	prevConfigured map[string]bool
+	// The previous configured sets include disabled components and let
+	// Reconcile distinguish deletion from disablement or a hot restart.
+	prevConfigured        map[string]bool
+	prevConfiguredSources map[string]bool
+	prevConfiguredSinks   map[string]bool
 
 	// stateMu guards sources/sinks/connectors/errored only. Held briefly for
 	// map reads/writes — never across a component constructor or Stop()
@@ -198,6 +200,14 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 			desiredConnectors[v.ID] = v
 		}
 	}
+	configuredSources := map[string]bool{}
+	for _, v := range cfg.Sources {
+		configuredSources[v.ID] = true
+	}
+	configuredSinks := map[string]bool{}
+	for _, v := range cfg.Sinks {
+		configuredSinks[v.ID] = true
+	}
 	// configuredConnectors covers every connector in config regardless of
 	// Enabled — used to distinguish "disabled" (queue survives) from
 	// "deleted" (queue is purged).
@@ -211,18 +221,28 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	// first-Reconcile arm set in New for deletions that happened while the
 	// process was down) catches every deletion without running the sweep on
 	// the steady-state path.
-	// deletedConnectors collects every id that was configured last Reconcile
-	// but is absent from config now — i.e. actually deleted, not merely
-	// disabled (configuredConnectors, like prevConfigured, includes disabled
-	// entries). Used below, after the stop phase, to drop their stats/gauge
-	// entries unconditionally.
-	var deletedConnectors []string
+	// Collect ids that were configured last Reconcile but are absent now. These
+	// components were actually deleted, rather than merely disabled. Their
+	// stats are dropped below after the stop phase.
+	var deletedSources, deletedSinks, deletedConnectors []string
+	for id := range s.prevConfiguredSources {
+		if !configuredSources[id] {
+			deletedSources = append(deletedSources, id)
+		}
+	}
+	for id := range s.prevConfiguredSinks {
+		if !configuredSinks[id] {
+			deletedSinks = append(deletedSinks, id)
+		}
+	}
 	for id := range s.prevConfigured {
 		if !configuredConnectors[id] {
 			s.needsPurgeSweep = true
 			deletedConnectors = append(deletedConnectors, id)
 		}
 	}
+	s.prevConfiguredSources = configuredSources
+	s.prevConfiguredSinks = configuredSinks
 	s.prevConfigured = configuredConnectors
 
 	// --- Compute the stop set under stateMu, mutating the maps there, but
@@ -307,6 +327,12 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 		s.reg.Remove(id)
 		s.met.RemoveConnector(id)
 	}
+	for _, id := range deletedSources {
+		s.reg.RemoveSource(id)
+	}
+	for _, id := range deletedSinks {
+		s.reg.RemoveSink(id)
+	}
 
 	// --- Purge sweep: connectors whose storage exists but who are absent
 	// from config entirely (deleted, not merely disabled) lose their durable
@@ -362,7 +388,7 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 			s.fail("source", id, fmt.Errorf("source %q: type %q requires a CAN bus manager but none is configured", id, want.Type))
 			continue
 		}
-		rt, err := source.New(s.runCtx, want, s.bus, s.log, s.met)
+		rt, err := source.New(s.runCtx, want, s.bus, s.log, s.met, s.reg)
 		if err != nil {
 			s.fail("source", id, err)
 			continue
@@ -427,9 +453,13 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 
 // needsBus reports whether a source/sink type requires a *bus.Manager.
 // model.SourceType and model.SinkType use identical literal values for the
-// CAN variants ("socketcan", "usbcan"), so one check serves both.
+// CAN variants ("socketcan", "usbcan"), so one check serves both. The
+// tcp_gateway sink also acquires from the manager (a full claiming client
+// over TCP); the tcp/udp *sources* deliberately do not — they are passive,
+// read-only listeners via n2k.Receive and never claim an address.
 func needsBus(t string) bool {
-	return t == string(model.SourceSocketCAN) || t == string(model.SourceUSBCAN)
+	return t == string(model.SourceSocketCAN) || t == string(model.SourceUSBCAN) ||
+		t == string(model.SinkTCPGateway)
 }
 
 // unavailableErr describes why a connector's endpoints aren't running,
@@ -482,6 +512,17 @@ func (s *Supervisor) Statuses() []Status {
 	}
 	out = append(out, s.errored...)
 	return out
+}
+
+// BusDevices returns every NMEA-2000 device currently observed across the
+// running CAN endpoints (empty when no CAN bus is configured or connected).
+// n2k v0.2.0's client tracks these automatically from address-claim traffic,
+// so this is a free read once a bus client is up.
+func (s *Supervisor) BusDevices() []bus.DeviceInfo {
+	if s.bus == nil {
+		return nil
+	}
+	return s.bus.Devices()
 }
 
 // Stop stops every running component (connectors, then sinks, then sources)

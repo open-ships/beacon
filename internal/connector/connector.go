@@ -147,6 +147,7 @@ func (c *Connector) intake(ctx context.Context, in <-chan *msg.Envelope, unsub f
 	defer flush()
 
 	ingest := func(e *msg.Envelope) {
+		c.st.RecordConnectorEvent(c.cfg.ID, "received", e)
 		c.met.ConnectorMessages(ctx, c.cfg.ID, "received", 1)
 		match, err := c.chain.Match(e)
 		if err != nil {
@@ -250,6 +251,8 @@ func (c *Connector) deliver(ctx context.Context) {
 					c.met.ConnectorMessages(ctx, c.cfg.ID, "delivered", 1)
 					c.met.ConnectorBytes(ctx, c.cfg.ID, int64(e.Env.SizeBytes()))
 					c.st.Record(c.cfg.ID, 1, int64(e.Env.SizeBytes()))
+					c.st.RecordSink(c.cfg.SinkID, c.cfg.ID, e.Env)
+					c.st.RecordConnectorEvent(c.cfg.ID, "delivered", e.Env)
 				}
 			default:
 				c.log.Error("sink implements neither Pusher nor Broadcaster")
@@ -274,6 +277,8 @@ func (c *Connector) pushAll(ctx context.Context, p sink.Pusher, entries []queue.
 					c.met.ConnectorMessages(ctx, c.cfg.ID, "skipped", 1)
 				} else {
 					c.met.ConnectorMessages(ctx, c.cfg.ID, "delivered", 1)
+					c.st.RecordSink(c.cfg.SinkID, c.cfg.ID, e.Env)
+					c.st.RecordConnectorEvent(c.cfg.ID, "delivered", e.Env)
 				}
 				c.met.ConnectorBytes(ctx, c.cfg.ID, int64(e.Env.SizeBytes()))
 				c.st.Record(c.cfg.ID, 1, int64(e.Env.SizeBytes()))
