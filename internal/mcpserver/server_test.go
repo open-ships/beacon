@@ -203,13 +203,13 @@ func TestConfigureInspectAndDeleteThroughTools(t *testing.T) {
 
 	tm.stats.Record("navigation", 4, 512)
 	tm.stats.SetQueue("navigation", 3, 384)
-	result = callTool(t, tm.client, "get_delivery_statistics", map[string]any{"connector_id": "navigation"})
+	result = callTool(t, tm.client, "get_delivery_metrics", map[string]any{"connector_id": "navigation"})
 	if result.IsError {
-		t.Fatalf("get_delivery_statistics: %s", toolErrorText(result))
+		t.Fatalf("get_delivery_metrics: %s", toolErrorText(result))
 	}
-	delivery := decodeStructured[deliveryStatisticsOutput](t, result).Connectors["navigation"]
+	delivery := decodeStructured[deliveryMetricsOutput](t, result).Connectors["navigation"]
 	if delivery.TotalMessages != 4 || delivery.TotalBytes != 512 || delivery.PendingMessages != 3 || delivery.PendingBytes != 384 {
-		t.Fatalf("delivery statistics = %+v", delivery)
+		t.Fatalf("delivery metrics = %+v", delivery)
 	}
 
 	result = callTool(t, tm.client, "get_health", map[string]any{})

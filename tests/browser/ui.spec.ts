@@ -130,7 +130,7 @@ test('MCP reference is available from the header and stays local', async ({ page
   await expect(page.getByText('gemini mcp add beacon http://127.0.0.1:2112/mcp --transport http', { exact: true })).toBeVisible();
   await expect(page.getByText('.vscode/mcp.json', { exact: true })).toBeVisible();
   await expect(page.getByText('/mcp', { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole('table').getByText('get_delivery_statistics', { exact: true })).toBeVisible();
+  await expect(page.getByRole('table').getByText('get_delivery_metrics', { exact: true })).toBeVisible();
   await expect(page.getByRole('table').getByText('get_source_metrics', { exact: true })).toBeVisible();
   await expect(page.getByRole('table').getByText('commit_source_traffic_baseline', { exact: true })).toBeVisible();
   await expect(page.getByText('offline ready', { exact: true })).toBeVisible();

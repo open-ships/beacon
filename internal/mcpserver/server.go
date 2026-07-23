@@ -41,7 +41,7 @@ var toolCatalog = []ToolInfo{
 	{Name: "delete_sink", Access: "delete", Description: "Delete an unreferenced sink."},
 	{Name: "delete_connector", Access: "delete", Description: "Delete a connector route and its route-owned queue."},
 	{Name: "get_health", Access: "read", Description: "Read rolled-up health and live source, sink, and connector states."},
-	{Name: "get_delivery_statistics", Access: "read", Description: "Read delivery rates, totals, pending delivery, retained history, limits, drops, and errors."},
+	{Name: "get_delivery_metrics", Access: "read", Description: "Read delivery rates, totals, pending delivery, retained history, limits, drops, and errors."},
 	{Name: "get_source_metrics", Access: "read", Description: "Inspect all PGNs by source and sender, including unknown raw payloads, timing, load, decode quality, addressing, gaps, anomalies, field distributions, approved baselines, and lifecycle events."},
 	{Name: "commit_source_traffic_baseline", Access: "write", Description: "Replace one source's persistent expected-traffic baseline with every PGN stream observed since Beacon started."},
 	{Name: "clear_source_traffic_baseline", Access: "delete", Description: "Clear one source's approved traffic baseline without deleting its observations or event history."},
@@ -287,7 +287,7 @@ type healthOutput struct {
 	Components []supervisor.Status `json:"components"`
 }
 
-type deliveryStatisticsInput struct {
+type deliveryMetricsInput struct {
 	ConnectorID string `json:"connector_id,omitempty" jsonschema:"Optional connector route id. Omit to return every configured connector."`
 }
 
@@ -314,11 +314,11 @@ type sourceTrafficBaselineOutput struct {
 	Baselines []stats.SourceTrafficBaseline `json:"baselines"`
 }
 
-type deliveryStatisticsOutput struct {
-	Connectors map[string]deliveryStatistics `json:"connectors"`
+type deliveryMetricsOutput struct {
+	Connectors map[string]deliveryMetrics `json:"connectors"`
 }
 
-type deliveryStatistics struct {
+type deliveryMetrics struct {
 	TotalMessages    int64            `json:"total_messages"`
 	TotalBytes       int64            `json:"total_bytes"`
 	MsgPerSec        float64          `json:"msg_per_sec"`
@@ -343,8 +343,8 @@ type deliveryStatistics struct {
 	DepthHistory     []int64          `json:"pending_history,omitempty"`
 }
 
-func deliveryStatisticsFromSnapshot(v stats.Snapshot) deliveryStatistics {
-	out := deliveryStatistics{
+func deliveryMetricsFromSnapshot(v stats.Snapshot) deliveryMetrics {
+	out := deliveryMetrics{
 		TotalMessages: v.TotalMessages, TotalBytes: v.TotalBytes,
 		MsgPerSec: v.MsgPerSec, BytesPerSec: v.BytesPerSec,
 		PendingMessages: v.QueueDepth, PendingBytes: v.QueueBytes,
@@ -467,24 +467,24 @@ func registerTools(server *sdkmcp.Server, svc *config.Service, reg *stats.Regist
 			return nil, healthOutput{Status: supervisor.RollupHealth(components), Components: components}, nil
 		})
 
-	sdkmcp.AddTool(server, tool("get_delivery_statistics", "Get delivery statistics", readAnnotations),
-		func(ctx context.Context, _ *sdkmcp.CallToolRequest, in deliveryStatisticsInput) (*sdkmcp.CallToolResult, deliveryStatisticsOutput, error) {
-			out := deliveryStatisticsOutput{Connectors: map[string]deliveryStatistics{}}
+	sdkmcp.AddTool(server, tool("get_delivery_metrics", "Get delivery metrics", readAnnotations),
+		func(ctx context.Context, _ *sdkmcp.CallToolRequest, in deliveryMetricsInput) (*sdkmcp.CallToolResult, deliveryMetricsOutput, error) {
+			out := deliveryMetricsOutput{Connectors: map[string]deliveryMetrics{}}
 			if in.ConnectorID != "" {
 				if _, err := svc.GetConnector(ctx, in.ConnectorID); err != nil {
-					return nil, deliveryStatisticsOutput{}, publicError(log, err)
+					return nil, deliveryMetricsOutput{}, publicError(log, err)
 				}
 				snap, _ := reg.Snapshot(in.ConnectorID)
-				out.Connectors[in.ConnectorID] = deliveryStatisticsFromSnapshot(snap)
+				out.Connectors[in.ConnectorID] = deliveryMetricsFromSnapshot(snap)
 				return nil, out, nil
 			}
 			connectors, err := svc.ListConnectors(ctx)
 			if err != nil {
-				return nil, deliveryStatisticsOutput{}, publicError(log, err)
+				return nil, deliveryMetricsOutput{}, publicError(log, err)
 			}
 			all := reg.All()
 			for _, connector := range connectors {
-				out.Connectors[connector.ID] = deliveryStatisticsFromSnapshot(all[connector.ID])
+				out.Connectors[connector.ID] = deliveryMetricsFromSnapshot(all[connector.ID])
 			}
 			return nil, out, nil
 		})

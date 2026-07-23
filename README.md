@@ -309,7 +309,7 @@ take away the control surface used to repair it.
 |---|---|---|
 | Dashboard | `:2112/ui` | Route graph, pending/retained state, bus diagnostics, device commissioning |
 | Manual | `:2112/ui/docs` | Offline getting started, CAN setup, concepts, filters, API, troubleshooting |
-| MCP endpoint | `:2112/mcp` | Streamable HTTP tools for agent configuration, health, delivery, and source PGN statistics |
+| MCP endpoint | `:2112/mcp` | Streamable HTTP tools for agent configuration, health, delivery, and source PGN metrics |
 | MCP reference | `:2112/ui/mcp` | Embedded connection guide, tool catalog, and call examples |
 | REST API | `:2112/api/v1/...` | Configuration, live state, PGN catalog, inventory, commissioning |
 | API reference | `:2112/api/docs` | Interactive, embedded OpenAPI 3.1 documentation |
@@ -331,7 +331,7 @@ An MCP client can connect without a cloud relay or companion process:
 
 The MCP server exposes twelve tools to read the complete configuration, create or
 update sources, sinks, and connector routes, delete each entity type, and read
-health, delivery statistics, or per-source PGN traffic metrics. Operators and
+health, delivery metrics, or per-source PGN traffic metrics. Operators and
 agents can approve or clear persistent expected-traffic baselines for each
 source. It uses the same validation, SQLite persistence, and hot reconciliation as the UI and REST API.
 The server, tool schemas, and reference page are all embedded in the Beacon

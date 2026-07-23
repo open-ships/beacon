@@ -24,7 +24,7 @@ session headers:
 
 The tools are `get_config`, `put_source`, `put_sink`, `put_connector`,
 `delete_source`, `delete_sink`, `delete_connector`, `get_health`, and
-`get_delivery_statistics`, plus `get_source_metrics`,
+`get_delivery_metrics`, plus `get_source_metrics`,
 `commit_source_traffic_baseline`, and `clear_source_traffic_baseline`. Source
 metrics can be filtered by configured source id, PGN, and NMEA 2000 source
 address. They include learned timing/jitter, rates and estimated bus load,

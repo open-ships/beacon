@@ -167,9 +167,9 @@
         <pre class="mcp-code"><code>{"name":"get_health","arguments":{}}</code></pre>
       </article>
       <article>
-        <h4>Read one route's delivery statistics</h4>
+        <h4>Read one route's delivery metrics</h4>
         <pre class="mcp-code"><code>{
-  "name": "get_delivery_statistics",
+  "name": "get_delivery_metrics",
   "arguments": {"connector_id": "navigation"}
 }</code></pre>
       </article>
@@ -195,7 +195,7 @@
     <dl class="config-list">
       <dt>Writes</dt><dd>Validated, persisted to SQLite, and reconciled against the running graph in the same call.</dd>
       <dt>Tool errors</dt><dd>Invalid ids, types, references, CEL, durations, and in-use deletes return correctable MCP tool errors.</dd>
-      <dt>Statistics</dt><dd>Reports pending delivery separately from retained history, plus per-source/sender PGN rates, payload sizes, learned gaps, anomalies, and decoded value distributions.</dd>
+      <dt>Metrics</dt><dd>Reports pending delivery separately from retained history, plus per-source/sender PGN rates, payload sizes, learned gaps, anomalies, and decoded value distributions.</dd>
       <dt>Network</dt><dd>No cloud service, CDN, remote schema, telemetry endpoint, or internet connection is required.</dd>
     </dl>
   </section>
