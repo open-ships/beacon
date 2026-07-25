@@ -6,6 +6,7 @@ golangci_lint_version := "v2.12.0"
 secure_go_toolchain := "go1.25.12"
 govulncheck_version := "v1.5.0"
 gosec_version := "v2.27.1"
+air_version := "v1.64.5"
 
 # list available recipes
 default:
@@ -13,6 +14,12 @@ default:
 
 # ensure dev tools are installed at the right versions
 setup:
+    @if command -v air >/dev/null && go version -m "$(command -v air)" 2>&1 | grep -q "github.com/air-verse/air[[:space:]]*{{air_version}}"; then \
+        echo "air {{air_version}} already installed"; \
+    else \
+        echo "Installing air {{air_version}}..."; \
+        go install github.com/air-verse/air@{{air_version}}; \
+    fi
     @if command -v golangci-lint >/dev/null && golangci-lint --version 2>&1 | grep -q "{{trim_start_match(golangci_lint_version, "v")}}"; then \
         echo "golangci-lint {{golangci_lint_version}} already installed"; \
     else \
@@ -59,6 +66,11 @@ test-race:
 # run the binary (pass args after --)
 run *args:
     go run {{cmd}} {{args}}
+
+# run with automatic reloads when Go or embedded UI files change
+dev *args:
+    @if ! command -v air >/dev/null; then echo "air is required; run 'just setup' first"; exit 1; fi
+    air -- {{args}}
 
 # format all Go source files
 fmt:

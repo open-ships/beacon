@@ -7,8 +7,10 @@ list evaluates to `true`. An empty list passes everything.
 
 ## Variables
 
-Every expression sees a single variable, `msg`, matching the envelope shape
-(see the concepts page):
+Every expression sees a single variable, `msg`. This is Beacon's convenient
+flat filtering view; the external MQTT/SSE/WS/TCP envelope separately nests PGN
+and native n2k `MessageInfo` fields under `payload`, Beacon context under
+`metadata`, and the assembled CAN bytes under top-level `raw`:
 
 | Variable | CEL type | Notes |
 |---|---|---|
@@ -25,7 +27,7 @@ Every expression sees a single variable, `msg`, matching the envelope shape
 | `msg.manufacturer_code` | int | proprietary manufacturer code, or zero |
 | `msg.decode_status` | string | `decoded` or `unknown` |
 | `msg.physical` | map | scaled fields keyed like payload, each with `value`, `unit`, and `physical_quantity` |
-| `msg.payload` | map | decoded PGN fields, keyed by their JSON field name (camelCase, e.g. `heading`, `speedWaterReferenced`) |
+| `msg.payload` | map | complete native n2k struct JSON, including every exported `info` field |
 
 `msg.payload`'s keys depend entirely on which PGN the message is — check
 the specific PGN's decoded field names (the same names its JSON `payload`

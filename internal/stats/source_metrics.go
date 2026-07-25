@@ -16,7 +16,6 @@ const (
 	sourceIntervalSamples = 64
 	maxSourceFields       = 128
 	maxCategoryValues     = 16
-	anomalyZThreshold     = 6.0
 )
 
 // FieldDistribution is the process-local distribution of one decoded field
@@ -44,86 +43,67 @@ type FieldDistribution struct {
 	MissingMessages     int64            `json:"missing_messages"`
 	AvailabilityPercent float64          `json:"availability_percent"`
 	InvalidCount        int64            `json:"invalid_count,omitempty"`
-	OutOfRangeCount     int64            `json:"out_of_range_count,omitempty"`
 	NovelValueCount     int64            `json:"novel_value_count,omitempty"`
 	CatalogMinimum      *float64         `json:"catalog_minimum,omitempty"`
 	CatalogMaximum      *float64         `json:"catalog_maximum,omitempty"`
 	Values              map[string]int64 `json:"values,omitempty"`
 	Other               int64            `json:"other,omitempty"`
-	Anomalous           bool             `json:"anomalous"`
-	AnomalyScore        float64          `json:"anomaly_score,omitempty"`
-	AnomalyCount        int64            `json:"anomaly_count,omitempty"`
-	LastAnomalyAt       *time.Time       `json:"last_anomaly_at,omitempty"`
-	AnomalyReason       string           `json:"anomaly_reason,omitempty"`
 }
 
 // SourcePGNMetric describes one distinct stream on a configured source. The
 // CAN source address is part of the identity so two devices sending the same
 // PGN remain independently observable when one stops transmitting.
 type SourcePGNMetric struct {
-	Observed                 bool                   `json:"observed"`
-	SourceID                 string                 `json:"source_id"`
-	PGN                      uint32                 `json:"pgn"`
-	PGNName                  string                 `json:"pgn_name,omitempty"`
-	Variant                  string                 `json:"variant,omitempty"`
-	Transport                string                 `json:"transport,omitempty"`
-	ManufacturerCode         *uint16                `json:"manufacturer_code,omitempty"`
-	DecodeStatus             string                 `json:"decode_status"`
-	DecodeStatuses           map[string]int64       `json:"decode_statuses"`
-	DecodeComplete           int64                  `json:"decode_complete"`
-	DecodeIncomplete         int64                  `json:"decode_incomplete"`
-	DecodeFallback           int64                  `json:"decode_fallback"`
-	UnknownMessages          int64                  `json:"unknown_messages"`
-	MissingDecodedFields     map[string]int64       `json:"missing_decoded_fields,omitempty"`
-	SourceAddress            uint8                  `json:"source_address"`
-	DeviceName               *uint64                `json:"device_name,omitempty"`
-	DeviceNameHex            string                 `json:"device_name_hex,omitempty"`
-	Messages                 int64                  `json:"messages"`
-	FirstSeen                time.Time              `json:"first_seen"`
-	LastSeen                 time.Time              `json:"last_seen"`
-	AgeSeconds               float64                `json:"age_seconds"`
-	FrequencyHz              float64                `json:"frequency_hz"`
-	ExpectedPeriodSeconds    float64                `json:"expected_period_seconds"`
-	ShortestPeriodSeconds    float64                `json:"shortest_period_seconds,omitempty"`
-	LongestPeriodSeconds     float64                `json:"longest_period_seconds,omitempty"`
-	PeriodP95Seconds         float64                `json:"period_p95_seconds,omitempty"`
-	PeriodP99Seconds         float64                `json:"period_p99_seconds,omitempty"`
-	JitterMADSeconds         float64                `json:"jitter_mad_seconds,omitempty"`
-	JitterPercent            float64                `json:"jitter_percent,omitempty"`
-	BurstCount               int64                  `json:"burst_count"`
-	RecentMessagesPerSec     float64                `json:"recent_messages_per_sec"`
-	RecentBytesPerSec        float64                `json:"recent_bytes_per_sec"`
-	EstimatedBusLoadPercent  float64                `json:"estimated_bus_load_percent"`
-	TrafficSharePercent      float64                `json:"traffic_share_percent"`
-	Expected                 bool                   `json:"expected"`
-	BaselineStatus           string                 `json:"baseline_status"`
-	BaselineIssues           []string               `json:"baseline_issues,omitempty"`
-	BaselineApprovedAt       *time.Time             `json:"baseline_approved_at,omitempty"`
-	BaselineFrequencyHz      float64                `json:"baseline_frequency_hz,omitempty"`
-	BaselineTolerancePercent float64                `json:"baseline_tolerance_percent,omitempty"`
-	FrequencyDriftPercent    float64                `json:"frequency_drift_percent,omitempty"`
-	PayloadBytesLast         int64                  `json:"payload_bytes_last"`
-	PayloadBytesMin          int64                  `json:"payload_bytes_min"`
-	PayloadBytesMax          int64                  `json:"payload_bytes_max"`
-	PayloadBytesMean         float64                `json:"payload_bytes_mean"`
-	GapActive                bool                   `json:"gap_active"`
-	GapRatio                 float64                `json:"gap_ratio,omitempty"`
-	GapCount                 int64                  `json:"gap_count"`
-	LastGapAt                *time.Time             `json:"last_gap_at,omitempty"`
-	LongestGapSeconds        float64                `json:"longest_gap_seconds,omitempty"`
-	AnomalyActive            bool                   `json:"anomaly_active"`
-	RecentAnomaly            bool                   `json:"recent_anomaly"`
-	AnomalyCount             int64                  `json:"anomaly_count"`
-	LastAnomalyAt            *time.Time             `json:"last_anomaly_at,omitempty"`
-	AnomalyScore             float64                `json:"anomaly_score,omitempty"`
-	AnomalyField             string                 `json:"anomaly_field,omitempty"`
-	AnomalyReason            string                 `json:"anomaly_reason,omitempty"`
-	Status                   string                 `json:"status"`
-	DestinationCounts        map[string]int64       `json:"destination_counts"`
-	PriorityCounts           map[string]int64       `json:"priority_counts"`
-	IdentityChanges          int64                  `json:"identity_changes"`
-	Raw                      *RawPayloadDiagnostics `json:"raw,omitempty"`
-	Fields                   []FieldDistribution    `json:"fields,omitempty"`
+	Observed                bool                   `json:"observed"`
+	SourceID                string                 `json:"source_id"`
+	PGN                     uint32                 `json:"pgn"`
+	PGNName                 string                 `json:"pgn_name,omitempty"`
+	Variant                 string                 `json:"variant,omitempty"`
+	Transport               string                 `json:"transport,omitempty"`
+	ManufacturerCode        *uint16                `json:"manufacturer_code,omitempty"`
+	DecodeStatus            string                 `json:"decode_status"`
+	DecodeStatuses          map[string]int64       `json:"decode_statuses"`
+	DecodeComplete          int64                  `json:"decode_complete"`
+	DecodeIncomplete        int64                  `json:"decode_incomplete"`
+	DecodeFallback          int64                  `json:"decode_fallback"`
+	UnknownMessages         int64                  `json:"unknown_messages"`
+	MissingDecodedFields    map[string]int64       `json:"missing_decoded_fields,omitempty"`
+	SourceAddress           uint8                  `json:"source_address"`
+	DeviceName              *uint64                `json:"device_name,omitempty"`
+	DeviceNameHex           string                 `json:"device_name_hex,omitempty"`
+	Messages                int64                  `json:"messages"`
+	FirstSeen               time.Time              `json:"first_seen"`
+	LastSeen                time.Time              `json:"last_seen"`
+	AgeSeconds              float64                `json:"age_seconds"`
+	FrequencyHz             float64                `json:"frequency_hz"`
+	ExpectedPeriodSeconds   float64                `json:"expected_period_seconds"`
+	ShortestPeriodSeconds   float64                `json:"shortest_period_seconds,omitempty"`
+	LongestPeriodSeconds    float64                `json:"longest_period_seconds,omitempty"`
+	PeriodP90Seconds        float64                `json:"period_p90_seconds,omitempty"`
+	PeriodP95Seconds        float64                `json:"period_p95_seconds,omitempty"`
+	PeriodP99Seconds        float64                `json:"period_p99_seconds,omitempty"`
+	JitterMADSeconds        float64                `json:"jitter_mad_seconds,omitempty"`
+	JitterPercent           float64                `json:"jitter_percent,omitempty"`
+	BurstCount              int64                  `json:"burst_count"`
+	RecentMessagesPerSec    float64                `json:"recent_messages_per_sec"`
+	RecentBytesPerSec       float64                `json:"recent_bytes_per_sec"`
+	EstimatedBusLoadPercent float64                `json:"estimated_bus_load_percent"`
+	TrafficSharePercent     float64                `json:"traffic_share_percent"`
+	PayloadBytesLast        int64                  `json:"payload_bytes_last"`
+	PayloadBytesMin         int64                  `json:"payload_bytes_min"`
+	PayloadBytesMax         int64                  `json:"payload_bytes_max"`
+	PayloadBytesMean        float64                `json:"payload_bytes_mean"`
+	GapActive               bool                   `json:"gap_active"`
+	GapRatio                float64                `json:"gap_ratio,omitempty"`
+	GapCount                int64                  `json:"gap_count"`
+	LastGapAt               *time.Time             `json:"last_gap_at,omitempty"`
+	LongestGapSeconds       float64                `json:"longest_gap_seconds,omitempty"`
+	Status                  string                 `json:"status"`
+	DestinationCounts       map[string]int64       `json:"destination_counts"`
+	PriorityCounts          map[string]int64       `json:"priority_counts"`
+	IdentityChanges         int64                  `json:"identity_changes"`
+	Raw                     *RawPayloadDiagnostics `json:"raw,omitempty"`
+	Fields                  []FieldDistribution    `json:"fields,omitempty"`
 }
 
 type sourceStreamKey struct {
@@ -145,7 +125,6 @@ type sourceDeviceKey struct {
 type sourceEventState struct {
 	messages        int64
 	gapCount        int64
-	anomalyCount    int64
 	identityChanges int64
 	decodeStatus    string
 	payloadLengths  int
@@ -197,11 +176,6 @@ type sourceField struct {
 	values           map[string]int64
 	lastCategory     string
 	other            int64
-	anomalous        bool
-	score            float64
-	anomalies        int64
-	lastAt           time.Time
-	reason           string
 	lowerBound       *float64
 	upperBound       *float64
 	numericSamples   [sourceIntervalSamples]float64
@@ -210,7 +184,6 @@ type sourceField struct {
 	presentMessages  int64
 	missingMessages  int64
 	invalidCount     int64
-	outOfRangeCount  int64
 	novelValueCount  int64
 	lastSeen         time.Time
 	lastChanged      time.Time
@@ -251,14 +224,6 @@ type sourceStream struct {
 	gapCount   int64
 	lastGap    time.Time
 	longestGap time.Duration
-
-	anomalyActive       bool
-	anomalyCount        int64
-	lastAnomaly         time.Time
-	currentAnomalyScore float64
-	lastAnomalyScore    float64
-	lastAnomalyField    string
-	lastAnomalyReason   string
 }
 
 func (s *sourceStream) addInterval(value time.Duration) {
@@ -273,7 +238,7 @@ func (s *sourceStream) sourceEventState() sourceEventState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	state := sourceEventState{
-		messages: s.messages, gapCount: s.gapCount, anomalyCount: s.anomalyCount,
+		messages: s.messages, gapCount: s.gapCount,
 		identityChanges: s.identityChanges, decodeStatus: s.lastDecodeStatus,
 		payloadLengths: len(s.wire.lengths),
 	}
@@ -427,11 +392,6 @@ func (s *sourceStream) record(now time.Time, e *msg.Envelope) {
 	for _, missing := range e.Decode.Missing {
 		s.missingDecodedFields[missing]++
 	}
-	s.anomalyActive = false
-	s.currentAnomalyScore = 0
-	for _, field := range s.fields {
-		field.anomalous = false
-	}
 
 	observedFields := make(map[string]bool)
 	physicalNames := make([]string, 0, len(e.Physical))
@@ -448,9 +408,7 @@ func (s *sourceStream) record(now time.Time, e *msg.Envelope) {
 		field.lowerBound = cloneFloat(value.Minimum)
 		field.upperBound = cloneFloat(value.Maximum)
 		observedFields[name] = true
-		if field.recordNumeric(now, value.Value, true) {
-			s.noteAnomaly(now, name, field.score, field.reason)
-		}
+		field.recordNumeric(now, value.Value)
 	}
 
 	values := map[string]any{}
@@ -473,9 +431,7 @@ func (s *sourceStream) record(now time.Time, e *msg.Envelope) {
 			field := s.field(name, "number", "")
 			if field != nil {
 				observedFields[name] = true
-				if field.recordNumeric(now, value, true) {
-					s.noteAnomaly(now, name, field.score, field.reason)
-				}
+				field.recordNumeric(now, value)
 			}
 		case string:
 			if field := s.field(name, "category", ""); field != nil {
@@ -559,18 +515,12 @@ func (s *sourceStream) field(name, kind, unit string) *sourceField {
 	return field
 }
 
-func (f *sourceField) recordNumeric(now time.Time, value float64, detect bool) bool {
-	f.anomalous = false
-	f.score = 0
-	f.reason = ""
+func (f *sourceField) recordNumeric(now time.Time, value float64) {
 	f.presentMessages++
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		f.invalidCount++
 		f.lastSeen = now
-		return false
-	}
-	if detect {
-		f.detectAnomaly(value)
+		return
 	}
 	if f.numeric.count > 0 {
 		change := math.Abs(value - f.numeric.last)
@@ -591,61 +541,6 @@ func (f *sourceField) recordNumeric(now time.Time, value float64, detect bool) b
 		f.numericLen++
 	}
 	f.lastSeen = now
-	if f.anomalous {
-		f.anomalies++
-		f.lastAt = now
-		if f.reason == "below catalog minimum" || f.reason == "above catalog maximum" {
-			f.outOfRangeCount++
-		}
-	}
-	return f.anomalous
-}
-
-func (f *sourceField) detectAnomaly(value float64) {
-	if f.lowerBound != nil && value < *f.lowerBound {
-		f.anomalous = true
-		f.reason = "below catalog minimum"
-		f.score = 1e9
-		return
-	}
-	if f.upperBound != nil && value > *f.upperBound {
-		f.anomalous = true
-		f.reason = "above catalog maximum"
-		f.score = 1e9
-		return
-	}
-	if f.numeric.count < 5 {
-		return
-	}
-	sd := f.numeric.stddev()
-	if sd > 1e-12 {
-		f.score = math.Abs(value-f.numeric.mean) / sd
-		if f.score >= anomalyZThreshold {
-			f.anomalous = true
-			f.reason = fmt.Sprintf("value changed %.1f standard deviations from baseline", f.score)
-			return
-		}
-	}
-	change := math.Abs(value - f.numeric.last)
-	if f.changes.count >= 5 {
-		changeSD := f.changes.stddev()
-		if changeSD > 1e-12 {
-			changeScore := (change - f.changes.mean) / changeSD
-			if changeScore > f.score {
-				f.score = changeScore
-			}
-			if changeScore >= anomalyZThreshold {
-				f.anomalous = true
-				f.reason = fmt.Sprintf("step change was %.1f standard deviations above normal", changeScore)
-				return
-			}
-		}
-	}
-	if sd <= 1e-12 && change > math.Max(math.Abs(f.numeric.mean)*0.5, 1) {
-		f.anomalous = true
-		f.score = anomalyZThreshold
-		f.reason = "large change from a stable baseline"
-	}
 }
 
 func (f *sourceField) recordCategory(now time.Time, value string) {
@@ -669,26 +564,13 @@ func (f *sourceField) recordCategory(now time.Time, value string) {
 	f.lastSeen = now
 }
 
-func (s *sourceStream) noteAnomaly(now time.Time, field string, score float64, reason string) {
-	if !s.anomalyActive {
-		s.anomalyCount++
-	}
-	s.anomalyActive = true
-	s.lastAnomaly = now
-	if score >= s.currentAnomalyScore {
-		s.currentAnomalyScore = score
-		s.lastAnomalyScore = score
-		s.lastAnomalyField = field
-		s.lastAnomalyReason = reason
-	}
-}
-
 func (s *sourceStream) snapshot(now time.Time) SourcePGNMetric {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	intervals := s.intervalValues()
 	expected := medianInterval(intervals)
+	periodP90 := durationPercentile(intervals, 0.90)
 	periodP95 := durationPercentile(intervals, 0.95)
 	periodP99 := durationPercentile(intervals, 0.99)
 	jitterMAD := intervalMAD(intervals, expected)
@@ -710,21 +592,10 @@ func (s *sourceStream) snapshot(now time.Time) SourcePGNMetric {
 	if expected > 0 {
 		gapRatio = float64(age) / float64(expected)
 	}
-	recentWindow := time.Minute
-	if candidate := 3 * expected; candidate > recentWindow {
-		recentWindow = candidate
-	}
-	if recentWindow > 10*time.Minute {
-		recentWindow = 10 * time.Minute
-	}
-	recentAnomaly := !s.lastAnomaly.IsZero() && now.Sub(s.lastAnomaly) <= recentWindow
 	recentMessages, recentBytes, busLoad := s.rate.snapshot(now)
 	status := "active"
 	if len(intervals) < 3 {
 		status = "warming"
-	}
-	if recentAnomaly {
-		status = "anomaly"
 	}
 	if gapActive {
 		status = "gap"
@@ -739,15 +610,13 @@ func (s *sourceStream) snapshot(now time.Time) SourcePGNMetric {
 		SourceAddress: s.key.address, Messages: s.messages,
 		FirstSeen: s.firstSeen, LastSeen: s.lastSeen, AgeSeconds: age.Seconds(),
 		ExpectedPeriodSeconds: expected.Seconds(), ShortestPeriodSeconds: shortest.Seconds(),
-		LongestPeriodSeconds: longest.Seconds(), PeriodP95Seconds: periodP95.Seconds(),
+		LongestPeriodSeconds: longest.Seconds(), PeriodP90Seconds: periodP90.Seconds(),
+		PeriodP95Seconds: periodP95.Seconds(),
 		PeriodP99Seconds: periodP99.Seconds(), JitterMADSeconds: jitterMAD.Seconds(),
 		BurstCount: s.burstCount, RecentMessagesPerSec: recentMessages,
 		RecentBytesPerSec: recentBytes, EstimatedBusLoadPercent: busLoad,
 		GapActive: gapActive, GapRatio: gapRatio,
 		GapCount: s.gapCount, LastGapAt: timePtr(s.lastGap), LongestGapSeconds: s.longestGap.Seconds(),
-		AnomalyActive: s.anomalyActive, RecentAnomaly: recentAnomaly,
-		AnomalyCount: s.anomalyCount, LastAnomalyAt: timePtr(s.lastAnomaly),
-		AnomalyScore: s.lastAnomalyScore, AnomalyField: s.lastAnomalyField, AnomalyReason: s.lastAnomalyReason,
 		Status: status, DestinationCounts: cloneUint8Totals(s.destinations),
 		PriorityCounts: cloneUint8Totals(s.priorities), IdentityChanges: s.identityChanges,
 		Raw: s.wire.snapshot(now),
@@ -788,12 +657,10 @@ func (s *sourceStream) snapshot(now time.Time) SourcePGNMetric {
 func fieldSnapshot(name string, field *sourceField, now time.Time, messages int64) FieldDistribution {
 	out := FieldDistribution{
 		Field: name, Kind: field.kind, Unit: field.unit,
-		Anomalous: field.anomalous, AnomalyScore: field.score,
-		AnomalyCount: field.anomalies, LastAnomalyAt: timePtr(field.lastAt),
-		AnomalyReason: field.reason, PresentMessages: field.presentMessages,
+		PresentMessages: field.presentMessages,
 		MissingMessages: field.missingMessages, InvalidCount: field.invalidCount,
-		OutOfRangeCount: field.outOfRangeCount, NovelValueCount: field.novelValueCount,
-		CatalogMinimum: cloneFloat(field.lowerBound), CatalogMaximum: cloneFloat(field.upperBound),
+		NovelValueCount: field.novelValueCount,
+		CatalogMinimum:  cloneFloat(field.lowerBound), CatalogMaximum: cloneFloat(field.upperBound),
 	}
 	if messages > 0 {
 		out.AvailabilityPercent = float64(field.presentMessages) / float64(messages) * 100
@@ -877,7 +744,6 @@ func (r *Registry) SourcePGNMetrics(source string) []SourcePGNMetric {
 	for _, stream := range streams {
 		out = append(out, stream.snapshot(now))
 	}
-	out = applySourceBaselines(out, r.sourceBaselinesFor(source), now, r.startedAt)
 	applyTrafficShares(out)
 	sortSourcePGNMetrics(out)
 	return out
@@ -900,13 +766,7 @@ func (r *Registry) AllSourcePGNMetrics() map[string][]SourcePGNMetric {
 		metric := stream.snapshot(now)
 		out[metric.SourceID] = append(out[metric.SourceID], metric)
 	}
-	for _, baseline := range r.SourceTrafficBaselines("") {
-		if _, ok := out[baseline.SourceID]; !ok {
-			out[baseline.SourceID] = nil
-		}
-	}
 	for source := range out {
-		out[source] = applySourceBaselines(out[source], r.sourceBaselinesFor(source), now, r.startedAt)
 		applyTrafficShares(out[source])
 		sortSourcePGNMetrics(out[source])
 	}
@@ -927,7 +787,7 @@ func applyTrafficShares(metrics []SourcePGNMetric) {
 }
 
 func sortSourcePGNMetrics(metrics []SourcePGNMetric) {
-	priority := map[string]int{"missing": 0, "gap": 1, "anomaly": 2, "changed": 3, "awaiting": 4, "warming": 5, "active": 6}
+	priority := map[string]int{"missing": 0, "gap": 1, "changed": 2, "awaiting": 3, "warming": 4, "active": 5}
 	sort.Slice(metrics, func(i, j int) bool {
 		left, right := priority[metrics[i].Status], priority[metrics[j].Status]
 		if left != right {
@@ -975,9 +835,6 @@ func (r *Registry) sourceLifecycleEvents(now time.Time, source string, e *msg.En
 	}
 	if after.gapCount > before.gapCount {
 		add("gap_recovered", "warning", fmt.Sprintf("PGN %d resumed after a sending gap", e.PGN), nil)
-	}
-	if after.anomalyCount > before.anomalyCount {
-		add("value_anomaly", "warning", fmt.Sprintf("PGN %d contained an anomalous decoded value", e.PGN), nil)
 	}
 	if before.messages > 0 && after.decodeStatus != before.decodeStatus {
 		add("decode_status_changed", "warning", fmt.Sprintf("PGN %d decode status changed from %s to %s", e.PGN, before.decodeStatus, after.decodeStatus),

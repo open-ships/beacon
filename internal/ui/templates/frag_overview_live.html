@@ -1,17 +1,18 @@
 {{define "overview-live"}}
-<div id="{{.DOMID}}" class="overview-live"
-     hx-get="{{.RefreshHref}}" hx-trigger="load, every 2s" hx-swap="outerHTML">
-  <div class="overview-grid">
-    <section class="overview-card component-status-surface state-{{.State}}" aria-label="Status">
+<div id="{{.DOMID}}" class="overview-live">
+  <div class="overview-grid" id="{{.Kind}}-overview-summary"
+       hx-get="{{.RefreshHref}}" hx-trigger="every 500ms" hx-select="#{{.Kind}}-overview-summary"
+       hx-sync="this:drop" hx-swap="outerHTML swap:0ms settle:0ms">
+    <section class="overview-card component-status-surface state-{{.State}}" aria-label="Status and metrics">
       <div class="section-heading">
         <h3>Status</h3>
-      </div>
-      <div class="status-line">
-        {{if eq .State "up"}}<span class="badge badge-success">up</span>
-        {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
-        {{else if eq .State "error"}}<span class="badge badge-error">error</span>
-        {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
-        <span><code>{{.ID}}</code></span>
+        <div class="status-line">
+          {{if eq .State "up"}}<span class="badge badge-success">up</span>
+          {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
+          {{else if eq .State "error"}}<span class="badge badge-error">error</span>
+          {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
+          <span><code>{{.ID}}</code></span>
+        </div>
       </div>
       <div class="log-list">
         {{range .Logs}}
@@ -23,22 +24,19 @@
         <p class="opacity-70">No recent runtime errors.</p>
         {{end}}
       </div>
-    </section>
-
-    <section class="overview-card" aria-label="Statistics">
-      <div class="section-heading">
-        <h3>Statistics</h3>
-      </div>
+      {{/* Queue depth and retention are connector concepts: stats.SetQueueStats
+           is only ever called with a connector ID, so these tiles would read a
+           permanent zero on source and sink pages. */}}
       <div class="overview-stats">
-        <div><span>Total messages</span><strong>{{.Snapshot.TotalMessages}}</strong></div>
         <div><span>Msg/s</span><strong>{{printf "%.2f" .Snapshot.MsgPerSec}}</strong></div>
-        <div><span>Total bytes</span><strong>{{.TotalBytesText}}</strong></div>
         <div><span>Bytes/s</span><strong>{{.BytesPerSecText}}</strong></div>
         {{if .Snapshot.Drops}}<div><span>Intake drops</span><strong>{{.Snapshot.Drops}}</strong></div>{{end}}
+        {{if eq .Kind "connector"}}
         <div><span>Pending delivery</span><strong>{{.Snapshot.QueueDepth}}</strong></div>
         <div><span>Pending bytes</span><strong>{{.QueueBytesText}}</strong></div>
         <div><span>Retained history</span><strong>{{.Snapshot.RetainedDepth}}</strong></div>
         <div><span>Retained bytes</span><strong>{{.RetainedBytesText}}</strong></div>
+        {{end}}
         {{if .Snapshot.DeliveryClass}}<div><span>Delivery class</span><strong>{{.Snapshot.DeliveryClass}}</strong></div>{{end}}
         {{if .Snapshot.QueueTail}}<div><span>Checkpoint / tail</span><strong>{{.Snapshot.QueueCursor}} / {{.Snapshot.QueueTail}}</strong></div>{{end}}
       </div>
@@ -46,168 +44,245 @@
   </div>
 
   {{if eq .Kind "source"}}
-  <section class="overview-card" aria-label="PGN traffic">
+  <section class="overview-card" aria-label="Source devices">
     <div class="section-heading source-metrics-heading">
       <div>
-        <h3>PGN traffic</h3>
-        <p>One row per sender and PGN, including unknown wire payloads. Timing and value distributions use bounded recent windows.</p>
-      </div>
-      <div class="source-baseline-actions">
-        <span class="badge badge-ghost">{{len .SourcePGNs}} streams</span>
-        {{if .BaselineCount}}<span class="badge badge-success">{{.BaselineCount}} expected</span>{{end}}
-        <button class="btn btn-sm" type="button" hx-post="/ui/sources/{{.ID}}/traffic-baseline"
-                hx-target="#source-overview-live" hx-swap="outerHTML"
-                hx-confirm="Replace the expected traffic baseline with every PGN stream observed since Beacon started? Streams not observed in this process will no longer be expected.">Set expected traffic baseline</button>
-        {{if .BaselineCount}}
-        <button class="btn btn-sm" type="button" hx-post="/ui/sources/{{.ID}}/traffic-baseline/clear"
-                hx-target="#source-overview-live" hx-swap="outerHTML"
-                hx-confirm="Clear the expected traffic baseline for this source?">Clear baseline</button>
-        {{end}}
+        <h3>Source devices</h3>
+        <p>One row per observed source address. Device NAME is the stable identity; traffic share is based on bytes observed in this process.</p>
       </div>
     </div>
-    <div class="overflow-x-auto">
-      <table class="table source-metrics-table">
+    <div id="source-device-browser" class="source-device-browser">
+    <div id="source-device-table-frame" class="overflow-x-auto">
+      <table class="table source-device-table">
+        <colgroup>
+          <col class="source-device-col-address">
+          <col class="source-device-col-name">
+          <col class="source-device-col-manufacturer">
+          <col class="source-device-col-role">
+          <col class="source-device-col-rate">
+          <col class="source-device-col-rate">
+          <col class="source-device-col-share">
+          <col class="source-device-col-last-seen">
+        </colgroup>
         <thead>
           <tr>
-            <th>Health</th>
-            <th>PGN / decode</th>
-            <th>Device / sender</th>
-            <th>Destination / priority</th>
-            <th>Rate / jitter</th>
-            <th>Last seen / gaps</th>
-            <th>Traffic / payload</th>
-            <th>Values / raw wire</th>
+            <th aria-sort="{{.SourceDeviceSort.Address.AriaSort}}">
+              <button class="source-device-sort-button" type="button" aria-label="{{.SourceDeviceSort.Address.Accessible}}"
+                      hx-get="{{.SourceDeviceSort.Address.Href}}" hx-target="#source-device-table-frame"
+                      hx-select="#source-device-table-frame" hx-swap="outerHTML">
+                <span>Address</span><span class="source-device-sort-indicator" aria-hidden="true">{{.SourceDeviceSort.Address.Indicator}}</span>
+              </button>
+            </th>
+            <th>Device NAME / identity</th>
+            <th>Manufacturer</th>
+            <th>Class / function</th>
+            <th aria-sort="{{.SourceDeviceSort.Messages.AriaSort}}">
+              <button class="source-device-sort-button" type="button" aria-label="{{.SourceDeviceSort.Messages.Accessible}}"
+                      hx-get="{{.SourceDeviceSort.Messages.Href}}" hx-target="#source-device-table-frame"
+                      hx-select="#source-device-table-frame" hx-swap="outerHTML">
+                <span>Msg/s</span><span class="source-device-sort-indicator" aria-hidden="true">{{.SourceDeviceSort.Messages.Indicator}}</span>
+              </button>
+            </th>
+            <th aria-sort="{{.SourceDeviceSort.Bytes.AriaSort}}">
+              <button class="source-device-sort-button" type="button" aria-label="{{.SourceDeviceSort.Bytes.Accessible}}"
+                      hx-get="{{.SourceDeviceSort.Bytes.Href}}" hx-target="#source-device-table-frame"
+                      hx-select="#source-device-table-frame" hx-swap="outerHTML">
+                <span>Bytes/s</span><span class="source-device-sort-indicator" aria-hidden="true">{{.SourceDeviceSort.Bytes.Indicator}}</span>
+              </button>
+            </th>
+            <th aria-sort="{{.SourceDeviceSort.Share.AriaSort}}">
+              <button class="source-device-sort-button" type="button" aria-label="{{.SourceDeviceSort.Share.Accessible}}"
+                      hx-get="{{.SourceDeviceSort.Share.Href}}" hx-target="#source-device-table-frame"
+                      hx-select="#source-device-table-frame" hx-swap="outerHTML">
+                <span>Traffic share</span><span class="source-device-sort-indicator" aria-hidden="true">{{.SourceDeviceSort.Share.Indicator}}</span>
+              </button>
+            </th>
+            <th aria-sort="{{.SourceDeviceSort.LastSeen.AriaSort}}">
+              <button class="source-device-sort-button" type="button" aria-label="{{.SourceDeviceSort.LastSeen.Accessible}}"
+                      hx-get="{{.SourceDeviceSort.LastSeen.Href}}" hx-target="#source-device-table-frame"
+                      hx-select="#source-device-table-frame" hx-swap="outerHTML">
+                <span>Last seen</span><span class="source-device-sort-indicator" aria-hidden="true">{{.SourceDeviceSort.LastSeen.Indicator}}</span>
+              </button>
+            </th>
           </tr>
         </thead>
-        <tbody>
-          {{range .SourcePGNs}}
-          <tr class="source-stream-{{.Status}}">
-            <td>
-              {{if eq .Status "gap"}}<span class="badge badge-error">gap</span>
-              {{else if eq .Status "missing"}}<span class="badge badge-error">missing</span>
-              {{else if eq .Status "anomaly"}}<span class="badge badge-warning">anomaly</span>
-              {{else if eq .Status "changed"}}<span class="badge badge-warning">changed</span>
-              {{else if eq .Status "awaiting"}}<span class="badge badge-ghost">awaiting</span>
-              {{else if eq .Status "warming"}}<span class="badge badge-ghost">learning</span>
-              {{else}}<span class="badge badge-success">active</span>{{end}}
-              {{if eq .BaselineStatus "matching"}}<span class="source-baseline-state">baseline matched</span>
-              {{else if eq .BaselineStatus "not_baselined"}}<span class="source-baseline-state">not baselined</span>{{end}}
-              {{range .BaselineIssues}}<span class="source-anomaly-note" title="{{.}}">{{.}}</span>{{end}}
-              {{if .AnomalyText}}<span class="source-anomaly-note" title="{{.AnomalyText}}">{{.AnomalyText}}</span>{{end}}
-            </td>
-            <td><code>{{.PGN}}</code>{{if .PGNName}}<br><span class="opacity-70">{{.PGNName}}</span>{{end}}<br>
-                {{if eq .DecodeStatus "unknown"}}<span class="badge badge-warning">unknown</span>
-                {{else if eq .DecodeStatus "decoded"}}<span class="badge badge-success">decoded</span>
-                {{else}}<span class="badge badge-ghost">{{.DecodeStatus}}</span>{{end}}
-                {{if .DecodeMetadata}}<br><small>{{.DecodeMetadata}}</small>{{end}}
-                <br><small>{{.DecodeDetail}}</small></td>
-            <td><strong>{{.SourceAddress}}</strong>{{if .DeviceNameHex}}<br><code title="Device NAME">{{.DeviceNameHex}}</code>{{end}}</td>
-            <td><span>dest {{.Destinations}}</span><br><span class="opacity-70">priority {{.Priorities}}</span></td>
-            <td><strong>{{.FrequencyText}}</strong><br><span class="opacity-70">{{.PeriodText}}</span><br><small>{{.RateDetail}}</small></td>
-            <td><time datetime="{{.LastSeenTitle}}" title="{{.LastSeenTitle}}">{{.LastSeenText}}</time><br>
-                <span class="{{if eq .Status "gap"}}source-gap-text{{else}}opacity-70{{end}}">{{.GapText}}</span></td>
-            <td><strong>{{.TrafficText}}</strong><br><span class="opacity-70">{{.TrafficDetail}}</span><br>
-                <span>{{.PayloadText}}</span><br><small>{{.PayloadDetail}}</small></td>
-            <td>
-              <details class="source-values">
-                <summary>{{len .Fields}} decoded fields{{if .Raw}} · {{.Raw.DistinctPayloads}} raw payloads{{end}}</summary>
-                <div class="source-value-list">
-                  {{if .Fields}}
-                  <h4>Decoded value distributions</h4>
-                  {{range .Fields}}
-                  <div class="source-value-row {{if .Anomalous}}source-value-anomaly{{end}}">
-                    <div><code>{{.Name}}</code>{{if .Anomalous}} <span class="badge badge-warning">changed</span>{{end}}</div>
-                    <span>{{.Summary}}</span>
-                    <small>{{.Samples}} samples · {{.AvailabilityText}}{{if .Anomalies}} · {{.Anomalies}} anomalies{{end}}</small>
-                    <small>{{.QualityText}}</small>
-                  </div>
-                  {{end}}
-                  {{else}}<p class="opacity-70">No decoded fields are available for this PGN.</p>{{end}}
-
-                  {{if .Raw}}
-                  <h4>Raw wire payload</h4>
-                  <dl class="source-raw-summary">
-                    <dt>Last payload</dt><dd><code>{{.Raw.LastHex}}</code></dd>
-                    <dt>Fingerprint</dt><dd><code>{{.Raw.LastFingerprint}}</code></dd>
-                    <dt>Lengths</dt><dd>{{range $length, $count := .Raw.LengthCounts}}<code>{{$length}} B</code> × {{$count}} &nbsp;{{end}}</dd>
-                    <dt>Unchanged</dt><dd>{{printf "%.1f" .Raw.UnchangedSeconds}} s</dd>
-                    <dt>Hamming distance</dt><dd>mean {{printf "%.1f" .Raw.HammingDistanceMean}} bits · p95 {{printf "%.1f" .Raw.HammingDistanceP95}} bits</dd>
-                    <dt>Last changed bytes</dt><dd>{{if .Raw.LastChangedBytes}}{{.Raw.LastChangedBytes}}{{else}}none{{end}}</dd>
-                  </dl>
-                  {{if .RawFingerprints}}
-                  <h4>Top payload fingerprints</h4>
-                  <div class="source-fingerprint-list">{{range .RawFingerprints}}<code>{{.Fingerprint}}</code> {{.Count}}× ({{.Share}}) · {{.Length}} B<br>{{end}}</div>
-                  {{end}}
-                  {{if .RawBytes}}
-                  <h4>Byte-position analysis</h4>
-                  <div class="overflow-x-auto"><table class="table source-byte-table"><thead><tr><th>Byte</th><th>Range</th><th>Mode</th><th>Entropy</th><th>Changed</th><th>Bit mask</th></tr></thead><tbody>
-                    {{range .RawBytes}}<tr><td>{{.Offset}}</td><td><code>{{.Range}}</code></td><td><code>{{.Mode}}</code></td><td>{{.Entropy}}</td><td>{{.Changed}}</td><td><code>{{.BitMask}}</code></td></tr>{{end}}
-                  </tbody></table></div>
-                  {{end}}
-                  {{if .RawSamples}}
-                  <h4>Recent changed payloads</h4>
-                  <div class="source-raw-samples">{{range .RawSamples}}<div><time>{{.Time}}</time> <code>{{.Hex}}</code> <small>{{.Length}} B · {{.Fingerprint}}</small></div>{{end}}</div>
-                  {{end}}
-                  {{end}}
-                </div>
-              </details>
-            </td>
-          </tr>
+        <tbody id="source-device-rows">
+          {{range .SourceDevices}}
+          {{template "source-device-row" .}}
           {{else}}
-          <tr><td colspan="8" class="text-center opacity-70">No PGNs have been observed on this source in this process.</td></tr>
+          {{template "source-device-empty-row"}}
           {{end}}
         </tbody>
       </table>
+      <div hidden aria-hidden="true" data-source-device-row-refresh
+           hx-get="{{.SourceDeviceRowsRefreshHref}}" hx-trigger="every 500ms"
+           hx-sync="this:drop" hx-swap="none"></div>
     </div>
-  </section>
 
-  <section class="overview-card" aria-label="Traffic changes">
-    <div class="section-heading"><h3>Traffic changes</h3></div>
-    <div class="overflow-x-auto">
-      <table class="table source-event-table"><thead><tr><th>Time</th><th>Severity</th><th>Change</th><th>PGN</th><th>Sender</th></tr></thead><tbody>
-      {{range .SourceEvents}}<tr><td><code>{{.Time}}</code></td><td><span class="badge {{if eq .Severity "error"}}badge-error{{else if eq .Severity "warning"}}badge-warning{{else}}badge-ghost{{end}}">{{.Severity}}</span></td><td><strong>{{.Kind}}</strong><br><span>{{.Summary}}</span></td><td>{{if .PGN}}<code>{{.PGN}}</code>{{else}}-{{end}}</td><td>{{.SourceAddress}}</td></tr>
-      {{else}}<tr><td colspan="5" class="text-center opacity-70">No source traffic changes have been recorded.</td></tr>{{end}}
-      </tbody></table>
+    {{if .SourceDeviceDetail}}
+    <dialog id="source-device-detail-panel" class="source-device-detail-panel"
+            aria-labelledby="source-device-detail-title"
+            aria-describedby="source-device-detail-description"
+            data-source-device-dialog>
+      <div class="source-device-dialog-surface">
+      <header class="source-device-detail-header">
+        <div class="source-device-detail-heading">
+          <p class="eyebrow">Device {{.SourceDeviceDetail.Device.Address}}</p>
+          <h4 id="source-device-detail-title">
+            {{if .SourceDeviceDetail.Device.Model}}{{.SourceDeviceDetail.Device.Model}}
+            {{else if .SourceDeviceDetail.Device.Manufacturer}}{{.SourceDeviceDetail.Device.Manufacturer}} device
+            {{else}}Device address {{.SourceDeviceDetail.Device.Address}}{{end}}
+          </h4>
+          {{if .SourceDeviceDetail.Device.Role}}<p>{{.SourceDeviceDetail.Device.Role}}</p>{{end}}
+        </div>
+        <button class="btn btn-sm" type="button" aria-label="Close device statistics"
+                data-source-device-dialog-close autofocus
+                hx-get="{{.SourceDeviceDetail.CloseHref}}" hx-target="#source-device-browser"
+                hx-select="#source-device-browser" hx-swap="outerHTML">Close</button>
+        <dl class="source-device-detail-metadata">
+          <div><dt>Address</dt><dd><strong>{{.SourceDeviceDetail.Device.Address}}</strong></dd></div>
+          {{if .SourceDeviceDetail.Device.DeviceName}}<div><dt>Device NAME</dt><dd><code>{{.SourceDeviceDetail.Device.DeviceName}}</code></dd></div>{{end}}
+          {{if .SourceDeviceDetail.Device.IdentityNumber}}<div><dt>Identity</dt><dd>{{.SourceDeviceDetail.Device.IdentityNumber}}</dd></div>{{end}}
+          {{if .SourceDeviceDetail.Device.Manufacturer}}<div><dt>Manufacturer</dt><dd>{{.SourceDeviceDetail.Device.Manufacturer}}{{if .SourceDeviceDetail.Device.ManufacturerCode}} · code {{.SourceDeviceDetail.Device.ManufacturerCode}}{{end}}{{if .SourceDeviceDetail.Device.ManufacturerInformation}}<br><small>{{.SourceDeviceDetail.Device.ManufacturerInformation}}</small>{{end}}</dd></div>{{end}}
+          {{if .SourceDeviceDetail.Device.Model}}<div><dt>Model</dt><dd>{{.SourceDeviceDetail.Device.Model}}{{if .SourceDeviceDetail.Device.ProductCode}} · product {{.SourceDeviceDetail.Device.ProductCode}}{{end}}</dd></div>{{end}}
+          {{if .SourceDeviceDetail.Device.Instances}}<div><dt>Instances</dt><dd>{{.SourceDeviceDetail.Device.Instances}}</dd></div>{{end}}
+          {{if .SourceDeviceDetail.Device.Software}}<div><dt>Software</dt><dd>{{.SourceDeviceDetail.Device.Software}}</dd></div>{{end}}
+          {{if .SourceDeviceDetail.Device.Serial}}<div><dt>Serial</dt><dd><code>{{.SourceDeviceDetail.Device.Serial}}</code></dd></div>{{end}}
+        </dl>
+      </header>
+
+      <div class="section-heading source-device-pgn-heading">
+        <div>
+          <h4>PGN statistics</h4>
+          <p id="source-device-detail-description">Live rates use the recent traffic window; timing percentiles use the bounded interval sample.</p>
+        </div>
+        <span class="badge badge-ghost">{{len .SourceDeviceDetail.PGNs}} PGNs</span>
+      </div>
+      <div class="source-device-pgn-viewport">
+        <table id="source-device-pgn-table" class="table source-device-pgn-table">
+          <thead>
+            <tr>
+              <th aria-sort="{{.SourceDeviceDetail.Sort.PGN.AriaSort}}">
+                <button class="source-device-sort-button" type="button" data-source-device-pgn-sort-control="pgn"
+                        aria-label="{{.SourceDeviceDetail.Sort.PGN.Accessible}}"
+                        hx-get="{{.SourceDeviceDetail.Sort.PGN.Href}}" hx-target="#source-device-pgn-rows"
+                        hx-select="#source-device-pgn-rows" hx-sync="#source-device-pgn-table:replace"
+                        hx-swap="outerHTML">
+                  <span>PGN</span><span class="source-device-sort-indicator" aria-hidden="true">{{.SourceDeviceDetail.Sort.PGN.Indicator}}</span>
+                </button>
+              </th>
+              <th aria-sort="{{.SourceDeviceDetail.Sort.Rates.AriaSort}}">
+                <button class="source-device-sort-button" type="button" data-source-device-pgn-sort-control="rates"
+                        aria-label="{{.SourceDeviceDetail.Sort.Rates.Accessible}}"
+                        hx-get="{{.SourceDeviceDetail.Sort.Rates.Href}}" hx-target="#source-device-pgn-rows"
+                        hx-select="#source-device-pgn-rows" hx-sync="#source-device-pgn-table:replace"
+                        hx-swap="outerHTML">
+                  <span>Rates</span><span class="source-device-sort-indicator" aria-hidden="true">{{.SourceDeviceDetail.Sort.Rates.Indicator}}</span>
+                </button>
+              </th>
+              <th aria-sort="{{.SourceDeviceDetail.Sort.Traffic.AriaSort}}">
+                <button class="source-device-sort-button" type="button" data-source-device-pgn-sort-control="traffic"
+                        aria-label="{{.SourceDeviceDetail.Sort.Traffic.Accessible}}"
+                        hx-get="{{.SourceDeviceDetail.Sort.Traffic.Href}}" hx-target="#source-device-pgn-rows"
+                        hx-select="#source-device-pgn-rows" hx-sync="#source-device-pgn-table:replace"
+                        hx-swap="outerHTML">
+                  <span>Traffic %</span><span class="source-device-sort-indicator" aria-hidden="true">{{.SourceDeviceDetail.Sort.Traffic.Indicator}}</span>
+                </button>
+              </th>
+              <th>Timing</th>
+              <th aria-sort="{{.SourceDeviceDetail.Sort.Payload.AriaSort}}">
+                <button class="source-device-sort-button" type="button" data-source-device-pgn-sort-control="payload"
+                        aria-label="{{.SourceDeviceDetail.Sort.Payload.Accessible}}"
+                        hx-get="{{.SourceDeviceDetail.Sort.Payload.Href}}" hx-target="#source-device-pgn-rows"
+                        hx-select="#source-device-pgn-rows" hx-sync="#source-device-pgn-table:replace"
+                        hx-swap="outerHTML">
+                  <span>Payload size</span><span class="source-device-sort-indicator" aria-hidden="true">{{.SourceDeviceDetail.Sort.Payload.Indicator}}</span>
+                </button>
+              </th>
+              <th aria-sort="{{.SourceDeviceDetail.Sort.Activity.AriaSort}}">
+                <button class="source-device-sort-button" type="button" data-source-device-pgn-sort-control="activity"
+                        aria-label="{{.SourceDeviceDetail.Sort.Activity.Accessible}}"
+                        hx-get="{{.SourceDeviceDetail.Sort.Activity.Href}}" hx-target="#source-device-pgn-rows"
+                        hx-select="#source-device-pgn-rows" hx-sync="#source-device-pgn-table:replace"
+                        hx-swap="outerHTML">
+                  <span>Activity</span><span class="source-device-sort-indicator" aria-hidden="true">{{.SourceDeviceDetail.Sort.Activity.Indicator}}</span>
+                </button>
+              </th>
+            </tr>
+          </thead>
+          <tbody id="source-device-pgn-rows"
+                 hx-get="{{.SourceDeviceDetail.RefreshHref}}" hx-trigger="every 500ms"
+                 hx-select="#source-device-pgn-rows" hx-sync="#source-device-pgn-table:drop"
+                 hx-swap="outerHTML swap:0ms settle:0ms">
+            {{range .SourceDeviceDetail.PGNs}}
+            <tr>
+              <td class="source-device-pgn-identity">
+                <a class="source-device-pgn-link" href="https://openships.ai/nmea-2000/pgn/?id={{.PGN}}" target="_blank" rel="noopener noreferrer"><code>{{.PGN}}</code></a>{{if .PGNName}}<br><small>{{.PGNName}}</small>{{end}}
+              </td>
+              <td class="source-device-stat"><strong>{{.MessagesPerSec}} msg/s</strong><br><span>{{.BytesPerSec}}</span></td>
+              <td class="source-device-stat"><strong>{{.DeviceTraffic}} device</strong><br><small>{{.EstimatedBusLoad}} bus load</small></td>
+              <td><div class="source-device-pgn-timing">
+                <span><small>Median</small><strong>{{.MedianPeriod}}</strong></span>
+                <span><small>P90</small><strong>{{.PeriodP90}}</strong></span>
+                <span><small>P99</small><strong>{{.PeriodP99}}</strong></span>
+              </div></td>
+              <td>{{.Payload}}</td>
+              <td><span class="source-device-pgn-activity">
+                <span class="source-device-pgn-dot source-device-pgn-dot-{{.ActivityLevel}}" role="img" aria-label="{{.ActivityLabel}}" title="{{.ActivityLabel}}"></span>
+                <time datetime="{{.LastSeenTitle}}" title="{{.LastSeenTitle}}">{{.LastSeen}}</time>
+              </span></td>
+            </tr>
+            {{else}}
+            <tr><td colspan="6" class="text-center opacity-70">No PGNs have been observed for this device.</td></tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+      </div>
+    </dialog>
+    {{else}}
+    <div id="source-device-detail-panel" hidden></div>
+    {{end}}
     </div>
   </section>
   {{end}}
-
-  <section class="overview-card" aria-label="Message stream">
-    <div class="section-heading">
-      <h3>Message stream</h3>
-    </div>
-    <div class="overflow-x-auto">
-      <table class="table event-table">
-        <thead>
-          <tr>
-            <th>Time</th>
-            <th>Stage</th>
-            <th>PGN</th>
-            <th>Source</th>
-            <th>Dest</th>
-            <th>Priority</th>
-            <th>Connector</th>
-            <th>Payload</th>
-          </tr>
-        </thead>
-        <tbody>
-          {{range .Events}}
-          <tr>
-            <td><code>{{.TimeText}}</code></td>
-            <td>{{.Stage}}</td>
-            <td><code>{{.PGN}}</code>{{if .PGNName}}<br><span class="opacity-70">{{.PGNName}}</span>{{end}}</td>
-            <td>{{.Source}}</td>
-            <td>{{.Dest}}</td>
-            <td>{{.Priority}}</td>
-            <td>{{if .ConnectorID}}<code>{{.ConnectorID}}</code>{{else}}<span class="opacity-70">-</span>{{end}}</td>
-            <td>{{if .Payload}}<code>{{.Payload}}</code>{{else}}<span class="opacity-70">empty</span>{{end}}</td>
-          </tr>
-          {{else}}
-          <tr><td colspan="8" class="text-center opacity-70">{{.EmptyStream}}</td></tr>
-          {{end}}
-        </tbody>
-      </table>
-    </div>
-  </section>
 </div>
+{{end}}
+
+{{define "source-device-row"}}
+<tr id="source-device-row-{{.Address}}"
+    class="source-device-row{{if .Selected}} source-device-row-selected{{end}}"
+    data-device-address="{{.Address}}" data-source-device-detail-row
+    role="button" tabindex="0" aria-controls="source-device-detail-panel"
+    aria-expanded="{{if .Selected}}true{{else}}false{{end}}"
+    aria-label="Open statistics for device address {{.Address}}"
+    hx-get="{{.DetailHref}}" hx-target="#source-device-browser"
+    hx-select="#source-device-browser" hx-swap="outerHTML">
+  {{template "source-device-row-cells" .}}
+</tr>
+{{end}}
+
+{{define "source-device-row-cells"}}
+<td class="source-device-address"><strong>{{.Address}}</strong></td>
+<td>{{if .DeviceName}}<code>{{.DeviceName}}</code><br><small>identity {{.IdentityNumber}}</small>{{else}}<span class="opacity-70">not claimed</span>{{end}}</td>
+<td>{{if .Manufacturer}}<strong>{{.Manufacturer}}</strong><br><small>code {{.ManufacturerCode}}{{if .ManufacturerInformation}} · {{.ManufacturerInformation}}{{end}}</small>{{else}}<span class="opacity-70">-</span>{{end}}</td>
+<td>{{if .Role}}{{.Role}}{{else}}<span class="opacity-70">-</span>{{end}}</td>
+<td class="source-device-stat"><strong>{{.MessagesPerSecText}}</strong></td>
+<td class="source-device-stat"><strong>{{.BytesPerSecText}}</strong></td>
+<td class="source-device-stat"><strong>{{.TrafficShareText}}</strong><br><small>~{{.BusLoadText}} bus load</small></td>
+<td><time datetime="{{.LastSeenTitle}}" title="{{.LastSeenTitle}}">{{.LastSeenText}}</time></td>
+{{end}}
+
+{{define "source-device-empty-row"}}
+<tr data-source-device-empty-row><td colspan="8" class="text-center opacity-70">No devices have been observed on this source in this process.</td></tr>
+{{end}}
+
+{{define "source-device-row-snapshot"}}
+<table><tbody data-source-device-row-snapshot>
+  {{range .SourceDevices}}
+  {{template "source-device-row" .}}
+  {{else}}
+  {{template "source-device-empty-row"}}
+  {{end}}
+</tbody></table>
 {{end}}

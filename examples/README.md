@@ -15,7 +15,7 @@ stops validating, that test fails.
 - **`navigation.json`** — the same shape as `minimal.json`, but the
   connector's filter allow-lists navigation PGNs only (heading, rapid
   position, COG/SOG, GNSS position: `127250`, `129025`, `129026`,
-  `129029`), served on `/nav`. See the filters page (`/ui/docs/filters`)
+  `129029`), served on `/nav`. See the filters page (`/docs/filters`)
   for how the filter list and CEL expressions work.
 - **`engine-room.json`** — one CAN source feeding *two* connectors, both
   filtered to engine PGNs (`127488`, `127489`, `127493`): one to an SSE
@@ -38,12 +38,12 @@ stops validating, that test fails.
   `file_path` must be an absolute path that exists on disk (the sink opens
   it but does not create missing parent directories) — create `/data/log`
   first, or change both paths to a directory you control. See the concepts
-  page (`/ui/docs/concepts`) for file sink delivery semantics, rotation, and
+  page (`/docs/concepts`) for file sink delivery semantics, rotation, and
   replaying a `candump` log with `canplayer`.
 - **`vcan-dev.json`** — identical to `minimal.json` but pointed at
   `vcan0` instead of a real interface, for developing and testing beacon
   with no CAN hardware attached. Bring the virtual interface up first (see
-  `/ui/docs/can-setup`):
+  `/docs/can-setup`):
 
   ```
   sudo modprobe vcan
@@ -58,7 +58,7 @@ Replace `can0` / `vcan0` with your actual interface name, and adjust sink
 paths/addresses and connector filters as needed — these are starting
 points, not fixed configurations. All buffer limits shown are optional; if
 a connector's `buffer` object sets nothing at all, `max_messages` defaults
-to 100000 (see `/ui/docs/concepts`).
+to 100000 (see `/docs/concepts`).
 
 ## Using an example
 
@@ -72,7 +72,7 @@ leave on the command line permanently.
 ```
 
 **Offline, against an existing database file** (the file must not be held
-open by a running beacon process — see `/ui/docs/api` for why):
+open by a running beacon process — see `/docs/api` for why):
 
 ```
 beacon import --db beacon.db examples/navigation.json           # replaces the whole config

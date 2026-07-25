@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/open-ships/n2k/pgn"
+	"github.com/open-ships/n2k/raw"
 
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/msg"
@@ -44,10 +46,25 @@ func (m *memReplay) Read(_ context.Context, after int64, limit int) ([]queue.Ent
 	return out, nil
 }
 
-func entry(connector string, seq int64, pgn uint32) queue.Entry {
+func entry(connector string, seq int64, pgnNumber uint32) queue.Entry {
+	receivedAt := time.Now()
+	payload, _ := json.Marshal(struct {
+		Info pgn.MessageInfo `json:"info"`
+	}{
+		Info: pgn.MessageInfo{
+			Timestamp:  receivedAt,
+			ReceivedAt: receivedAt,
+			AdapterID:  "socketcan:can0",
+			NetworkID:  "can0",
+			Direction:  raw.DirectionReceived,
+			Priority:   pgn.Priority(2),
+			PGN:        pgnNumber,
+			SourceId:   1,
+		},
+	})
 	return queue.Entry{Seq: seq, Env: &msg.Envelope{
-		Seq: seq, ConnectorID: connector, PGN: pgn, Source: 1, Dest: 255, Priority: 2,
-		Timestamp: time.Now(), Payload: json.RawMessage(`{}`)}}
+		Seq: seq, ConnectorID: connector, PGN: pgnNumber, Source: 1, Dest: 255, Priority: 2,
+		Timestamp: receivedAt, Payload: payload, Raw: []byte{1, 2, 3}}}
 }
 
 func startSSE(t *testing.T) (*DataServer, Runtime) {
@@ -106,6 +123,61 @@ func readSSEEvents(t *testing.T, resp *http.Response, n int, timeout time.Durati
 	return out
 }
 
+func consumerEnvelopeParts(t *testing.T, event map[string]any) (map[string]any, map[string]any) {
+	t.Helper()
+	if len(event) != 3 {
+		t.Fatalf("consumer envelope must have only payload, metadata, and raw at the top level: %v", event)
+	}
+	payload, ok := event["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload is not an object: %v", event["payload"])
+	}
+	metadata, ok := event["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata is not an object: %v", event["metadata"])
+	}
+	if _, ok := event["raw"]; !ok {
+		t.Fatalf("raw CAN bytes are not a separate top-level value: %v", event)
+	}
+	return payload, metadata
+}
+
+func consumerEnvelopePGN(t *testing.T, event map[string]any) float64 {
+	t.Helper()
+	payload, _ := consumerEnvelopeParts(t, event)
+	info, ok := payload["info"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload does not contain the n2k info struct: %v", payload)
+	}
+	pgnNumber, ok := info["pgn"].(float64)
+	if !ok {
+		t.Fatalf("payload.info.pgn is not a number: %v", info["pgn"])
+	}
+	return pgnNumber
+}
+
+func assertNativeMessageInfoPreserved(t *testing.T, event map[string]any) {
+	t.Helper()
+	payload, metadata := consumerEnvelopeParts(t, event)
+	info, ok := payload["info"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload does not contain the n2k info struct: %v", payload)
+	}
+	for _, key := range []string{"receivedAt", "transportTimestamp", "hasTransportTimestamp", "adapterId", "networkId", "direction"} {
+		if key == "transportTimestamp" || key == "hasTransportTimestamp" {
+			continue // omitted by n2k when this synthetic message has no transport timestamp
+		}
+		if _, ok := info[key]; !ok {
+			t.Fatalf("native MessageInfo field %q missing from payload.info: %v", key, info)
+		}
+	}
+	for _, key := range []string{"received_at", "adapter_id", "network_id", "direction"} {
+		if _, ok := metadata[key]; ok {
+			t.Fatalf("native MessageInfo field %q was duplicated into metadata: %v", key, metadata)
+		}
+	}
+}
+
 func TestSSELiveBroadcast(t *testing.T) {
 	ds, rt := startSSE(t)
 	resp, err := http.Get(fmt.Sprintf("http://%s/events", ds.Addr()))
@@ -119,9 +191,17 @@ func TestSSELiveBroadcast(t *testing.T) {
 	time.Sleep(100 * time.Millisecond) // let the client register
 	rt.(Broadcaster).Broadcast([]queue.Entry{entry("nav", 1, 127250)})
 	events := readSSEEvents(t, resp, 1, 3*time.Second)
-	if events[0]["pgn"].(float64) != 127250 {
+	if consumerEnvelopePGN(t, events[0]) != 127250 {
 		t.Fatalf("event = %v", events[0])
 	}
+	_, metadata := consumerEnvelopeParts(t, events[0])
+	if metadata["connector"] != "nav" || metadata["id"] != float64(1) {
+		t.Fatalf("Beacon route metadata is not nested under metadata: %v", metadata)
+	}
+	if _, ok := events[0]["raw"].(string); !ok {
+		t.Fatalf("raw CAN bytes are not a top-level base64 value: %v", events[0]["raw"])
+	}
+	assertNativeMessageInfoPreserved(t, events[0])
 }
 
 func TestSSEReplayWithLastEventID(t *testing.T) {
@@ -138,7 +218,7 @@ func TestSSEReplayWithLastEventID(t *testing.T) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	events := readSSEEvents(t, resp, 2, 3*time.Second)
-	if events[0]["pgn"].(float64) != 128259 || events[1]["pgn"].(float64) != 129026 {
+	if consumerEnvelopePGN(t, events[0]) != 128259 || consumerEnvelopePGN(t, events[1]) != 129026 {
 		t.Fatalf("replay wrong: %v", events)
 	}
 }
@@ -227,4 +307,50 @@ func TestWSDeadClientDetected(t *testing.T) {
 	_ = conn.CloseNow() // abrupt client death, no traffic in flight
 	waitFor(t, 3*time.Second, "dead WS client to be dropped",
 		func() bool { return s.clientCount() == 0 })
+}
+
+func TestWSLiveBroadcastUsesConsumerEnvelope(t *testing.T) {
+	ds := NewDataServer("127.0.0.1:0", slog.Default())
+	if err := ds.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ds.Stop(context.Background()) })
+	rt, err := New(context.Background(), model.Sink{
+		ID: "ws-contract", Name: "WS", Type: model.SinkHTTPWS, Enabled: true, Path: "/ws-contract",
+	}, nil, ds, slog.Default(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(rt.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s/ws-contract", ds.Addr()), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+	waitFor(t, 3*time.Second, "WS client to register",
+		func() bool { return rt.(*serveSink).clientCount() == 1 })
+
+	rt.(Broadcaster).Broadcast([]queue.Entry{entry("nav", 7, 127250)})
+	_, data, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event map[string]any
+	if err := json.Unmarshal(data, &event); err != nil {
+		t.Fatal(err)
+	}
+	if consumerEnvelopePGN(t, event) != 127250 {
+		t.Fatalf("event = %v", event)
+	}
+	_, metadata := consumerEnvelopeParts(t, event)
+	if metadata["connector"] != "nav" || metadata["id"] != float64(7) {
+		t.Fatalf("Beacon route metadata is not nested under metadata: %v", metadata)
+	}
+	if _, ok := event["raw"].(string); !ok {
+		t.Fatalf("raw CAN bytes are not a top-level base64 value: %v", event["raw"])
+	}
+	assertNativeMessageInfoPreserved(t, event)
 }

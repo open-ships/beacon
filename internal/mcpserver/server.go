@@ -25,7 +25,7 @@ import (
 const EndpointPath = "/mcp"
 
 // ToolInfo is the stable, human-readable catalog shared by the MCP server and
-// the onboard /ui/mcp reference page.
+// the onboard /mcp/info reference page.
 type ToolInfo struct {
 	Name        string
 	Access      string
@@ -41,10 +41,8 @@ var toolCatalog = []ToolInfo{
 	{Name: "delete_sink", Access: "delete", Description: "Delete an unreferenced sink."},
 	{Name: "delete_connector", Access: "delete", Description: "Delete a connector route and its route-owned queue."},
 	{Name: "get_health", Access: "read", Description: "Read rolled-up health and live source, sink, and connector states."},
-	{Name: "get_delivery_statistics", Access: "read", Description: "Read delivery rates, totals, pending delivery, retained history, limits, drops, and errors."},
-	{Name: "get_source_metrics", Access: "read", Description: "Inspect all PGNs by source and sender, including unknown raw payloads, timing, load, decode quality, addressing, gaps, anomalies, field distributions, approved baselines, and lifecycle events."},
-	{Name: "commit_source_traffic_baseline", Access: "write", Description: "Replace one source's persistent expected-traffic baseline with every PGN stream observed since Beacon started."},
-	{Name: "clear_source_traffic_baseline", Access: "delete", Description: "Clear one source's approved traffic baseline without deleting its observations or event history."},
+	{Name: "get_delivery_metrics", Access: "read", Description: "Read delivery rates, totals, pending delivery, retained history, limits, drops, and errors."},
+	{Name: "get_source_metrics", Access: "read", Description: "Inspect all PGNs by source and sender, including unknown raw payloads, timing, load, decode quality, addressing, gaps, field distributions, and lifecycle events."},
 }
 
 // Catalog returns a copy so callers cannot mutate the registered tool list.
@@ -133,7 +131,7 @@ type sourceDefinition struct {
 	URL       string            `json:"url,omitempty" jsonschema:"Remote URL for HTTP or MQTT sources."`
 	Topic     string            `json:"topic,omitempty" jsonschema:"MQTT subscription topic."`
 	Headers   map[string]string `json:"headers,omitempty" jsonschema:"HTTP headers for SSE or WebSocket ingestion."`
-	FilePath  string            `json:"file_path,omitempty" jsonschema:"Absolute capture path for file replay."`
+	FilePath  string            `json:"file_path,omitempty" jsonschema:"Absolute capture path for file replay; gzip content and a missing path's .gz counterpart are handled automatically."`
 	Address   string            `json:"address,omitempty" jsonschema:"host:port for tcp or udp gateway ingestion."`
 	Format    string            `json:"format,omitempty" jsonschema:"Gateway stream format: ydraw or actisense."`
 }
@@ -287,7 +285,7 @@ type healthOutput struct {
 	Components []supervisor.Status `json:"components"`
 }
 
-type deliveryStatisticsInput struct {
+type deliveryMetricsInput struct {
 	ConnectorID string `json:"connector_id,omitempty" jsonschema:"Optional connector route id. Omit to return every configured connector."`
 }
 
@@ -299,26 +297,16 @@ type sourceMetricsInput struct {
 }
 
 type sourceMetricsOutput struct {
-	GeneratedAt time.Time                                `json:"generated_at"`
-	Sources     map[string][]stats.SourcePGNMetric       `json:"sources"`
-	Baselines   map[string][]stats.SourceTrafficBaseline `json:"baselines"`
-	Events      map[string][]stats.SourceMetricEvent     `json:"events"`
+	GeneratedAt time.Time                            `json:"generated_at"`
+	Sources     map[string][]stats.SourcePGNMetric   `json:"sources"`
+	Events      map[string][]stats.SourceMetricEvent `json:"events"`
 }
 
-type sourceTrafficBaselineInput struct {
-	SourceID string `json:"source_id" jsonschema:"Configured source id."`
+type deliveryMetricsOutput struct {
+	Connectors map[string]deliveryMetrics `json:"connectors"`
 }
 
-type sourceTrafficBaselineOutput struct {
-	SourceID  string                        `json:"source_id"`
-	Baselines []stats.SourceTrafficBaseline `json:"baselines"`
-}
-
-type deliveryStatisticsOutput struct {
-	Connectors map[string]deliveryStatistics `json:"connectors"`
-}
-
-type deliveryStatistics struct {
+type deliveryMetrics struct {
 	TotalMessages    int64            `json:"total_messages"`
 	TotalBytes       int64            `json:"total_bytes"`
 	MsgPerSec        float64          `json:"msg_per_sec"`
@@ -343,8 +331,8 @@ type deliveryStatistics struct {
 	DepthHistory     []int64          `json:"pending_history,omitempty"`
 }
 
-func deliveryStatisticsFromSnapshot(v stats.Snapshot) deliveryStatistics {
-	out := deliveryStatistics{
+func deliveryMetricsFromSnapshot(v stats.Snapshot) deliveryMetrics {
+	out := deliveryMetrics{
 		TotalMessages: v.TotalMessages, TotalBytes: v.TotalBytes,
 		MsgPerSec: v.MsgPerSec, BytesPerSec: v.BytesPerSec,
 		PendingMessages: v.QueueDepth, PendingBytes: v.QueueBytes,
@@ -467,24 +455,24 @@ func registerTools(server *sdkmcp.Server, svc *config.Service, reg *stats.Regist
 			return nil, healthOutput{Status: supervisor.RollupHealth(components), Components: components}, nil
 		})
 
-	sdkmcp.AddTool(server, tool("get_delivery_statistics", "Get delivery statistics", readAnnotations),
-		func(ctx context.Context, _ *sdkmcp.CallToolRequest, in deliveryStatisticsInput) (*sdkmcp.CallToolResult, deliveryStatisticsOutput, error) {
-			out := deliveryStatisticsOutput{Connectors: map[string]deliveryStatistics{}}
+	sdkmcp.AddTool(server, tool("get_delivery_metrics", "Get delivery metrics", readAnnotations),
+		func(ctx context.Context, _ *sdkmcp.CallToolRequest, in deliveryMetricsInput) (*sdkmcp.CallToolResult, deliveryMetricsOutput, error) {
+			out := deliveryMetricsOutput{Connectors: map[string]deliveryMetrics{}}
 			if in.ConnectorID != "" {
 				if _, err := svc.GetConnector(ctx, in.ConnectorID); err != nil {
-					return nil, deliveryStatisticsOutput{}, publicError(log, err)
+					return nil, deliveryMetricsOutput{}, publicError(log, err)
 				}
 				snap, _ := reg.Snapshot(in.ConnectorID)
-				out.Connectors[in.ConnectorID] = deliveryStatisticsFromSnapshot(snap)
+				out.Connectors[in.ConnectorID] = deliveryMetricsFromSnapshot(snap)
 				return nil, out, nil
 			}
 			connectors, err := svc.ListConnectors(ctx)
 			if err != nil {
-				return nil, deliveryStatisticsOutput{}, publicError(log, err)
+				return nil, deliveryMetricsOutput{}, publicError(log, err)
 			}
 			all := reg.All()
 			for _, connector := range connectors {
-				out.Connectors[connector.ID] = deliveryStatisticsFromSnapshot(all[connector.ID])
+				out.Connectors[connector.ID] = deliveryMetricsFromSnapshot(all[connector.ID])
 			}
 			return nil, out, nil
 		})
@@ -494,7 +482,6 @@ func registerTools(server *sdkmcp.Server, svc *config.Service, reg *stats.Regist
 			out := sourceMetricsOutput{
 				GeneratedAt: time.Now().UTC(),
 				Sources:     map[string][]stats.SourcePGNMetric{},
-				Baselines:   map[string][]stats.SourceTrafficBaseline{},
 				Events:      map[string][]stats.SourceMetricEvent{},
 			}
 			eventLimit := in.EventLimit
@@ -506,7 +493,6 @@ func registerTools(server *sdkmcp.Server, svc *config.Service, reg *stats.Regist
 					return nil, sourceMetricsOutput{}, publicError(log, err)
 				}
 				out.Sources[in.SourceID] = filterSourceMetrics(reg.SourcePGNMetrics(in.SourceID), in)
-				out.Baselines[in.SourceID] = filterSourceBaselines(reg.SourceTrafficBaselines(in.SourceID), in)
 				out.Events[in.SourceID] = filterSourceMetricEvents(reg.SourceMetricEvents(in.SourceID, eventLimit), in)
 				return nil, out, nil
 			}
@@ -517,33 +503,9 @@ func registerTools(server *sdkmcp.Server, svc *config.Service, reg *stats.Regist
 			all := reg.AllSourcePGNMetrics()
 			for _, source := range sources {
 				out.Sources[source.ID] = filterSourceMetrics(all[source.ID], in)
-				out.Baselines[source.ID] = filterSourceBaselines(reg.SourceTrafficBaselines(source.ID), in)
 				out.Events[source.ID] = filterSourceMetricEvents(reg.SourceMetricEvents(source.ID, eventLimit), in)
 			}
 			return nil, out, nil
-		})
-
-	sdkmcp.AddTool(server, tool("commit_source_traffic_baseline", "Set expected traffic baseline", writeAnnotations),
-		func(ctx context.Context, _ *sdkmcp.CallToolRequest, in sourceTrafficBaselineInput) (*sdkmcp.CallToolResult, sourceTrafficBaselineOutput, error) {
-			if _, err := svc.GetSource(ctx, in.SourceID); err != nil {
-				return nil, sourceTrafficBaselineOutput{}, publicError(log, err)
-			}
-			baselines, err := reg.CommitSourceTrafficBaseline(ctx, in.SourceID)
-			if err != nil {
-				return nil, sourceTrafficBaselineOutput{}, publicError(log, err)
-			}
-			return nil, sourceTrafficBaselineOutput{SourceID: in.SourceID, Baselines: baselines}, nil
-		})
-
-	sdkmcp.AddTool(server, tool("clear_source_traffic_baseline", "Clear source traffic baseline", deleteAnnotations),
-		func(ctx context.Context, _ *sdkmcp.CallToolRequest, in sourceTrafficBaselineInput) (*sdkmcp.CallToolResult, sourceTrafficBaselineOutput, error) {
-			if _, err := svc.GetSource(ctx, in.SourceID); err != nil {
-				return nil, sourceTrafficBaselineOutput{}, publicError(log, err)
-			}
-			if err := reg.ClearSourceTrafficBaseline(ctx, in.SourceID); err != nil {
-				return nil, sourceTrafficBaselineOutput{}, publicError(log, err)
-			}
-			return nil, sourceTrafficBaselineOutput{SourceID: in.SourceID, Baselines: []stats.SourceTrafficBaseline{}}, nil
 		})
 }
 
@@ -557,20 +519,6 @@ func filterSourceMetrics(metrics []stats.SourcePGNMetric, in sourceMetricsInput)
 			continue
 		}
 		out = append(out, metric)
-	}
-	return out
-}
-
-func filterSourceBaselines(baselines []stats.SourceTrafficBaseline, in sourceMetricsInput) []stats.SourceTrafficBaseline {
-	out := make([]stats.SourceTrafficBaseline, 0, len(baselines))
-	for _, baseline := range baselines {
-		if in.PGN != nil && baseline.PGN != *in.PGN {
-			continue
-		}
-		if in.SourceAddress != nil && baseline.SourceAddress != *in.SourceAddress {
-			continue
-		}
-		out = append(out, baseline)
 	}
 	return out
 }

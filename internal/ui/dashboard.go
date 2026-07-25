@@ -1,6 +1,6 @@
 // dashboard.go implements beacon's live home view: the source -> connector
 // -> sink DAG templates/frag_dashboard.html renders, and the GET
-// /ui/frag/dashboard handler templates/dashboard.html polls every 2s
+// /frag/dashboard handler templates/dashboard.html polls every 2s
 // (hx-trigger="load, every 2s") — see dashboard.html's comment for why it
 // ships an empty container rather than rendering this fragment inline, the
 // same "ships empty, fetches client-side" shape the overview pages use.
@@ -266,15 +266,15 @@ func inventoryDeviceRows(records []inventory.Record) []busDeviceRow {
 // endpoint sides exist.
 func dashboardEmptyState(hasSources, hasSinks bool) (title, message, cta, href string) {
 	if !hasSources {
-		return "Add your first source", "Connect a source to start receiving data.", "Add a source", "/ui/sources/new"
+		return "Add your first source", "Connect a source to start receiving data.", "Add a source", "/sources/new"
 	}
 	if !hasSinks {
-		return "Add your first sink", "Choose where beacon should deliver routed messages.", "Add a sink", "/ui/sinks/new"
+		return "Add your first sink", "Choose where beacon should deliver routed messages.", "Add a sink", "/sinks/new"
 	}
-	return "Add your first connector", "Wire a source to a sink with a connector to start routing data.", "Add a connector", "/ui/connectors/new"
+	return "Add your first connector", "Wire a source to a sink with a connector to start routing data.", "Add a connector", "/connectors/new"
 }
 
-// handleDashboardFrag serves GET /ui/frag/dashboard: the dashboard page's
+// handleDashboardFrag serves GET /frag/dashboard: the dashboard page's
 // hx-trigger="load, every 2s" polling target (see templates/dashboard.html).
 // Lists every configured source/sink/connector fresh on every poll — a
 // source/sink/connector created or deleted elsewhere in the UI must show up

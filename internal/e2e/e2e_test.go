@@ -82,6 +82,39 @@ func sseEvents(t *testing.T, resp *http.Response, n int) []map[string]any {
 	return out
 }
 
+func consumerEnvelopeParts(t *testing.T, event map[string]any) (map[string]any, map[string]any) {
+	t.Helper()
+	if len(event) != 3 {
+		t.Fatalf("consumer envelope must have only payload, metadata, and raw at the top level: %v", event)
+	}
+	payload, ok := event["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload is not an object: %v", event["payload"])
+	}
+	metadata, ok := event["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata is not an object: %v", event["metadata"])
+	}
+	if _, ok := event["raw"]; !ok {
+		t.Fatalf("raw CAN bytes are not a separate top-level value: %v", event)
+	}
+	return payload, metadata
+}
+
+func consumerEnvelopePGN(t *testing.T, event map[string]any) float64 {
+	t.Helper()
+	payload, _ := consumerEnvelopeParts(t, event)
+	info, ok := payload["info"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload does not contain the n2k info struct: %v", payload)
+	}
+	pgnNumber, ok := info["pgn"].(float64)
+	if !ok {
+		t.Fatalf("payload.info.pgn is not a number: %v", info["pgn"])
+	}
+	return pgnNumber
+}
+
 func TestEndToEndFilteredSSEWithReplay(t *testing.T) {
 	fake := busfake.New()
 	a := startApp(t, fake)
@@ -99,34 +132,34 @@ func TestEndToEndFilteredSSEWithReplay(t *testing.T) {
 
 	events := sseEvents(t, resp, 2)
 	for _, e := range events {
-		if e["pgn"].(float64) != 127250 {
-			t.Fatalf("filter leaked pgn %v", e["pgn"])
+		if consumerEnvelopePGN(t, e) != 127250 {
+			t.Fatalf("filter leaked event %v", e)
 		}
-		// Wire-freeze regression: the payload's redundant "info" object
-		// (duplicating envelope header fields already present at the top
-		// level: pgn, source, timestamp, ...) must have been stripped at
-		// envelope creation, not merely omitted by convention.
-		payload, ok := e["payload"].(map[string]any)
-		if !ok {
-			t.Fatalf("payload not an object: %v", e["payload"])
+		payload, metadata := consumerEnvelopeParts(t, e)
+		if payload["heading"] == nil {
+			t.Fatalf("SSE payload lost the n2k VesselHeading fields: %v", payload)
 		}
-		if _, hasInfo := payload["info"]; hasInfo {
-			t.Fatalf("SSE payload still contains info: %v", payload)
+		if metadata["connector"] != "heading" {
+			t.Fatalf("connector metadata is not nested under metadata: %v", metadata)
+		}
+		if _, ok := e["raw"].(string); !ok {
+			t.Fatalf("raw CAN bytes are not a top-level base64 value: %v", e["raw"])
 		}
 	}
 	_ = resp.Body.Close()
 
 	// Replay: reconnect from before the second heading.
 	req, _ := http.NewRequest("GET", fmt.Sprintf("http://%s/nav", a.DataAddr()), nil)
-	req.Header.Set("Last-Event-ID", fmt.Sprintf("heading:%d", int64(events[0]["id"].(float64))))
+	_, firstMetadata := consumerEnvelopeParts(t, events[0])
+	req.Header.Set("Last-Event-ID", fmt.Sprintf("heading:%d", int64(firstMetadata["id"].(float64))))
 	resp2, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp2.Body.Close() }()
 	replayed := sseEvents(t, resp2, 1)
-	if replayed[0]["pgn"].(float64) != 127250 {
-		t.Fatalf("replayed pgn %v", replayed[0]["pgn"])
+	if consumerEnvelopePGN(t, replayed[0]) != 127250 {
+		t.Fatalf("replayed event %v", replayed[0])
 	}
 
 	// Health endpoint reports components.

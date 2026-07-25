@@ -36,8 +36,8 @@
     </thead>
     <tbody>
       {{range .Sources}}
-      <tr class="component-status-row state-{{.State}}" data-href="/ui/sources/{{.ID}}/">
-        <td><a class="link" href="/ui/sources/{{.ID}}/">{{.Name}}</a></td>
+      <tr class="component-status-row state-{{.State}}" data-href="/sources/{{.ID}}/">
+        <td><a class="link" href="/sources/{{.ID}}/">{{.Name}}</a></td>
         <td><code>{{.ID}}</code></td>
         <td>{{.Type}}</td>
         <td>{{if .Detail}}<code>{{.Detail}}</code>{{else}}<span class="opacity-70">-</span>{{end}}</td>
@@ -52,9 +52,9 @@
           {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
         </td>
         <td class="flex gap-2 justify-end">
-          <a class="btn btn-sm" href="/ui/sources/{{.ID}}/edit">Edit</a>
+          <a class="btn btn-sm" href="/sources/{{.ID}}/edit">Edit</a>
           <button type="button" class="btn btn-sm btn-error"
-                  hx-post="/ui/sources/{{.ID}}/delete" hx-target="#source-panel" hx-swap="outerHTML"
+                  hx-post="/sources/{{.ID}}/delete" hx-target="#source-panel" hx-swap="outerHTML"
                   hx-confirm="Delete source &quot;{{.ID}}&quot;? Connectors using it must be removed or repointed first.">
             Delete
           </button>

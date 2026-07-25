@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -149,5 +150,49 @@ func TestReopenKeepsData(t *testing.T) {
 	cfg, _ := s2.LoadConfig(ctx)
 	if len(cfg.Sinks) != 1 {
 		t.Fatal("data lost across reopen")
+	}
+}
+
+func TestSourceTrafficBaselineTableIsRemovedOnUpgrade(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pre-removal.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	for i, migration := range migrations[:3] {
+		if _, err := db.Exec(migration); err != nil {
+			t.Fatalf("migration %d setup: %v", i+1, err)
+		}
+		if _, err := db.Exec(`INSERT INTO schema_migrations(version) VALUES (?)`, i+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`
+		INSERT INTO source_metric_baselines (source_id, identity, pgn, approved_at, doc)
+		VALUES ('source-1', 'address:10', 127250, 1, '{}')
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+
+	var count int
+	if err := s.DB().QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'source_metric_baselines'`,
+	).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("source_metric_baselines table count = %d, want 0", count)
 	}
 }

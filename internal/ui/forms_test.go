@@ -1,6 +1,7 @@
 package ui_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -41,7 +42,7 @@ func newUIServerWithService(t *testing.T) (*httptest.Server, *config.Service) {
 	handler := ui.Handler(svc, stats.NewRegistry(), fakeReconciler{}.Statuses, nil, "test", nil)
 
 	mux := http.NewServeMux()
-	mux.Handle("/ui/", handler)
+	mux.Handle("/", handler)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv, svc
@@ -67,7 +68,7 @@ func newUIServerWithServiceAndRegistry(t *testing.T) (*httptest.Server, *config.
 	handler := ui.Handler(svc, reg, fakeReconciler{}.Statuses, nil, "test", nil)
 
 	mux := http.NewServeMux()
-	mux.Handle("/ui/", handler)
+	mux.Handle("/", handler)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv, svc, reg
@@ -117,13 +118,13 @@ func TestSourcesPageRendersConfiguredEntities(t *testing.T) {
 		ID: "can0", Name: "Engine CAN", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0",
 	}, true))
 
-	resp, err := http.Get(srv.URL + "/ui/sources")
+	resp, err := http.Get(srv.URL + "/sources")
 	if err != nil {
 		t.Fatal(err)
 	}
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
-	for _, want := range []string{"Engine CAN", "<code>can0</code>", "socketcan", "Detail", "badge-success", "component-status-row state-restarting", `href="/ui/sources/new"`, `href="/ui/sources/can0/"`, `href="/ui/sources/can0/edit"`} {
+	for _, want := range []string{"Engine CAN", "<code>can0</code>", "socketcan", "Detail", "badge-success", "component-status-row state-restarting", `href="/sources/new"`, `href="/sources/can0/"`, `href="/sources/can0/edit"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sources page missing %q:\n%s", want, body)
 		}
@@ -133,21 +134,21 @@ func TestSourcesPageRendersConfiguredEntities(t *testing.T) {
 func TestSourceNewPageOpensCreateForm(t *testing.T) {
 	srv, _ := newUIServerWithService(t)
 
-	resp, err := http.Get(srv.URL + "/ui/sources/new")
+	resp, err := http.Get(srv.URL + "/sources/new")
 	if err != nil {
 		t.Fatal(err)
 	}
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
 	for _, want := range []string{
-		"Add source", `hx-post="/ui/sources"`, `name="id"`, `name="interface"`,
-		`aria-label="Breadcrumb"`, `href="/ui/sources"`, `aria-current="page">Add source</span>`,
+		"Add source", `hx-post="/sources"`, `name="id"`, `name="interface"`,
+		`aria-label="Breadcrumb"`, `href="/sources"`, `aria-current="page">Add source</span>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("source new page missing %q:\n%s", want, body)
 		}
 	}
-	for _, notWant := range []string{`href="/ui/sources/new"`, `id="source-panel"`} {
+	for _, notWant := range []string{`href="/sources/new"`, `id="source-panel"`} {
 		if strings.Contains(body, notWant) {
 			t.Fatalf("source new page should not include %q:\n%s", notWant, body)
 		}
@@ -160,7 +161,7 @@ func TestSourceEditPageOpensEditForm(t *testing.T) {
 		ID: "can0", Name: "Engine CAN", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0",
 	}, true))
 
-	resp, err := http.Get(srv.URL + "/ui/sources/can0/edit")
+	resp, err := http.Get(srv.URL + "/sources/can0/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,20 +174,20 @@ func TestSourceEditPageOpensEditForm(t *testing.T) {
 		`name="interface"`,
 		`value="can0"`,
 		`aria-label="Breadcrumb"`,
-		`href="/ui/sources"`,
+		`href="/sources"`,
 		`aria-current="page">Edit can0</span>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sources page edit form missing %q:\n%s", want, body)
 		}
 	}
-	for _, notWant := range []string{`href="/ui/sources/new"`, `id="source-panel"`} {
+	for _, notWant := range []string{`href="/sources/new"`, `id="source-panel"`} {
 		if strings.Contains(body, notWant) {
 			t.Fatalf("source edit page should not include %q:\n%s", notWant, body)
 		}
 	}
 
-	resp2, err := http.Get(srv.URL + "/ui/sources/missing/edit")
+	resp2, err := http.Get(srv.URL + "/sources/missing/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +201,7 @@ func TestSourceOverviewPageRendersConfigAndLiveFragment(t *testing.T) {
 		URL: "mqtt://broker.local:1883", Topic: "vessels/main/#",
 	}, true))
 
-	resp, err := http.Get(srv.URL + "/ui/sources/mqtt-in/")
+	resp, err := http.Get(srv.URL + "/sources/mqtt-in/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,9 +210,14 @@ func TestSourceOverviewPageRendersConfigAndLiveFragment(t *testing.T) {
 	for _, want := range []string{
 		"source overview", "MQTT input", "<code>mqtt</code>",
 		"<code>mqtt://broker.local:1883</code>", "<code>vessels/main/#</code>",
-		`href="/ui/sources/mqtt-in/edit"`,
-		`aria-label="Breadcrumb"`, `href="/ui/sources"`, `aria-current="page">MQTT input</span>`,
-		`hx-get="/ui/frag/sources/mqtt-in/overview"`, `hx-trigger="load, every 2s"`,
+		`href="/sources/mqtt-in/edit"`,
+		`aria-label="Breadcrumb"`, `href="/sources"`, `aria-current="page">MQTT input</span>`,
+		`hx-get="/frag/sources/mqtt-in/overview"`, `hx-trigger="load, every 500ms"`,
+		`data-stream-url="/ui/streams/sources/mqtt-in"`, "Stream contents",
+		`data-stream-filter`, `aria-label="CEL stream filter"`,
+		`data-stream-start`, `data-stream-stop`, "JSONL", "CAN bytes",
+		`data-stream-export="json"`, `data-stream-export="can"`, `data-stream-copy`,
+		`data-stream-cel-inspector`, `data-stream-cel-expression`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("source overview page missing %q:\n%s", want, body)
@@ -225,13 +231,13 @@ func TestSinksPageRendersConfiguredEntities(t *testing.T) {
 		ID: "out1", Name: "NMEA Out", Type: model.SinkTCP, Enabled: true, Address: "0.0.0.0:2000",
 	}, true))
 
-	resp, err := http.Get(srv.URL + "/ui/sinks")
+	resp, err := http.Get(srv.URL + "/sinks")
 	if err != nil {
 		t.Fatal(err)
 	}
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
-	for _, want := range []string{"NMEA Out", "<code>out1</code>", "tcp", "<code>0.0.0.0:2000</code>", "badge-success", "component-status-row state-restarting", `href="/ui/sinks/new"`, `href="/ui/sinks/out1/"`, `href="/ui/sinks/out1/edit"`} {
+	for _, want := range []string{"NMEA Out", "<code>out1</code>", "tcp", "<code>0.0.0.0:2000</code>", "badge-success", "component-status-row state-restarting", `href="/sinks/new"`, `href="/sinks/out1/"`, `href="/sinks/out1/edit"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sinks page missing %q:\n%s", want, body)
 		}
@@ -241,21 +247,21 @@ func TestSinksPageRendersConfiguredEntities(t *testing.T) {
 func TestSinkNewPageOpensCreateForm(t *testing.T) {
 	srv, _ := newUIServerWithService(t)
 
-	resp, err := http.Get(srv.URL + "/ui/sinks/new")
+	resp, err := http.Get(srv.URL + "/sinks/new")
 	if err != nil {
 		t.Fatal(err)
 	}
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
 	for _, want := range []string{
-		"Add sink", `hx-post="/ui/sinks"`, `name="id"`, `name="interface"`,
-		`aria-label="Breadcrumb"`, `href="/ui/sinks"`, `aria-current="page">Add sink</span>`,
+		"Add sink", `hx-post="/sinks"`, `name="id"`, `name="interface"`,
+		`aria-label="Breadcrumb"`, `href="/sinks"`, `aria-current="page">Add sink</span>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sink new page missing %q:\n%s", want, body)
 		}
 	}
-	for _, notWant := range []string{`href="/ui/sinks/new"`, `id="sink-panel"`} {
+	for _, notWant := range []string{`href="/sinks/new"`, `id="sink-panel"`} {
 		if strings.Contains(body, notWant) {
 			t.Fatalf("sink new page should not include %q:\n%s", notWant, body)
 		}
@@ -268,7 +274,7 @@ func TestSinkEditPageOpensEditForm(t *testing.T) {
 		ID: "out1", Name: "NMEA Out", Type: model.SinkTCP, Enabled: true, Address: "0.0.0.0:2000",
 	}, true))
 
-	resp, err := http.Get(srv.URL + "/ui/sinks/out1/edit")
+	resp, err := http.Get(srv.URL + "/sinks/out1/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,20 +287,20 @@ func TestSinkEditPageOpensEditForm(t *testing.T) {
 		`name="address"`,
 		`value="0.0.0.0:2000"`,
 		`aria-label="Breadcrumb"`,
-		`href="/ui/sinks"`,
+		`href="/sinks"`,
 		`aria-current="page">Edit out1</span>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sinks page edit form missing %q:\n%s", want, body)
 		}
 	}
-	for _, notWant := range []string{`href="/ui/sinks/new"`, `id="sink-panel"`} {
+	for _, notWant := range []string{`href="/sinks/new"`, `id="sink-panel"`} {
 		if strings.Contains(body, notWant) {
 			t.Fatalf("sink edit page should not include %q:\n%s", notWant, body)
 		}
 	}
 
-	resp2, err := http.Get(srv.URL + "/ui/sinks/missing/edit")
+	resp2, err := http.Get(srv.URL + "/sinks/missing/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +314,7 @@ func TestSinkOverviewPageRendersConfigAndLiveFragment(t *testing.T) {
 		URL: "mqtt://broker.local:1883", Topic: "vessels/main/json",
 	}, true))
 
-	resp, err := http.Get(srv.URL + "/ui/sinks/mqtt-out/")
+	resp, err := http.Get(srv.URL + "/sinks/mqtt-out/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,14 +323,153 @@ func TestSinkOverviewPageRendersConfigAndLiveFragment(t *testing.T) {
 	for _, want := range []string{
 		"sink overview", "MQTT output", "<code>mqtt</code>",
 		"<code>mqtt://broker.local:1883</code>", "<code>vessels/main/json</code>",
-		`href="/ui/sinks/mqtt-out/edit"`,
-		`aria-label="Breadcrumb"`, `href="/ui/sinks"`, `aria-current="page">MQTT output</span>`,
-		`hx-get="/ui/frag/sinks/mqtt-out/overview"`, `hx-trigger="load, every 2s"`,
+		`href="/sinks/mqtt-out/edit"`,
+		`aria-label="Breadcrumb"`, `href="/sinks"`, `aria-current="page">MQTT output</span>`,
+		`hx-get="/frag/sinks/mqtt-out/overview"`, `hx-trigger="load, every 500ms"`,
+		`data-stream-url="/ui/streams/sinks/mqtt-out"`, "Stream contents",
+		`data-stream-filter`, `aria-label="CEL stream filter"`,
+		`data-stream-start`, `data-stream-stop`, "JSONL", "CAN bytes",
+		`data-stream-export="json"`, `data-stream-export="can"`, `data-stream-copy`,
+		`data-stream-cel-inspector`, `data-stream-cel-expression`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sink overview page missing %q:\n%s", want, body)
 		}
 	}
+}
+
+func TestComponentStreamSendsFutureCanonicalEnvelope(t *testing.T) {
+	srv, svc, reg := newUIServerWithServiceAndRegistry(t)
+	must(t, svc.PutSource(context.Background(), model.Source{
+		ID: "src1", Name: "Source One", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0",
+	}, true))
+
+	streamContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(streamContext, http.MethodGet, srv.URL+"/ui/streams/sources/src1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusOK)
+	if got := resp.Header.Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("Content-Type = %q, want text/event-stream", got)
+	}
+
+	payload := json.RawMessage(`{"info":{"timestamp":"2026-06-29T10:10:17Z","priority":5,"pgn":130314,"sourceId":6,"targetId":null},"instance":0,"source":0,"pressure":1020690}`)
+	reg.RecordSource("src1", &msg.Envelope{
+		PGN: 130314, Source: 6, Dest: 255, Priority: 5,
+		Payload: payload,
+		Raw:     []byte{0xff, 0x00, 0x00, 0x12},
+	})
+
+	reader := bufio.NewReader(resp.Body)
+	var document string
+	for document == "" {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if strings.HasPrefix(line, "data: ") {
+			document = strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+		}
+	}
+	var wire struct {
+		Payload json.RawMessage `json:"payload"`
+		Raw     []byte          `json:"raw"`
+	}
+	if err := json.Unmarshal([]byte(document), &wire); err != nil {
+		t.Fatal(err)
+	}
+	if string(wire.Payload) != string(payload) {
+		t.Fatalf("stream payload = %s, want verbatim %s", wire.Payload, payload)
+	}
+	if got, want := base64.StdEncoding.EncodeToString(wire.Raw), "/wAAEg=="; got != want {
+		t.Fatalf("stream raw = %s, want %s", got, want)
+	}
+}
+
+func TestComponentStreamAppliesCELFilter(t *testing.T) {
+	srv, svc, reg := newUIServerWithServiceAndRegistry(t)
+	must(t, svc.PutSource(context.Background(), model.Source{
+		ID: "src1", Name: "Source One", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0",
+	}, true))
+
+	expression := `msg.pgn == 130314 && msg.payload.pressure == 1020690`
+	streamContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(
+		streamContext,
+		http.MethodGet,
+		srv.URL+"/ui/streams/sources/src1?filter="+url.QueryEscape(expression),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusOK)
+
+	reg.RecordSource("src1", &msg.Envelope{
+		PGN: 127250, Source: 6, Dest: 255, Priority: 5,
+		Payload: json.RawMessage(`{"info":{"timestamp":"2026-06-29T10:10:17Z","priority":5,"pgn":127250,"sourceId":6,"targetId":null},"pressure":1}`),
+		Raw:     []byte{0x01},
+	})
+	reg.RecordSource("src1", &msg.Envelope{
+		PGN: 130314, Source: 6, Dest: 255, Priority: 5,
+		Payload: json.RawMessage(`{"info":{"timestamp":"2026-06-29T10:10:17Z","priority":5,"pgn":130314,"sourceId":6,"targetId":null},"pressure":1020690}`),
+		Raw:     []byte{0xff, 0x00, 0x00, 0x12},
+	})
+
+	reader := bufio.NewReader(resp.Body)
+	var document string
+	for document == "" {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if strings.HasPrefix(line, "data: ") {
+			document = strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+		}
+	}
+	if !strings.Contains(document, `"pgn":130314`) || !strings.Contains(document, `"pressure":1020690`) {
+		t.Fatalf("filtered stream document = %s, want matching envelope", document)
+	}
+	if strings.Contains(document, `"pgn":127250`) {
+		t.Fatalf("filtered stream document contains non-matching envelope: %s", document)
+	}
+}
+
+func TestComponentStreamRejectsInvalidCELFilter(t *testing.T) {
+	srv, svc, _ := newUIServerWithServiceAndRegistry(t)
+	must(t, svc.PutSource(context.Background(), model.Source{
+		ID: "src1", Name: "Source One", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0",
+	}, true))
+
+	resp, err := http.Get(srv.URL + "/ui/streams/sources/src1?filter=" + url.QueryEscape("msg.pgn == @"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusBadRequest)
+}
+
+func TestComponentStreamRejectsUnknownEntity(t *testing.T) {
+	srv, _, _ := newUIServerWithServiceAndRegistry(t)
+	resp, err := http.Get(srv.URL + "/ui/streams/sinks/missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusNotFound)
+	_ = resp.Body.Close()
 }
 
 // --- Type-fields fragment per type ---
@@ -346,7 +491,7 @@ func TestSourceTypeFieldsFragmentPerType(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.typ, func(t *testing.T) {
-			resp, err := http.Get(srv.URL + "/ui/frag/source-type-fields?type=" + tc.typ)
+			resp, err := http.Get(srv.URL + "/frag/source-type-fields?type=" + tc.typ)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -366,7 +511,7 @@ func TestSourceTypeFieldsFragmentPerType(t *testing.T) {
 	// type: another type's fields aren't in the DOM to be resent, so their
 	// values do NOT survive an A→B→A type switch — deliberate, see
 	// sourceTypeFieldsData's doc comment in forms.go.
-	resp, err := http.Get(srv.URL + "/ui/frag/source-type-fields?type=socketcan&interface=can5")
+	resp, err := http.Get(srv.URL + "/frag/source-type-fields?type=socketcan&interface=can5")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +520,7 @@ func TestSourceTypeFieldsFragmentPerType(t *testing.T) {
 		t.Fatalf("type-fields fragment did not preserve interface value:\n%s", body)
 	}
 
-	resp, err = http.Get(srv.URL + "/ui/frag/source-type-fields?type=udp&address=0.0.0.0%3A1457&format=actisense")
+	resp, err = http.Get(srv.URL + "/frag/source-type-fields?type=udp&address=0.0.0.0%3A1457&format=actisense")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +539,7 @@ func TestSourceOverviewShowsGatewayConfiguration(t *testing.T) {
 		Address: "0.0.0.0:1457", Format: model.StreamFormatActisense,
 	}, true))
 
-	resp, err := http.Get(srv.URL + "/ui/sources/gateway-in/")
+	resp, err := http.Get(srv.URL + "/sources/gateway-in/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -423,7 +568,7 @@ func TestSinkTypeFieldsFragmentPerType(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.typ, func(t *testing.T) {
-			resp, err := http.Get(srv.URL + "/ui/frag/sink-type-fields?type=" + tc.typ)
+			resp, err := http.Get(srv.URL + "/frag/sink-type-fields?type=" + tc.typ)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -446,7 +591,7 @@ func TestSourceEditPagePreFillsAndLocksID(t *testing.T) {
 		ID: "can0", Name: "Engine", Type: model.SourceSocketCAN, Interface: "can0", Enabled: true,
 	}, true))
 
-	resp, err := http.Get(srv.URL + "/ui/sources/can0/edit")
+	resp, err := http.Get(srv.URL + "/sources/can0/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +603,7 @@ func TestSourceEditPagePreFillsAndLocksID(t *testing.T) {
 		}
 	}
 
-	resp2, err := http.Get(srv.URL + "/ui/sources/doesnotexist/edit")
+	resp2, err := http.Get(srv.URL + "/sources/doesnotexist/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,8 +625,8 @@ func assertCreateRedirect(t *testing.T, resp *http.Response, wantMsg string) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("create status = %d, want 200", resp.StatusCode)
 	}
-	if got := resp.Header.Get("HX-Redirect"); got != "/ui/dashboard" {
-		t.Fatalf("HX-Redirect = %q, want /ui/dashboard", got)
+	if got := resp.Header.Get("HX-Redirect"); got != "/dashboard" {
+		t.Fatalf("HX-Redirect = %q, want /dashboard", got)
 	}
 	for _, c := range resp.Cookies() {
 		if c.Name != flashCookieName {
@@ -501,7 +646,7 @@ func assertCreateRedirect(t *testing.T, resp *http.Response, wantMsg string) {
 
 func TestSourceCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/ui/sources", url.Values{
+	resp := postForm(t, srv, "/sources", url.Values{
 		"id": {"can0"}, "name": {"Engine CAN"}, "type": {"socketcan"},
 		"enabled": {"1"}, "interface": {"can0"},
 	})
@@ -517,12 +662,12 @@ func TestSourceCreateRoundTrip(t *testing.T) {
 		t.Fatalf("persisted source = %+v", got)
 	}
 
-	resp2, err := http.Get(srv.URL + "/ui/sources")
+	resp2, err := http.Get(srv.URL + "/sources")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if body2 := mustBody(t, resp2); !strings.Contains(body2, "Engine CAN") {
-		t.Fatalf("GET /ui/sources does not reflect created source:\n%s", body2)
+		t.Fatalf("GET /sources does not reflect created source:\n%s", body2)
 	}
 }
 
@@ -532,7 +677,7 @@ func TestSourceUpdateRoundTrip(t *testing.T) {
 		ID: "can0", Name: "Old Name", Type: model.SourceSocketCAN, Interface: "can0",
 	}, true))
 
-	resp := postForm(t, srv, "/ui/sources/can0", url.Values{
+	resp := postForm(t, srv, "/sources/can0", url.Values{
 		"id": {"can0"}, "name": {"New Name"}, "type": {"socketcan"}, "interface": {"can1"},
 	})
 	mustStatus(t, resp, http.StatusOK)
@@ -552,7 +697,7 @@ func TestSourceUpdateRoundTrip(t *testing.T) {
 
 func TestSourceHeadersRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/ui/sources", url.Values{
+	resp := postForm(t, srv, "/sources", url.Values{
 		"id": {"sse1"}, "name": {"SSE"}, "type": {"http_sse"},
 		"url":     {"https://example.com/stream"},
 		"headers": {"Authorization: Bearer tok\nX-Custom: value"},
@@ -567,7 +712,7 @@ func TestSourceHeadersRoundTrip(t *testing.T) {
 		t.Fatalf("parsed headers = %+v", got.Headers)
 	}
 
-	resp2, err := http.Get(srv.URL + "/ui/sources/sse1/edit")
+	resp2, err := http.Get(srv.URL + "/sources/sse1/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -579,7 +724,7 @@ func TestSourceHeadersRoundTrip(t *testing.T) {
 
 func TestMQTTSourceCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/ui/sources", url.Values{
+	resp := postForm(t, srv, "/sources", url.Values{
 		"id": {"mqtt-in"}, "name": {"MQTT input"}, "type": {"mqtt"},
 		"enabled": {"1"}, "url": {"mqtt://broker.local:1883"}, "topic": {"vessels/main/engine/#"},
 	})
@@ -593,7 +738,7 @@ func TestMQTTSourceCreateRoundTrip(t *testing.T) {
 		t.Fatalf("persisted source = %+v", got)
 	}
 
-	resp2, err := http.Get(srv.URL + "/ui/sources/mqtt-in/edit")
+	resp2, err := http.Get(srv.URL + "/sources/mqtt-in/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -607,7 +752,7 @@ func TestMQTTSourceCreateRoundTrip(t *testing.T) {
 
 func TestSinkCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/ui/sinks", url.Values{
+	resp := postForm(t, srv, "/sinks", url.Values{
 		"id": {"out1"}, "name": {"NMEA Out"}, "type": {"tcp"},
 		"enabled": {"1"}, "address": {"0.0.0.0:2000"},
 	})
@@ -624,7 +769,7 @@ func TestSinkCreateRoundTrip(t *testing.T) {
 
 func TestMQTTSinkCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/ui/sinks", url.Values{
+	resp := postForm(t, srv, "/sinks", url.Values{
 		"id": {"mqtt-out"}, "name": {"MQTT output"}, "type": {"mqtt"},
 		"enabled": {"1"}, "url": {"mqtt://broker.local:1883"}, "topic": {"vessels/main/engine/json"},
 	})
@@ -638,7 +783,7 @@ func TestMQTTSinkCreateRoundTrip(t *testing.T) {
 		t.Fatalf("persisted sink = %+v", got)
 	}
 
-	resp2, err := http.Get(srv.URL + "/ui/sinks/mqtt-out/edit")
+	resp2, err := http.Get(srv.URL + "/sinks/mqtt-out/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -652,7 +797,7 @@ func TestMQTTSinkCreateRoundTrip(t *testing.T) {
 
 func TestTCPGatewaySinkCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/ui/sinks", url.Values{
+	resp := postForm(t, srv, "/sinks", url.Values{
 		"id": {"gw-out"}, "name": {"YD gateway out"}, "type": {"tcp_gateway"},
 		"enabled": {"1"}, "address": {"192.168.4.1:1457"}, "format": {"ydraw"},
 	})
@@ -666,7 +811,7 @@ func TestTCPGatewaySinkCreateRoundTrip(t *testing.T) {
 		t.Fatalf("persisted sink = %+v", got)
 	}
 
-	resp2, err := http.Get(srv.URL + "/ui/sinks/gw-out/edit")
+	resp2, err := http.Get(srv.URL + "/sinks/gw-out/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -689,7 +834,7 @@ func TestTCPGatewaySinkCreateRoundTrip(t *testing.T) {
 // parseOptionalInt turn into 0, not an error.
 func TestFileSinkCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/ui/sinks", url.Values{
+	resp := postForm(t, srv, "/sinks", url.Values{
 		"id": {"navlog"}, "name": {"Nav log"}, "type": {"file"},
 		"enabled": {"1"}, "file_path": {"/data/nav.log"}, "format": {"ndjson"},
 	})
@@ -706,7 +851,7 @@ func TestFileSinkCreateRoundTrip(t *testing.T) {
 	// The edit form round-trips file_path/format and shows the defaults as
 	// placeholders (blank stored value -> blank input, default shown only
 	// as a placeholder, not baked into the value).
-	resp2, err := http.Get(srv.URL + "/ui/sinks/navlog/edit")
+	resp2, err := http.Get(srv.URL + "/sinks/navlog/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -729,7 +874,7 @@ func TestFileSinkCreateRoundTrip(t *testing.T) {
 // the edit form as their literal values, not the defaults.
 func TestFileSinkMaxFileBytesAndMaxFilesRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/ui/sinks", url.Values{
+	resp := postForm(t, srv, "/sinks", url.Values{
 		"id": {"navlog"}, "name": {"Nav log"}, "type": {"file"},
 		"file_path": {"/data/nav.candump"}, "format": {"candump"},
 		"max_file_bytes": {"52428800"}, "max_files": {"3"},
@@ -744,7 +889,7 @@ func TestFileSinkMaxFileBytesAndMaxFilesRoundTrip(t *testing.T) {
 		t.Fatalf("persisted sink = %+v", got)
 	}
 
-	resp2, err := http.Get(srv.URL + "/ui/sinks/navlog/edit")
+	resp2, err := http.Get(srv.URL + "/sinks/navlog/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -766,7 +911,7 @@ func TestFileSinkMaxFileBytesAndMaxFilesRoundTrip(t *testing.T) {
 // validation failure follows (see TestSinkCreateValidationErrorRendersFormNot500).
 func TestFileSinkCreateRelativePathRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/ui/sinks", url.Values{
+	resp := postForm(t, srv, "/sinks", url.Values{
 		"id": {"navlog"}, "name": {"Nav log"}, "type": {"file"},
 		"file_path": {"relative/nav.log"}, "format": {"ndjson"},
 	})
@@ -790,7 +935,7 @@ func TestFileSinkCreateRelativePathRendersFormNot500(t *testing.T) {
 // for the connector form's buffer fields.
 func TestFileSinkNonNumericMaxFileBytesRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/ui/sinks", url.Values{
+	resp := postForm(t, srv, "/sinks", url.Values{
 		"id": {"navlog"}, "name": {"Nav log"}, "type": {"file"},
 		"file_path": {"/data/nav.log"}, "format": {"ndjson"},
 		"max_file_bytes": {"not-a-number"},
@@ -814,7 +959,7 @@ func TestFileSinkNonNumericMaxFileBytesRendersFormNot500(t *testing.T) {
 // — see forms.go).
 func TestFileSinkNonNumericMaxFilesRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/ui/sinks", url.Values{
+	resp := postForm(t, srv, "/sinks", url.Values{
 		"id": {"navlog"}, "name": {"Nav log"}, "type": {"file"},
 		"file_path": {"/data/nav.log"}, "format": {"ndjson"},
 		"max_files": {"not-a-number"},
@@ -843,7 +988,7 @@ func TestSinksPageShowsFilePathDetailForFileSink(t *testing.T) {
 		FilePath: "/data/nav.log", Format: model.FileFormatNDJSON,
 	}, true))
 
-	resp, err := http.Get(srv.URL + "/ui/sinks")
+	resp, err := http.Get(srv.URL + "/sinks")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -861,7 +1006,7 @@ func TestSinksPageShowsFilePathDetailForFileSink(t *testing.T) {
 func TestSourceCreateValidationErrorRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	// socketcan requires an interface; omit it.
-	resp := postForm(t, srv, "/ui/sources", url.Values{
+	resp := postForm(t, srv, "/sources", url.Values{
 		"id": {"bad"}, "name": {"Bad Source"}, "type": {"socketcan"},
 	})
 	mustStatus(t, resp, http.StatusOK)
@@ -889,7 +1034,7 @@ func TestSourceCreateValidationErrorRendersFormNot500(t *testing.T) {
 // sink logic (see forms.go's package doc comment).
 func TestSourceCreateParseFormErrorRendersAlertNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	req, err := http.NewRequest(http.MethodPost, srv.URL+"/ui/sources?%zz",
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/sources?%zz",
 		strings.NewReader(url.Values{"id": {"bad"}, "name": {"Bad"}, "type": {"socketcan"}}.Encode()))
 	if err != nil {
 		t.Fatal(err)
@@ -911,7 +1056,7 @@ func TestSourceCreateParseFormErrorRendersAlertNot500(t *testing.T) {
 
 func TestSourceCreateMalformedHeadersRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/ui/sources", url.Values{
+	resp := postForm(t, srv, "/sources", url.Values{
 		"id": {"sse1"}, "name": {"SSE Source"}, "type": {"http_sse"},
 		"url":     {"https://example.com/stream"},
 		"headers": {"not-a-valid-header-line"},
@@ -935,7 +1080,7 @@ func TestSourceCreateExistingIDRendersFormNot500(t *testing.T) {
 		ID: "can0", Name: "Engine", Type: model.SourceSocketCAN, Interface: "can0",
 	}, true))
 
-	resp := postForm(t, srv, "/ui/sources", url.Values{
+	resp := postForm(t, srv, "/sources", url.Values{
 		"id": {"can0"}, "name": {"Dup"}, "type": {"socketcan"}, "interface": {"can1"},
 	})
 	mustStatus(t, resp, http.StatusOK)
@@ -947,7 +1092,7 @@ func TestSourceCreateExistingIDRendersFormNot500(t *testing.T) {
 
 func TestSinkCreateValidationErrorRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/ui/sinks", url.Values{
+	resp := postForm(t, srv, "/sinks", url.Values{
 		"id": {"bad"}, "name": {"Bad Sink"}, "type": {"tcp"}, "address": {"not-a-valid-address"},
 	})
 	mustStatus(t, resp, http.StatusOK)
@@ -972,7 +1117,7 @@ func TestSourceDeleteAndDeleteInUse(t *testing.T) {
 	must(t, svc.PutSink(ctx, model.Sink{ID: "sink1", Name: "Sink One", Type: model.SinkTCP, Address: "127.0.0.1:9000"}, true))
 	must(t, svc.PutConnector(ctx, model.Connector{ID: "conn1", Name: "Conn One", SourceID: "src1", SinkID: "sink1"}, true))
 
-	resp := postForm(t, srv, "/ui/sources/src1/delete", nil)
+	resp := postForm(t, srv, "/sources/src1/delete", nil)
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
 	if !strings.Contains(body, "conn1") || !strings.Contains(body, "alert-error") {
@@ -988,7 +1133,7 @@ func TestSourceDeleteAndDeleteInUse(t *testing.T) {
 	}
 
 	must(t, svc.DeleteConnector(ctx, "conn1"))
-	resp2 := postForm(t, srv, "/ui/sources/src1/delete", nil)
+	resp2 := postForm(t, srv, "/sources/src1/delete", nil)
 	mustStatus(t, resp2, http.StatusOK)
 	body2 := mustBody(t, resp2)
 	if !strings.Contains(body2, "alert-success") {
@@ -1012,7 +1157,7 @@ func TestSinkDeleteAndDeleteInUse(t *testing.T) {
 	must(t, svc.PutSink(ctx, model.Sink{ID: "sink1", Name: "Sink One", Type: model.SinkTCP, Address: "127.0.0.1:9000"}, true))
 	must(t, svc.PutConnector(ctx, model.Connector{ID: "conn1", Name: "Conn One", SourceID: "src1", SinkID: "sink1"}, true))
 
-	resp := postForm(t, srv, "/ui/sinks/sink1/delete", nil)
+	resp := postForm(t, srv, "/sinks/sink1/delete", nil)
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
 	if !strings.Contains(body, "conn1") || !strings.Contains(body, "alert-error") {
@@ -1020,7 +1165,7 @@ func TestSinkDeleteAndDeleteInUse(t *testing.T) {
 	}
 
 	must(t, svc.DeleteConnector(ctx, "conn1"))
-	resp2 := postForm(t, srv, "/ui/sinks/sink1/delete", nil)
+	resp2 := postForm(t, srv, "/sinks/sink1/delete", nil)
 	mustStatus(t, resp2, http.StatusOK)
 	body2 := mustBody(t, resp2)
 	if !strings.Contains(body2, "alert-success") {
@@ -1033,7 +1178,7 @@ func TestSinkDeleteAndDeleteInUse(t *testing.T) {
 
 func TestSourceDeleteUnknownID(t *testing.T) {
 	srv, _ := newUIServerWithService(t)
-	resp := postForm(t, srv, "/ui/sources/nope/delete", nil)
+	resp := postForm(t, srv, "/sources/nope/delete", nil)
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
 	if !strings.Contains(body, "alert-error") || !strings.Contains(body, "not found") {
@@ -1051,7 +1196,7 @@ func TestConnectorsPageRendersConfiguredEntities(t *testing.T) {
 		Filters: []string{"msg.pgn == 127250"}, Enabled: true,
 	}, true))
 
-	resp, err := http.Get(srv.URL + "/ui/connectors")
+	resp, err := http.Get(srv.URL + "/connectors")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1061,7 +1206,7 @@ func TestConnectorsPageRendersConfiguredEntities(t *testing.T) {
 	// One" — seedSourceSink's names), not their raw ids: see
 	// TestConnectorsPageNameFallsBackToIDWhenEmpty for the fallback case.
 	for _, want := range []string{
-		`href="/ui/connectors/new"`, `href="/ui/connectors/conn1/"`, `href="/ui/connectors/conn1/edit"`, "NMEA Bridge",
+		`href="/connectors/new"`, `href="/connectors/conn1/"`, `href="/connectors/conn1/edit"`, "NMEA Bridge",
 		"Source One", "Sink One",
 		"badge-success", "component-status-row state-restarting", ">restarting<",
 	} {
@@ -1089,7 +1234,7 @@ func TestConnectorsPageNameFallsBackToIDWhenEmpty(t *testing.T) {
 	must(t, svc.PutSink(ctx, model.Sink{ID: "sink1", Type: model.SinkTCP, Address: "127.0.0.1:9000"}, true))
 	must(t, svc.PutConnector(ctx, model.Connector{ID: "conn1", Name: "Bridge", SourceID: "src1", SinkID: "sink1"}, true))
 
-	resp, err := http.Get(srv.URL + "/ui/connectors")
+	resp, err := http.Get(srv.URL + "/connectors")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1104,7 +1249,7 @@ func TestConnectorNewPageOpensCreateForm(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	seedSourceSink(t, svc)
 
-	resp, err := http.Get(srv.URL + "/ui/connectors/new")
+	resp, err := http.Get(srv.URL + "/connectors/new")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1112,7 +1257,7 @@ func TestConnectorNewPageOpensCreateForm(t *testing.T) {
 	body := mustBody(t, resp)
 	for _, want := range []string{
 		"Add connector",
-		`hx-post="/ui/connectors"`,
+		`hx-post="/connectors"`,
 		`name="id"`,
 		`value="src1"`,
 		`value="sink1"`,
@@ -1122,7 +1267,7 @@ func TestConnectorNewPageOpensCreateForm(t *testing.T) {
 		`role="listbox"`,
 		`aria-keyshortcuts="Control+Space"`,
 		`aria-label="Breadcrumb"`,
-		`href="/ui/connectors"`,
+		`href="/connectors"`,
 		`aria-current="page">Add connector</span>`,
 	} {
 		if !strings.Contains(body, want) {
@@ -1134,7 +1279,7 @@ func TestConnectorNewPageOpensCreateForm(t *testing.T) {
 func TestCELCompletionCatalogIncludesSchemaFieldsAndPGNs(t *testing.T) {
 	srv, _ := newUIServerWithService(t)
 
-	resp, err := http.Get(srv.URL + "/ui/cel-completions")
+	resp, err := http.Get(srv.URL + "/cel-completions")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1163,7 +1308,7 @@ func TestConnectorEditPageOpensEditForm(t *testing.T) {
 		Enabled: true,
 	}, true))
 
-	resp, err := http.Get(srv.URL + "/ui/connectors/conn1/edit")
+	resp, err := http.Get(srv.URL + "/connectors/conn1/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1181,7 +1326,7 @@ func TestConnectorEditPageOpensEditForm(t *testing.T) {
 		`value="24h0m0s"`,
 		`value="1048576"`,
 		`aria-label="Breadcrumb"`,
-		`href="/ui/connectors"`,
+		`href="/connectors"`,
 		`aria-current="page">Edit conn1</span>`,
 	} {
 		if !strings.Contains(body, want) {
@@ -1189,7 +1334,7 @@ func TestConnectorEditPageOpensEditForm(t *testing.T) {
 		}
 	}
 
-	resp2, err := http.Get(srv.URL + "/ui/connectors/doesnotexist/edit")
+	resp2, err := http.Get(srv.URL + "/connectors/doesnotexist/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1206,7 +1351,7 @@ func TestConnectorEditPagePreFillsAndLocksID(t *testing.T) {
 		Enabled: true,
 	}, true))
 
-	resp, err := http.Get(srv.URL + "/ui/connectors/conn1/edit")
+	resp, err := http.Get(srv.URL + "/connectors/conn1/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1223,7 +1368,7 @@ func TestConnectorEditPagePreFillsAndLocksID(t *testing.T) {
 		}
 	}
 
-	resp2, err := http.Get(srv.URL + "/ui/connectors/doesnotexist/edit")
+	resp2, err := http.Get(srv.URL + "/connectors/doesnotexist/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1234,7 +1379,7 @@ func TestConnectorCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	seedSourceSink(t, svc)
 
-	resp := postForm(t, srv, "/ui/connectors", url.Values{
+	resp := postForm(t, srv, "/connectors", url.Values{
 		"id": {"conn1"}, "name": {"NMEA Bridge"}, "source_id": {"src1"}, "sink_id": {"sink1"},
 		"enabled":      {"1"},
 		"filters":      {"msg.pgn == 127250\n\n  msg.priority < 4  \n"},
@@ -1256,12 +1401,12 @@ func TestConnectorCreateRoundTrip(t *testing.T) {
 		t.Fatalf("persisted connector = %+v", got)
 	}
 
-	resp2, err := http.Get(srv.URL + "/ui/connectors")
+	resp2, err := http.Get(srv.URL + "/connectors")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if body2 := mustBody(t, resp2); !strings.Contains(body2, "NMEA Bridge") {
-		t.Fatalf("GET /ui/connectors does not reflect created connector:\n%s", body2)
+		t.Fatalf("GET /connectors does not reflect created connector:\n%s", body2)
 	}
 }
 
@@ -1270,7 +1415,7 @@ func TestConnectorCreateRoundTrip(t *testing.T) {
 // cookie, so a subsequent load never shows it again.
 func TestCreateFlashShownOnDashboardOnce(t *testing.T) {
 	srv, _ := newUIServerWithService(t)
-	resp := postForm(t, srv, "/ui/sinks", url.Values{
+	resp := postForm(t, srv, "/sinks", url.Values{
 		"id": {"out1"}, "name": {"NMEA Out"}, "type": {"tcp"},
 		"enabled": {"1"}, "address": {"0.0.0.0:2000"},
 	})
@@ -1286,7 +1431,7 @@ func TestCreateFlashShownOnDashboardOnce(t *testing.T) {
 	}
 
 	// The dashboard (the redirect target) renders the flash once...
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/ui/dashboard", nil)
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/dashboard", nil)
 	req.AddCookie(flash)
 	resp2, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -1309,7 +1454,7 @@ func TestCreateFlashShownOnDashboardOnce(t *testing.T) {
 	}
 
 	// A dashboard load without the cookie shows no flash at all.
-	resp3, err := http.Get(srv.URL + "/ui/dashboard")
+	resp3, err := http.Get(srv.URL + "/dashboard")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1325,7 +1470,7 @@ func TestConnectorUpdateRoundTrip(t *testing.T) {
 		ID: "conn1", Name: "Old Name", SourceID: "src1", SinkID: "sink1",
 	}, true))
 
-	resp := postForm(t, srv, "/ui/connectors/conn1", url.Values{
+	resp := postForm(t, srv, "/connectors/conn1", url.Values{
 		"id": {"conn1"}, "name": {"New Name"}, "source_id": {"src1"}, "sink_id": {"sink1"},
 		"max_age": {"90s"},
 	})
@@ -1348,7 +1493,7 @@ func TestConnectorMaxAgeParseErrorRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	seedSourceSink(t, svc)
 
-	resp := postForm(t, srv, "/ui/connectors", url.Values{
+	resp := postForm(t, srv, "/connectors", url.Values{
 		"id": {"conn1"}, "name": {"Bad Connector"}, "source_id": {"src1"}, "sink_id": {"sink1"},
 		"max_age": {"notaduration"},
 	})
@@ -1377,7 +1522,7 @@ func TestConnectorMaxAgeParseErrorPreservesSelectionsAndFilters(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	seedSourceSink(t, svc)
 
-	resp := postForm(t, srv, "/ui/connectors", url.Values{
+	resp := postForm(t, srv, "/connectors", url.Values{
 		"id": {"conn1"}, "name": {"Bad Connector"}, "source_id": {"src1"}, "sink_id": {"sink1"},
 		"filters": {"msg.pgn == 127250\nmsg.priority == 4"},
 		"max_age": {"notaduration"},
@@ -1404,7 +1549,7 @@ func TestConnectorCreateValidationErrorRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	seedSourceSink(t, svc)
 	// source_id is required (model.Connector.Validate); omit it.
-	resp := postForm(t, srv, "/ui/connectors", url.Values{
+	resp := postForm(t, srv, "/connectors", url.Values{
 		"id": {"conn1"}, "name": {"No Source"}, "sink_id": {"sink1"},
 	})
 	mustStatus(t, resp, http.StatusOK)
@@ -1427,7 +1572,7 @@ func TestConnectorCreateExistingIDRendersFormNot500(t *testing.T) {
 		ID: "conn1", Name: "Existing", SourceID: "src1", SinkID: "sink1",
 	}, true))
 
-	resp := postForm(t, srv, "/ui/connectors", url.Values{
+	resp := postForm(t, srv, "/connectors", url.Values{
 		"id": {"conn1"}, "name": {"Dup"}, "source_id": {"src1"}, "sink_id": {"sink1"},
 	})
 	mustStatus(t, resp, http.StatusOK)
@@ -1443,7 +1588,7 @@ func TestConnectorDeleteRoundTripAndUnknownID(t *testing.T) {
 	ctx := context.Background()
 	must(t, svc.PutConnector(ctx, model.Connector{ID: "conn1", Name: "Conn One", SourceID: "src1", SinkID: "sink1"}, true))
 
-	resp := postForm(t, srv, "/ui/connectors/conn1/delete", nil)
+	resp := postForm(t, srv, "/connectors/conn1/delete", nil)
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
 	if !strings.Contains(body, "alert-success") {
@@ -1452,7 +1597,7 @@ func TestConnectorDeleteRoundTripAndUnknownID(t *testing.T) {
 	if !strings.Contains(body, `role="alert" data-autodismiss`) {
 		t.Fatalf("delete success alert missing the auto-dismiss marker:\n%s", body)
 	}
-	if strings.Contains(body, "Conn One") || strings.Contains(body, "/ui/connectors/conn1") {
+	if strings.Contains(body, "Conn One") || strings.Contains(body, "/connectors/conn1") {
 		t.Fatalf("connector row should be gone after delete:\n%s", body)
 	}
 	if _, err := svc.GetConnector(ctx, "conn1"); !errors.Is(err, config.ErrNotFound) {
@@ -1462,7 +1607,7 @@ func TestConnectorDeleteRoundTripAndUnknownID(t *testing.T) {
 	// No ErrInUse case for connector delete (config.Service:
 	// "nothing else references a connector") — the only failure mode left
 	// to exercise is unknown id.
-	resp2 := postForm(t, srv, "/ui/connectors/nope/delete", nil)
+	resp2 := postForm(t, srv, "/connectors/nope/delete", nil)
 	mustStatus(t, resp2, http.StatusOK)
 	body2 := mustBody(t, resp2)
 	if !strings.Contains(body2, "alert-error") || !strings.Contains(body2, "not found") {
@@ -1475,14 +1620,14 @@ func TestConnectorDeleteRoundTripAndUnknownID(t *testing.T) {
 func TestValidateFiltersFragmentHappyAndError(t *testing.T) {
 	srv, _ := newUIServerWithService(t)
 
-	resp := postForm(t, srv, "/ui/frag/validate-filters", url.Values{"filters": {"msg.pgn == 127250"}})
+	resp := postForm(t, srv, "/frag/validate-filters", url.Values{"filters": {"msg.pgn == 127250"}})
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
 	if !strings.Contains(body, "filters OK") {
 		t.Fatalf("expected a filters-OK line for a valid expression:\n%s", body)
 	}
 
-	resp2 := postForm(t, srv, "/ui/frag/validate-filters", url.Values{"filters": {"not a valid ((( expr"}})
+	resp2 := postForm(t, srv, "/frag/validate-filters", url.Values{"filters": {"not a valid ((( expr"}})
 	mustStatus(t, resp2, http.StatusOK)
 	body2 := mustBody(t, resp2)
 	if !strings.Contains(body2, "alert-error") {
@@ -1493,7 +1638,7 @@ func TestValidateFiltersFragmentHappyAndError(t *testing.T) {
 func TestValidateFiltersJSONReturnsEditorRanges(t *testing.T) {
 	srv, _ := newUIServerWithService(t)
 	text := "msg.timestamp == \"😁\"\n  msg.source == @"
-	req, err := http.NewRequest(http.MethodPost, srv.URL+"/ui/frag/validate-filters", strings.NewReader(url.Values{"filters": {text}}.Encode()))
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/frag/validate-filters", strings.NewReader(url.Values{"filters": {text}}.Encode()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1542,7 +1687,7 @@ func TestConnectorStatsFragmentRendersSnapshotNumbers(t *testing.T) {
 	reg.Record("conn1", 42, 20480)
 	reg.SetQueue("conn1", 7, 4096)
 
-	resp, err := http.Get(srv.URL + "/ui/frag/connectors/conn1/stats")
+	resp, err := http.Get(srv.URL + "/frag/connectors/conn1/stats")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1561,7 +1706,7 @@ func TestConnectorStatsFragmentRendersSnapshotNumbers(t *testing.T) {
 	// (swapped outerHTML into connector_detail.html's #connector-stats),
 	// not on a stable parent — see TestConnectorStatsFragmentUnknownID
 	// DeletedNoticeHaltsPolling for why that matters.
-	if !strings.Contains(body, `hx-get="/ui/frag/connectors/conn1/stats"`) || !strings.Contains(body, `hx-trigger="load, every 2s"`) {
+	if !strings.Contains(body, `hx-get="/frag/connectors/conn1/stats"`) || !strings.Contains(body, `hx-trigger="load, every 2s"`) {
 		t.Fatalf("stats fragment missing its own polling attributes:\n%s", body)
 	}
 }
@@ -1578,7 +1723,7 @@ func TestConnectorStatsFragmentRendersSparkline(t *testing.T) {
 	reg.SetQueue("conn1", 2, 200)
 	reg.SetQueue("conn1", 9, 900)
 
-	resp, err := http.Get(srv.URL + "/ui/frag/connectors/conn1/stats")
+	resp, err := http.Get(srv.URL + "/frag/connectors/conn1/stats")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1610,7 +1755,7 @@ func TestConnectorStatsFragmentRendersSparkline(t *testing.T) {
 func TestConnectorStatsFragmentUnknownIDDeletedNoticeHaltsPolling(t *testing.T) {
 	srv, _ := newUIServerWithService(t)
 
-	resp, err := http.Get(srv.URL + "/ui/frag/connectors/doesnotexist/stats")
+	resp, err := http.Get(srv.URL + "/frag/connectors/doesnotexist/stats")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1627,7 +1772,7 @@ func TestConnectorStatsFragmentUnknownIDDeletedNoticeHaltsPolling(t *testing.T) 
 	}
 }
 
-func TestOverviewFragmentsRenderStatsAndMessageStreams(t *testing.T) {
+func TestOverviewFragmentsRenderConsistentLiveMetrics(t *testing.T) {
 	srv, svc, reg := newUIServerWithServiceAndRegistry(t)
 	ctx := context.Background()
 	must(t, svc.PutSource(ctx, model.Source{ID: "src1", Name: "Source One", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0"}, true))
@@ -1643,13 +1788,64 @@ func TestOverviewFragmentsRenderStatsAndMessageStreams(t *testing.T) {
 	reg.RecordConnectorEvent("conn1", "received", env)
 	reg.Record("conn1", 1, int64(env.SizeBytes()))
 
+	// Status and metrics share one card, so there is no separate "Metrics"
+	// heading. The queue tiles are asserted per-kind below: only connectors own
+	// a queue, so only their fragment carries pending/retained numbers.
+	commonWants := []string{
+		"Status",
+		"<span>Msg/s</span>", "<span>Bytes/s</span>",
+		`hx-trigger="every 500ms"`,
+	}
+	commonNotWants := []string{"Total messages", "Total bytes", "Message stream", `every 2s`}
+
 	for _, tc := range []struct {
-		path  string
-		wants []string
+		path     string
+		wants    []string
+		notWants []string
 	}{
-		{"/ui/frag/sources/src1/overview", []string{"source-overview-live", "Status", "Statistics", "PGN traffic", "Rate / jitter", "Last seen / gaps", "Values / raw wire", "decoded fields", "Traffic changes", "Set expected traffic baseline", "Message stream", "Total messages", "127250", "heading", "received"}},
-		{"/ui/frag/sinks/sink1/overview", []string{"sink-overview-live", "Status", "Statistics", "Message stream", "Total messages", "127250", "heading", "sent", "conn1"}},
-		{"/ui/frag/connectors/conn1/overview", []string{"connector-overview-live", "Status", "Statistics", "Message stream", "Total messages", "127250", "heading", "received", "conn1"}},
+		{
+			"/frag/sources/src1/overview",
+			[]string{
+				"source-overview-live", "Source devices",
+				"Msg/s", "Bytes/s", "Traffic share",
+				`id="source-overview-summary"`,
+				`hx-select="#source-overview-summary"`,
+				`id="source-device-table-frame"`, `id="source-device-rows"`,
+				`data-source-device-row-refresh`,
+				`hx-get="/frag/sources/src1/device-rows?dir=asc&amp;sort=address"`,
+				`hx-swap="none"`,
+				`aria-label="Sort by address descending"`,
+				`aria-label="Sort by messages per second descending"`,
+				`aria-label="Sort by last seen descending"`,
+			},
+			[]string{
+				`aria-label="PGN traffic"`, `aria-label="Traffic changes"`,
+				"Set expected traffic baseline",
+				"Model / product", "Instances", "Software / serial",
+				`hx-select="#source-device-rows"`,
+				"Pending delivery", "Pending bytes", "Retained history", "Retained bytes",
+			},
+		},
+		{
+			"/frag/sinks/sink1/overview",
+			[]string{
+				"sink-overview-live", `id="sink-overview-summary"`,
+				`hx-select="#sink-overview-summary"`,
+			},
+			[]string{
+				"127250", "sent",
+				"Pending delivery", "Pending bytes", "Retained history", "Retained bytes",
+			},
+		},
+		{
+			"/frag/connectors/conn1/overview",
+			[]string{
+				"connector-overview-live", `id="connector-overview-summary"`,
+				`hx-select="#connector-overview-summary"`,
+				"Pending delivery", "Pending bytes", "Retained history", "Retained bytes",
+			},
+			[]string{"127250", "received"},
+		},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			resp, err := http.Get(srv.URL + tc.path)
@@ -1658,41 +1854,206 @@ func TestOverviewFragmentsRenderStatsAndMessageStreams(t *testing.T) {
 			}
 			mustStatus(t, resp, http.StatusOK)
 			body := mustBody(t, resp)
-			for _, want := range tc.wants {
-				if !strings.Contains(body, want) {
-					t.Fatalf("overview fragment missing %q:\n%s", want, body)
+			for _, wants := range [][]string{commonWants, tc.wants} {
+				for _, want := range wants {
+					if !strings.Contains(body, want) {
+						t.Fatalf("overview fragment missing %q:\n%s", want, body)
+					}
+				}
+			}
+			for _, notWants := range [][]string{commonNotWants, tc.notWants} {
+				for _, notWant := range notWants {
+					if strings.Contains(body, notWant) {
+						t.Fatalf("overview fragment unexpectedly contains %q:\n%s", notWant, body)
+					}
+				}
+			}
+			if tc.path == "/frag/sources/src1/overview" {
+				start := strings.Index(body, `<tbody id="source-device-rows"`)
+				if start < 0 {
+					t.Fatalf("source device tbody tag missing:\n%s", body)
+				}
+				end := strings.Index(body[start:], ">")
+				if end < 0 {
+					t.Fatalf("source device tbody tag is unterminated:\n%s", body)
+				}
+				tbodyTag := body[start : start+end+1]
+				if strings.Contains(tbodyTag, "hx-") {
+					t.Fatalf("source device tbody must remain stable, got %s", tbodyTag)
 				}
 			}
 		})
 	}
 }
 
-func TestSourceTrafficBaselineFormActions(t *testing.T) {
+func TestSourceDeviceSortStatePersistsInLiveRefresh(t *testing.T) {
+	srv, svc, _ := newUIServerWithServiceAndRegistry(t)
+	must(t, svc.PutSource(context.Background(), model.Source{
+		ID: "src1", Name: "Source One", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0",
+	}, true))
+
+	resp, err := http.Get(srv.URL + "/frag/sources/src1/overview?sort=bytes&dir=desc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+
+	for _, want := range []string{
+		`aria-label="Sort by bytes per second ascending"`,
+		`hx-get="/frag/sources/src1/overview?dir=desc&amp;sort=bytes"`,
+		`hx-get="/frag/sources/src1/device-rows?dir=desc&amp;sort=bytes"`,
+		`data-source-device-row-refresh`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("sorted source fragment missing %q:\n%s", want, body)
+		}
+	}
+	if got := strings.Count(body, `aria-sort="descending"`); got != 1 {
+		t.Fatalf("descending sort markers = %d, want 1:\n%s", got, body)
+	}
+}
+
+func TestSourceDeviceRowSnapshotFragmentContainsRowsOnly(t *testing.T) {
 	srv, svc, reg := newUIServerWithServiceAndRegistry(t)
+	must(t, svc.PutSource(context.Background(), model.Source{
+		ID: "src1", Name: "Source One", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0",
+	}, true))
+	reg.RecordSource("src1", &msg.Envelope{
+		PGN: 127250, PGNName: "Vessel Heading", Source: 12,
+		Raw: []byte{1, 2, 3, 4, 5, 6, 7, 8},
+	})
+
+	resp, err := http.Get(srv.URL + "/frag/sources/src1/device-rows?sort=bytes&dir=desc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+
+	for _, want := range []string{
+		`<tbody data-source-device-row-snapshot>`,
+		`id="source-device-row-12"`,
+		`data-device-address="12"`,
+		`hx-get="/frag/sources/src1/overview?device=12&amp;dir=desc&amp;pgn_dir=asc&amp;pgn_sort=pgn&amp;sort=bytes"`,
+		`class="source-device-stat"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("source device row snapshot missing %q:\n%s", want, body)
+		}
+	}
+	for _, notWant := range []string{"<thead", `id="source-device-table-frame"`, "Source devices"} {
+		if strings.Contains(body, notWant) {
+			t.Fatalf("source device row snapshot unexpectedly contains %q:\n%s", notWant, body)
+		}
+	}
+}
+
+func TestSourceDeviceRowOpensLivePGNStatisticsPanel(t *testing.T) {
+	srv, svc, reg := newUIServerWithServiceAndRegistry(t)
+	must(t, svc.PutSource(context.Background(), model.Source{
+		ID: "src1", Name: "Source One", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0",
+	}, true))
+	deviceName := uint64(0x1122334455667788)
+	reg.RecordSource("src1", &msg.Envelope{
+		PGN: 127250, PGNName: "Vessel Heading", Source: 12, Dest: 255, Priority: 2,
+		DeviceName: &deviceName, Raw: []byte{1, 2, 3, 4, 5, 6, 7, 8},
+		Payload: json.RawMessage(`{"heading":15708}`),
+	})
+
+	resp, err := http.Get(srv.URL + "/frag/sources/src1/overview?sort=address&dir=asc&device=12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+
+	for _, want := range []string{
+		`<dialog id="source-device-detail-panel"`, `data-source-device-dialog`,
+		`aria-expanded="true"`,
+		`aria-label="Close device statistics"`, "PGN statistics",
+		"Vessel Heading", "Rates", "Traffic", "Timing", "Median", "P90", "P99",
+		"Traffic %", "Payload size", "Activity", `class="source-device-pgn-identity"`,
+		`aria-label="Sort by PGN number descending"`,
+		`aria-label="Sort by message rate descending"`,
+		`aria-label="Sort by traffic percentage descending"`,
+		`aria-label="Sort by mean payload size descending"`,
+		`aria-label="Sort by last activity descending"`,
+		`class="source-device-pgn-viewport"`, `id="source-device-pgn-table"`,
+		`id="source-device-pgn-rows"`,
+		`data-source-device-pgn-sort-control="pgn"`,
+		`hx-target="#source-device-pgn-rows"`,
+		`hx-select="#source-device-pgn-rows"`,
+		`hx-sync="#source-device-pgn-table:replace"`,
+		`hx-sync="#source-device-pgn-table:drop"`,
+		`hx-trigger="every 500ms"`,
+		`href="https://openships.ai/nmea-2000/pgn/?id=127250"`,
+		`target="_blank" rel="noopener noreferrer"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("device detail fragment missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `<section id="source-device-detail-panel"`) {
+		t.Fatalf("device detail should render as a modal dialog, not an inline section:\n%s", body)
+	}
+	if strings.Contains(body, `id="source-device-detail-panel" hidden`) {
+		t.Fatalf("selected device detail unexpectedly hidden:\n%s", body)
+	}
+	if strings.Contains(body, "Range / jitter") {
+		t.Fatalf("device detail still contains the removed range/jitter column:\n%s", body)
+	}
+	if got := strings.Count(body, `data-source-device-pgn-sort-control=`); got != 5 {
+		t.Fatalf("PGN sort controls = %d, want 5:\n%s", got, body)
+	}
+	if got := strings.Count(body, `hx-target="#source-device-pgn-rows"`); got != 5 {
+		t.Fatalf("PGN row-only sort targets = %d, want 5:\n%s", got, body)
+	}
+}
+
+func TestSourceDevicePGNSortStatePersistsInLiveRefresh(t *testing.T) {
+	srv, svc, reg := newUIServerWithServiceAndRegistry(t)
+	must(t, svc.PutSource(context.Background(), model.Source{
+		ID: "src1", Name: "Source One", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0",
+	}, true))
+	reg.RecordSource("src1", &msg.Envelope{
+		PGN: 127250, PGNName: "Vessel Heading", Source: 12,
+		Raw: []byte{1, 2, 3, 4, 5, 6, 7, 8},
+	})
+
+	resp, err := http.Get(srv.URL + "/frag/sources/src1/overview?device=12&sort=bytes&dir=desc&pgn_sort=payload&pgn_dir=desc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+
+	for _, want := range []string{
+		`aria-label="Sort by mean payload size ascending"`,
+		`hx-get="/frag/sources/src1/overview?device=12&amp;dir=desc&amp;pgn_dir=desc&amp;pgn_sort=payload&amp;sort=bytes"`,
+		`data-source-device-pgn-sort-control="payload"`,
+		`hx-target="#source-device-pgn-rows"`,
+		`hx-select="#source-device-pgn-rows"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("PGN-sorted source fragment missing %q:\n%s", want, body)
+		}
+	}
+	if got := strings.Count(body, `aria-sort="descending"`); got != 2 {
+		t.Fatalf("descending sort markers = %d, want device and PGN markers:\n%s", got, body)
+	}
+}
+
+func TestSourceTrafficBaselineEndpointsAreRemoved(t *testing.T) {
+	srv, svc, _ := newUIServerWithServiceAndRegistry(t)
 	must(t, svc.PutSource(context.Background(), model.Source{
 		ID: "src1", Name: "Source One", Type: model.SourceSocketCAN, Interface: "can0",
 	}, true))
-	reg.RecordSource("src1", &msg.Envelope{
-		PGN: 127250, Source: 12, Dest: 255, Priority: 2, Raw: []byte{1, 2, 3, 4},
-	})
 
-	resp := postForm(t, srv, "/ui/sources/src1/traffic-baseline", url.Values{})
-	mustStatus(t, resp, http.StatusOK)
-	body := mustBody(t, resp)
-	for _, want := range []string{"baseline matched", "Clear baseline", "baseline_committed"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("baseline commit response missing %q:\n%s", want, body)
-		}
-	}
-	if len(reg.SourceTrafficBaselines("src1")) != 1 {
-		t.Fatalf("baseline was not stored: %+v", reg.SourceTrafficBaselines("src1"))
-	}
-
-	resp = postForm(t, srv, "/ui/sources/src1/traffic-baseline/clear", url.Values{})
-	mustStatus(t, resp, http.StatusOK)
-	body = mustBody(t, resp)
-	if !strings.Contains(body, "Set expected traffic baseline") || len(reg.SourceTrafficBaselines("src1")) != 0 {
-		t.Fatalf("baseline clear response/state = %s / %+v", body, reg.SourceTrafficBaselines("src1"))
+	for _, path := range []string{"/sources/src1/traffic-baseline", "/sources/src1/traffic-baseline/clear"} {
+		resp := postForm(t, srv, path, url.Values{})
+		mustStatus(t, resp, http.StatusNotFound)
+		_ = mustBody(t, resp)
 	}
 }
 
@@ -1706,7 +2067,7 @@ func TestConnectorOverviewPageRendersConfigSummary(t *testing.T) {
 		Enabled: true,
 	}, true))
 
-	resp, err := http.Get(srv.URL + "/ui/connectors/conn1")
+	resp, err := http.Get(srv.URL + "/connectors/conn1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1715,9 +2076,9 @@ func TestConnectorOverviewPageRendersConfigSummary(t *testing.T) {
 	for _, want := range []string{
 		"connector overview", "NMEA Bridge", "<code>src1</code>", "<code>sink1</code>",
 		"msg.pgn == 127250", "500", "24h0m0s", "1048576",
-		`href="/ui/connectors/conn1/edit"`,
-		`aria-label="Breadcrumb"`, `href="/ui/connectors"`, `aria-current="page">NMEA Bridge</span>`,
-		`hx-get="/ui/frag/connectors/conn1/overview"`, `hx-trigger="load, every 2s"`,
+		`href="/connectors/conn1/edit"`,
+		`aria-label="Breadcrumb"`, `href="/connectors"`, `aria-current="page">NMEA Bridge</span>`,
+		`hx-get="/frag/connectors/conn1/overview"`, `hx-trigger="load, every 500ms"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("connector detail page missing %q:\n%s", want, body)
@@ -1727,7 +2088,7 @@ func TestConnectorOverviewPageRendersConfigSummary(t *testing.T) {
 
 func TestConnectorDetailPage404ForUnknownID(t *testing.T) {
 	srv, _ := newUIServerWithService(t)
-	resp, err := http.Get(srv.URL + "/ui/connectors/doesnotexist")
+	resp, err := http.Get(srv.URL + "/connectors/doesnotexist")
 	if err != nil {
 		t.Fatal(err)
 	}

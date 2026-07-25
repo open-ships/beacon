@@ -1,6 +1,6 @@
 {{/* Data: internal/ui/forms.go's connectorFormViewData. Rendered by
      canonical connector create/edit pages and re-rendered by POST
-     /ui/connectors[/{id}] on a validation failure (see
+     /connectors[/{id}] on a validation failure (see
      writeConnector). Mirrors frag_source_form.html's id-immutable-on-edit
      and Enabled-checkbox shape; see its comments for rationale not
      repeated here. Unlike sources/sinks there is no type switch — source_id
@@ -8,7 +8,7 @@
      type-driven fieldset. */}}
 {{define "connector-form"}}
 <form class="card bg-base-200 border border-base-300"
-      hx-post="{{if .IsEdit}}/ui/connectors/{{.ID}}{{else}}/ui/connectors{{end}}"
+      hx-post="{{if .IsEdit}}/connectors/{{.ID}}{{else}}/connectors{{end}}"
       hx-target="#connector-form-container" hx-swap="innerHTML">
   <div class="card-body gap-3">
     <h2 class="card-title">{{if .IsEdit}}Edit connector {{.ID}}{{else}}Add connector{{end}}</h2>
@@ -101,7 +101,7 @@
       <input type="number" id="conn-max-bytes" name="max_bytes" value="{{.MaxBytes}}" class="input w-full" min="0">
     </fieldset>
     <div class="card-actions justify-end">
-      <a class="btn" href="/ui/connectors">Cancel</a>
+      <a class="btn" href="/connectors">Cancel</a>
       <button type="submit" class="btn btn-primary">Save</button>
     </div>
   </div>

@@ -21,7 +21,74 @@
     </dl>
   </section>
 
+  {{if .StreamHref}}
+  <section class="overview-card stream-panel"
+           aria-labelledby="{{.Kind}}-stream-title"
+           data-stream-panel
+           data-stream-url="{{.StreamHref}}"
+           data-stream-kind="{{.Kind}}"
+           data-stream-id="{{.StreamID}}">
+    <div class="section-heading stream-panel-heading">
+      <div>
+        <h3 id="{{.Kind}}-stream-title">Stream contents</h3>
+        <p>Future messages only. This best-effort preview never blocks routing and keeps the latest 200 messages in this browser.</p>
+      </div>
+      <div class="stream-primary-controls">
+        <label class="stream-filter-control">
+          <span class="visually-hidden">CEL stream filter</span>
+          <input type="text"
+                 class="stream-filter-input"
+                 data-stream-filter
+                 aria-label="CEL stream filter"
+                 aria-invalid="false"
+                 autocomplete="off"
+                 spellcheck="false"
+                 placeholder="CEL filter, e.g. msg.pgn == 129026">
+          <span class="stream-filter-feedback" data-stream-filter-feedback role="alert" hidden></span>
+        </label>
+        <button type="button" class="btn btn-sm btn-primary" data-stream-start>Start</button>
+        <button type="button" class="btn btn-sm" data-stream-stop hidden>Stop</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-stream-clear disabled>Clear</button>
+      </div>
+    </div>
+
+    <div class="stream-toolbar">
+      <div class="stream-view-switch" role="group" aria-label="Stream display format">
+        <button type="button" class="btn btn-sm btn-primary" data-stream-view="json" aria-pressed="true">JSONL</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-stream-view="can" aria-pressed="false">CAN bytes</button>
+      </div>
+      <div class="stream-export-controls" aria-label="Export captured stream">
+        <button type="button" class="btn btn-sm" data-stream-export="json" disabled>Export JSONL</button>
+        <button type="button" class="btn btn-sm" data-stream-export="can" disabled
+                title="One hexadecimal CAN payload per line">Export CAN</button>
+        <button type="button" class="btn btn-sm" data-stream-copy disabled
+                title="Copy all retained messages in arrival order">Copy stream</button>
+        <span class="stream-copy-feedback" data-stream-copy-feedback aria-live="polite"></span>
+      </div>
+      <output class="stream-status" data-stream-status aria-live="polite">Stopped · 0 captured</output>
+    </div>
+
+    <aside class="stream-cel-inspector" data-stream-cel-inspector aria-live="polite" hidden>
+      <div class="stream-cel-inspector-copy">
+        <span class="stream-cel-inspector-label">CEL filter for <code data-stream-cel-path>msg.payload</code></span>
+        <code class="stream-cel-expression" data-stream-cel-expression>has(msg.payload)</code>
+      </div>
+      <div class="stream-cel-inspector-actions">
+        <button type="button" class="btn btn-sm btn-primary" data-stream-cel-use>Use filter</button>
+        <button type="button" class="btn btn-sm" data-stream-cel-copy>Copy CEL</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-stream-cel-close aria-label="Close CEL suggestion">Close</button>
+      </div>
+    </aside>
+
+    <div class="stream-empty" data-stream-empty>
+      <strong>Streaming is stopped.</strong>
+      <span>Choose Start to capture messages arriving at this {{.Kind}}.</span>
+    </div>
+    <div class="stream-list" data-stream-list hidden></div>
+  </section>
+  {{end}}
+
   <div id="{{.LiveDOMID}}" class="overview-live"
-       hx-get="{{.LiveHref}}" hx-trigger="load, every 2s" hx-swap="outerHTML"></div>
+       hx-get="{{.LiveHref}}" hx-trigger="load, every 500ms" hx-swap="outerHTML"></div>
 </div>
 {{end}}

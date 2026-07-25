@@ -68,6 +68,7 @@ var migrations = []string{
 	   doc TEXT NOT NULL
 	 );
 	 CREATE INDEX IF NOT EXISTS source_metric_events_source_ts ON source_metric_events(source_id, ts DESC);`,
+	`DROP TABLE IF EXISTS source_metric_baselines;`,
 }
 
 func Open(path string) (*Store, error) {

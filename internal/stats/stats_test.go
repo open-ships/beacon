@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -48,6 +49,62 @@ func TestRemoveDropsComponentCountersAndEvents(t *testing.T) {
 		if events := r.Recent(key.kind, key.id, 10); len(events) != 0 {
 			t.Fatalf("removed %s %q still has events: %+v", key.kind, key.id, events)
 		}
+	}
+}
+
+func TestStreamSubscriptionsReceiveCanonicalFutureEnvelopesByBoundary(t *testing.T) {
+	r := NewRegistry()
+	sourceStream, stopSource := r.SubscribeStream("source", "in", 2)
+	defer stopSource()
+	sinkStream, stopSink := r.SubscribeStream("sink", "out", 2)
+	defer stopSink()
+
+	envelope := &msg.Envelope{
+		PGN:      130314,
+		Source:   6,
+		Dest:     255,
+		Priority: 5,
+		Payload: json.RawMessage(
+			`{"info":{"timestamp":"2026-06-29T10:10:17.530566931-04:00","priority":5,"pgn":130314,"sourceId":6,"targetId":null},"instance":0,"source":0,"pressure":1020690}`,
+		),
+		Raw: []byte{0xff, 0x00, 0x00, 0x12},
+	}
+
+	r.RecordSource("in", envelope)
+	sourceDocument := <-sourceStream
+	select {
+	case unexpected := <-sinkStream:
+		t.Fatalf("source event crossed into sink stream: %s", unexpected)
+	default:
+	}
+
+	var wire struct {
+		Payload  json.RawMessage `json:"payload"`
+		Metadata json.RawMessage `json:"metadata"`
+		Raw      []byte          `json:"raw"`
+	}
+	if err := json.Unmarshal(sourceDocument, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if string(wire.Payload) != string(envelope.Payload) {
+		t.Fatalf("stream payload = %s, want verbatim %s", wire.Payload, envelope.Payload)
+	}
+	if string(wire.Raw) != string(envelope.Raw) {
+		t.Fatalf("stream raw = %v, want %v", wire.Raw, envelope.Raw)
+	}
+	if len(wire.Metadata) == 0 {
+		t.Fatal("stream envelope omitted metadata")
+	}
+
+	r.RecordSink("out", "route", envelope)
+	if sinkDocument := <-sinkStream; len(sinkDocument) == 0 {
+		t.Fatal("sink stream received an empty document")
+	}
+
+	// Removing an entity closes its active preview streams.
+	r.RemoveSink("out")
+	if _, ok := <-sinkStream; ok {
+		t.Fatal("sink stream remained open after entity removal")
 	}
 }
 

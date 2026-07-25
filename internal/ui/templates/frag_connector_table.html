@@ -35,8 +35,8 @@
     </thead>
     <tbody>
       {{range .Connectors}}
-      <tr class="component-status-row state-{{.State}}" data-href="/ui/connectors/{{.ID}}/">
-        <td><a class="link" href="/ui/connectors/{{.ID}}/">{{.Name}}</a></td>
+      <tr class="component-status-row state-{{.State}}" data-href="/connectors/{{.ID}}/">
+        <td><a class="link" href="/connectors/{{.ID}}/">{{.Name}}</a></td>
         <td>{{.SourceName}} &rarr; {{.SinkName}}</td>
         <td>{{.EffectiveMode}}</td>
         <td>{{len .Filters}}</td>
@@ -53,9 +53,9 @@
         <td>{{.Snapshot.QueueDepth}}</td>
         <td>{{printf "%.2f" .Snapshot.MsgPerSec}}</td>
         <td class="flex gap-2 justify-end">
-          <a class="btn btn-sm" href="/ui/connectors/{{.ID}}/edit">Edit</a>
+          <a class="btn btn-sm" href="/connectors/{{.ID}}/edit">Edit</a>
           <button type="button" class="btn btn-sm btn-error"
-                  hx-post="/ui/connectors/{{.ID}}/delete" hx-target="#connector-panel" hx-swap="outerHTML"
+                  hx-post="/connectors/{{.ID}}/delete" hx-target="#connector-panel" hx-swap="outerHTML"
                   hx-confirm="Delete connector &quot;{{.ID}}&quot;?">
             Delete
           </button>

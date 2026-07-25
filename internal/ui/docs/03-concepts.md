@@ -32,33 +32,84 @@ filters and its own buffer.
 
 ## The envelope
 
-Every message flowing through beacon — in a connector's buffer, over SSE/WS/TCP/MQTT,
-and as the value a CEL filter's `msg` variable is bound to — is a JSON
-object with this shape:
+Every message sent over SSE, WebSocket, TCP, MQTT, or NDJSON has exactly three
+top-level keys:
 
-| JSON field | Type | Present when | Meaning |
-|---|---|---|---|
-| `id` | integer | queued/replayed messages only | the message's sequence number within its connector's buffer |
-| `connector` | string | queued/replayed messages only | the id of the connector that delivered this message |
-| `pgn` | integer | always | the NMEA 2000 PGN number |
-| `source` | integer | always | source device address (0-253) |
-| `dest` | integer | always | destination address (255 = broadcast) |
-| `priority` | integer | always | 0 (highest) to 7 (lowest) |
-| `timestamp` | string | always | RFC 3339 timestamp |
-| `observed_at` | string | always | when this Beacon ingress observed the message |
-| `ingress` / `origin_ingress` | string | when known | current and first-known ingress provenance |
-| `device_name` | integer | after an address claim is known | stable 64-bit ISO Device NAME; unlike `source`, it survives address changes |
-| `device_name_hex` | string | after an address claim is known | the same NAME as 16 uppercase hex digits, safe for JavaScript and database keys |
-| `pgn_name` / `variant` / `transport` | string | cataloged PGNs | catalog identity and N2K transport kind |
-| `manufacturer_code` | integer | proprietary PGNs | manufacturer discriminator decoded from the payload |
-| `decode` | object | always | `decoded` or `unknown`, plus catalog completeness/fallback/missing metadata |
-| `physical` | object | decoded numeric fields | unit-scaled values with unit, physical quantity, and catalog range; raw payload ticks remain unchanged |
-| `payload` | object or `null` | always | the decoded PGN fields, one JSON key per field, `null` for a PGN beacon doesn't know how to decode |
-| `raw` | string (base64) | usually | the assembled CAN payload bytes: original for an undecodable PGN and canonical re-encoding for a decoded PGN. Semantic CAN delivery skips an unknown decoder; transparent SocketCAN mode forwards it losslessly |
+| JSON field | Type | Meaning |
+|---|---|---|
+| `payload` | object | the verbatim JSON representation of the decoded `open-ships/n2k` Go struct |
+| `metadata` | object | every field Beacon adds for routing, provenance, enrichment, and replay |
+| `raw` | string or null | base64-encoded assembled CAN bytes, kept separate because they are data rather than metadata |
 
-`id` and `connector` are only populated once a message has passed through a
-connector's buffer — a freshly-decoded message from a source doesn't have
-them yet.
+Every `payload` includes the n2k struct's complete `info` object. In n2k v1 this
+includes timestamp, receive/transport timing, adapter ID, network ID,
+direction, priority, PGN, source ID, and target ID. All remaining keys are the
+original generated fields for that PGN, using n2k's JSON names and raw wire
+values. Beacon does not strip, rename, or relocate any n2k field. A Go consumer
+can unmarshal the nested object directly:
+
+```go
+var event struct {
+    Payload  pgn.VesselHeading `json:"payload"`
+    Metadata json.RawMessage   `json:"metadata"`
+}
+err := json.Unmarshal(document, &event)
+```
+
+For an unknown PGN, `payload` is the complete `pgn.UnknownPGN` JSON rather than
+`null`.
+
+`metadata` can contain:
+
+| JSON field | Present when | Meaning |
+|---|---|---|
+| `id` / `connector` | queued/replayed messages | route sequence and connector identity |
+| `observed_at` | always | when this Beacon ingress observed the message |
+| `ingress` / `origin_ingress` | known | current and first-known ingress provenance |
+| `device_name` / `device_name_hex` | address claim known | stable ISO Device NAME in numeric and JavaScript-safe hexadecimal forms |
+| `pgn_name` / `variant` / `transport` | cataloged PGNs | catalog identity and N2K transport kind |
+| `manufacturer_code` | proprietary PGNs | manufacturer discriminator decoded from the payload |
+| `decode` | always | decoded/unknown status and catalog completeness details |
+| `physical` | decoded numeric fields | additive unit-scaled values; payload raw ticks stay unchanged |
+
+`id` and `connector` appear only after a message passes through a connector
+buffer. Top-level `raw` is original for unknown PGNs and a canonical
+re-encoding for decoded PGNs.
+
+## Source and sink stream inspector
+
+Each source and sink overview has a **Stream contents** panel. It starts
+stopped and captures only messages that arrive after **Start**:
+
+- A source panel observes envelopes at that source's received boundary.
+- A sink panel observes envelopes after successful or accepted delivery to
+  that sink.
+- **Stop** closes the live preview while keeping the current capture in the
+  browser. Start and Stop replace one another so only the currently relevant
+  action is shown. **Clear** removes that local capture.
+
+The optional **CEL filter** beside **Start** is applied by Beacon before
+messages reach the browser. It uses the same `msg` shape as connector filters,
+for example `msg.pgn == 129026` or
+`msg.source == 11 && msg.decode_status == "decoded"`.
+The filter remains editable while streaming. A valid change reconnects the
+best-effort preview with the new expression without clearing captured rows; an
+invalid change leaves the current stream filter active.
+
+The inspector is best-effort and non-blocking: it never consumes a connector's
+durable queue or slows vessel traffic when the browser cannot keep up. The
+captured count continues for the full browser session while the panel keeps the
+latest 200 messages in the current browser tab for display, copy, and export.
+
+**JSONL** shows one compact, verbatim nested `payload` per line, ready to
+unmarshal into the corresponding n2k Go struct. **CAN bytes** shows one
+top-level `raw` payload as hexadecimal per line. **Export JSONL** downloads the
+captured payload lines oldest first. **Export CAN** downloads one uppercase
+hexadecimal payload per line; the line boundary preserves the message boundary
+that would be lost by concatenating the bytes into one binary blob. Click any
+JSON key or value to inspect a relevant CEL filter and optionally apply it.
+**Copy stream** copies every retained line in arrival order using the active
+JSONL or spaced-hex CAN representation.
 
 ## Buffering and pruning
 

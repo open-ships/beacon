@@ -1,7 +1,7 @@
 # Vendored assets
 
 Everything in this directory is served by `internal/ui.Handler` under
-`/ui/assets/` via `go:embed`, so beacon's web UI (`/ui/`) is fully
+`/assets/` via `go:embed`, so beacon's web UI (`/`) is fully
 self-contained and works with no network access beyond the browser talking
 to beacon itself.
 
@@ -27,11 +27,14 @@ full page reloads and handles the fragment swaps.
 Hand-authored progressive enhancement for the connector form's CEL filter
 textarea. It supplies accessible, keyboard-driven typeahead for envelope
 fields, CEL helpers, PGN numbers, and decoded payload keys. The schema-backed
-items are fetched from `/ui/cel-completions`; a small built-in fallback keeps
+items are fetched from `/cel-completions`; a small built-in fallback keeps
 the core interaction useful if that request fails. It also debounces CEL
 compilation while the operator types and overlays compiler error ranges as red
 wavy underlines. No configuration write depends on this script, and filters
-are still validated server-side on Save.
+are still validated server-side on Save. The same file progressively enhances
+source and sink overview pages with their stopped-by-default stream inspector,
+live CEL filtering and field suggestions, bounded browser-local capture,
+JSON/CAN view switching, clipboard copy, and export.
 
 ## app.css
 

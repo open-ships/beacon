@@ -2,7 +2,7 @@
      frag_source_form.html; see its comments for rationale. */}}
 {{define "sink-form"}}
 <form class="card bg-base-200 border border-base-300"
-      hx-post="{{if .IsEdit}}/ui/sinks/{{.ID}}{{else}}/ui/sinks{{end}}"
+      hx-post="{{if .IsEdit}}/sinks/{{.ID}}{{else}}/sinks{{end}}"
       hx-target="#sink-form-container" hx-swap="innerHTML">
   <div class="card-body gap-3">
     <h2 class="card-title">{{if .IsEdit}}Edit sink {{.ID}}{{else}}Add sink{{end}}</h2>
@@ -28,7 +28,7 @@
     <fieldset class="fieldset">
       <legend class="fieldset-legend">Type</legend>
       <select id="sink-type" name="type" class="select w-full"
-              hx-get="/ui/frag/sink-type-fields" hx-include="closest form"
+              hx-get="/frag/sink-type-fields" hx-include="closest form"
               hx-target="#sink-type-fields" hx-swap="innerHTML">
         <option value="socketcan" {{if eq .TypeFields.Type "socketcan"}}selected{{end}}>socketcan</option>
         <option value="usbcan" {{if eq .TypeFields.Type "usbcan"}}selected{{end}}>usbcan</option>
@@ -48,7 +48,7 @@
       {{template "sink-type-fields" .TypeFields}}
     </div>
     <div class="card-actions justify-end">
-      <a class="btn" href="/ui/sinks">Cancel</a>
+      <a class="btn" href="/sinks">Cancel</a>
       <button type="submit" class="btn btn-primary">Save</button>
     </div>
   </div>

@@ -1,5 +1,5 @@
 {{/* Data: internal/ui/dashboard.go's dashboardData. Rendered at GET
-     /ui/frag/dashboard, hx-swap="innerHTML"'d into dashboard.html's
+     /frag/dashboard, hx-swap="innerHTML"'d into dashboard.html's
      #dashboard-panel container on load and every 2s
      (hx-trigger="load, every 2s") — see dashboard.html and pages.go's
      "dashboard" pages map entry doc comment for why the initial page ships
@@ -17,9 +17,9 @@
       <h2>Data flow</h2>
     </div>
     <div class="home-flow-actions">
-      <a class="btn" href="/ui/sources/new">New source</a>
-      <a class="btn" href="/ui/sinks/new">New sink</a>
-      <a class="btn btn-primary" href="/ui/connectors/new">New connector</a>
+      <a class="btn" href="/sources/new">New source</a>
+      <a class="btn" href="/sinks/new">New sink</a>
+      <a class="btn btn-primary" href="/connectors/new">New connector</a>
     </div>
   </section>
 
@@ -30,7 +30,7 @@
     <div class="dag-label dag-label-sink">Sinks</div>
     {{range .Flows}}
     <div class="dag-row">
-      <a class="dag-node dag-node-source component-status-surface state-{{.Source.State}}" href="/ui/sources/{{.Source.ID}}/" data-node-id="{{.Source.ID}}">
+      <a class="dag-node dag-node-source component-status-surface state-{{.Source.State}}" href="/sources/{{.Source.ID}}/" data-node-id="{{.Source.ID}}">
         <div class="dag-node-header">
           <span class="dag-kind">source</span>
           {{if eq .Source.State "up"}}<span class="badge badge-success">up</span>
@@ -44,7 +44,7 @@
 
       <div class="dag-link state-{{.State}}" aria-hidden="true"></div>
 
-      <a class="dag-node dag-node-connector component-status-surface state-{{.State}}" href="/ui/connectors/{{.ID}}/" data-connector-id="{{.ID}}">
+      <a class="dag-node dag-node-connector component-status-surface state-{{.State}}" href="/connectors/{{.ID}}/" data-connector-id="{{.ID}}">
         <div class="dag-node-header">
           <span class="dag-kind">connector</span>
           <span class="badge {{if .Enabled}}badge-success{{else}}badge-ghost{{end}}">{{if .Enabled}}enabled{{else}}disabled{{end}}</span>
@@ -66,7 +66,7 @@
 
       <div class="dag-link state-{{.State}}" aria-hidden="true"></div>
 
-      <a class="dag-node dag-node-sink component-status-surface state-{{.Sink.State}}" href="/ui/sinks/{{.Sink.ID}}/" data-node-id="{{.Sink.ID}}">
+      <a class="dag-node dag-node-sink component-status-surface state-{{.Sink.State}}" href="/sinks/{{.Sink.ID}}/" data-node-id="{{.Sink.ID}}">
         <div class="dag-node-header">
           <span class="dag-kind">sink</span>
           {{if eq .Sink.State "up"}}<span class="badge badge-success">up</span>
@@ -104,13 +104,12 @@
               <th>Detail</th>
               <th>State</th>
               <th>Connectors</th>
-              <th></th>
             </tr>
           </thead>
           <tbody>
             {{range .Sources}}
-            <tr class="component-status-row state-{{.State}}" data-href="/ui/sources/{{.ID}}/">
-              <td><a class="link" href="/ui/sources/{{.ID}}/">{{.Name}}</a></td>
+            <tr class="component-status-row state-{{.State}}" data-href="/sources/{{.ID}}/">
+              <td><a class="link" href="/sources/{{.ID}}/">{{.Name}}</a></td>
               <td><code>{{.ID}}</code></td>
               <td>{{.Type}}</td>
               <td>{{if .Detail}}<code>{{.Detail}}</code>{{else}}<span class="opacity-70">-</span>{{end}}</td>
@@ -126,10 +125,9 @@
                   {{.ConnectorCount}} connector{{if ne .ConnectorCount 1}}s{{end}}
                 </span>
               </td>
-              <td><a class="btn btn-sm" href="/ui/sources/{{.ID}}/edit">Edit</a></td>
             </tr>
             {{else}}
-            <tr><td colspan="7" class="text-center opacity-70">No sources configured.</td></tr>
+            <tr><td colspan="6" class="text-center opacity-70">No sources configured.</td></tr>
             {{end}}
           </tbody>
         </table>
@@ -150,13 +148,12 @@
               <th>Detail</th>
               <th>State</th>
               <th>Connectors</th>
-              <th></th>
             </tr>
           </thead>
           <tbody>
             {{range .Sinks}}
-            <tr class="component-status-row state-{{.State}}" data-href="/ui/sinks/{{.ID}}/">
-              <td><a class="link" href="/ui/sinks/{{.ID}}/">{{.Name}}</a></td>
+            <tr class="component-status-row state-{{.State}}" data-href="/sinks/{{.ID}}/">
+              <td><a class="link" href="/sinks/{{.ID}}/">{{.Name}}</a></td>
               <td><code>{{.ID}}</code></td>
               <td>{{.Type}}</td>
               <td>{{if .Detail}}<code>{{.Detail}}</code>{{else}}<span class="opacity-70">-</span>{{end}}</td>
@@ -172,10 +169,9 @@
                   {{.ConnectorCount}} connector{{if ne .ConnectorCount 1}}s{{end}}
                 </span>
               </td>
-              <td><a class="btn btn-sm" href="/ui/sinks/{{.ID}}/edit">Edit</a></td>
             </tr>
             {{else}}
-            <tr><td colspan="7" class="text-center opacity-70">No sinks configured.</td></tr>
+            <tr><td colspan="6" class="text-center opacity-70">No sinks configured.</td></tr>
             {{end}}
           </tbody>
         </table>
@@ -198,18 +194,17 @@
               <th>Filters</th>
               <th>Msg/s</th>
               <th>Queue</th>
-              <th></th>
             </tr>
           </thead>
           <tbody>
             {{range .Flows}}
-            <tr class="component-status-row state-{{.State}}" data-href="/ui/connectors/{{.ID}}/">
-              <td><a class="link" href="/ui/connectors/{{.ID}}/">{{.Name}}</a></td>
+            <tr class="component-status-row state-{{.State}}" data-href="/connectors/{{.ID}}/">
+              <td><a class="link" href="/connectors/{{.ID}}/">{{.Name}}</a></td>
               <td><code>{{.ID}}</code></td>
               <td>
-                <a class="link" href="/ui/sources/{{.Source.ID}}/">{{.Source.Name}}</a>
+                <a class="link" href="/sources/{{.Source.ID}}/">{{.Source.Name}}</a>
                 &rarr;
-                <a class="link" href="/ui/sinks/{{.Sink.ID}}/">{{.Sink.Name}}</a>
+                <a class="link" href="/sinks/{{.Sink.ID}}/">{{.Sink.Name}}</a>
               </td>
               <td>
                 {{if .Enabled}}<span class="badge badge-success">enabled</span>
@@ -224,10 +219,9 @@
               <td>{{len .Filters}}</td>
               <td>{{printf "%.2f" .Snapshot.MsgPerSec}}</td>
               <td>{{.Snapshot.QueueDepth}}</td>
-              <td><a class="btn btn-sm" href="/ui/connectors/{{.ID}}/edit">Edit</a></td>
             </tr>
             {{else}}
-            <tr><td colspan="9" class="text-center opacity-70">No connectors configured.</td></tr>
+            <tr><td colspan="8" class="text-center opacity-70">No connectors configured.</td></tr>
             {{end}}
           </tbody>
         </table>
@@ -262,7 +256,7 @@
         <h3>Bus devices</h3>
         <div class="home-flow-actions">
           <a class="btn btn-sm" href="/api/v1/n2k/commissioning-report">Download report</a>
-          {{if .CanCommitBaseline}}<button class="btn btn-sm btn-primary" hx-post="/ui/n2k/inventory/baseline" hx-confirm="Accept every currently online device as the commissioning baseline?">Commit baseline</button>{{end}}
+          {{if .CanCommitBaseline}}<button class="btn btn-sm btn-primary" hx-post="/n2k/inventory/baseline" hx-confirm="Accept every currently online device as the commissioning baseline?">Commit baseline</button>{{end}}
         </div>
       </div>
       <div class="overflow-x-auto">
@@ -290,7 +284,7 @@
             <tr>
               <td><code>{{.Endpoint}}</code></td>
               <td>{{if eq .Status "online"}}<span class="badge badge-success">online</span>{{else if eq .Status "new"}}<span class="badge badge-warning">new</span>{{else if eq .Status "changed"}}<span class="badge badge-error">changed</span>{{else if eq .Status "missing"}}<span class="badge badge-error">missing</span>{{else}}<span class="badge badge-ghost">{{if .Status}}{{.Status}}{{else}}live{{end}}</span>{{end}}</td>
-              <td><form class="flex gap-1" hx-post="/ui/n2k/inventory/{{.NameKey}}/label"><input type="hidden" name="endpoint" value="{{.Endpoint}}"><input class="input input-sm" name="label" value="{{.Label}}" aria-label="Device label"><button class="btn btn-sm" type="submit">Set</button></form></td>
+              <td><form class="flex gap-1" hx-post="/n2k/inventory/{{.NameKey}}/label"><input type="hidden" name="endpoint" value="{{.Endpoint}}"><input class="input input-sm" name="label" value="{{.Label}}" aria-label="Device label"><button class="btn btn-sm" type="submit">Set</button></form></td>
               <td>{{.Address}}</td>
               <td><code>{{.Name}}</code></td>
               <td>{{if .Manufacturer}}{{.Manufacturer}}{{else}}<span class="opacity-70">-</span>{{end}}</td>

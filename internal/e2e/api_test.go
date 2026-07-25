@@ -224,9 +224,8 @@ func TestEndToEndAPIDrivenLifecycle(t *testing.T) {
 	}
 
 	// Step 4: connect an SSE client, inject heading + depth frames, and
-	// assert only the heading (127250) messages arrive, with the "info"
-	// object stripped from the payload (wire-freeze regression).
-	t.Log("step 4: SSE client observes only the filtered PGN, with info stripped")
+	// assert only complete heading (127250) n2k payloads arrive.
+	t.Log("step 4: SSE client observes complete n2k payloads for only the filtered PGN")
 	resp, err := http.Get(dataBase + "/nav")
 	if err != nil {
 		t.Fatal(err)
@@ -241,15 +240,15 @@ func TestEndToEndAPIDrivenLifecycle(t *testing.T) {
 
 	events := sseEvents(t, resp, 2)
 	for _, e := range events {
-		if e["pgn"].(float64) != 127250 {
-			t.Fatalf("filter leaked pgn %v", e["pgn"])
+		if consumerEnvelopePGN(t, e) != 127250 {
+			t.Fatalf("filter leaked event %v", e)
 		}
-		payload, ok := e["payload"].(map[string]any)
-		if !ok {
-			t.Fatalf("payload not an object: %v", e["payload"])
+		payload, metadata := consumerEnvelopeParts(t, e)
+		if payload["heading"] == nil {
+			t.Fatalf("SSE payload lost the n2k VesselHeading fields: %v", payload)
 		}
-		if _, hasInfo := payload["info"]; hasInfo {
-			t.Fatalf("SSE payload still contains info: %v", payload)
+		if metadata["connector"] != "heading" {
+			t.Fatalf("connector metadata is not nested under metadata: %v", metadata)
 		}
 	}
 	_ = resp.Body.Close()

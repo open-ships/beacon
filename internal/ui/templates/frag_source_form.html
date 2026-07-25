@@ -1,11 +1,11 @@
 {{/* Data: internal/ui/forms.go's sourceFormViewData. Rendered by canonical
-     source create/edit pages and re-rendered by POST /ui/sources[/{id}] on
+     source create/edit pages and re-rendered by POST /sources[/{id}] on
      a validation failure (see writeSource).
      Field wrappers use plain fieldset/legend markup; app.css supplies the
      product theme. */}}
 {{define "source-form"}}
 <form class="card bg-base-200 border border-base-300"
-      hx-post="{{if .IsEdit}}/ui/sources/{{.ID}}{{else}}/ui/sources{{end}}"
+      hx-post="{{if .IsEdit}}/sources/{{.ID}}{{else}}/sources{{end}}"
       hx-target="#source-form-container" hx-swap="innerHTML">
   <div class="card-body gap-3">
     <h2 class="card-title">{{if .IsEdit}}Edit source {{.ID}}{{else}}Add source{{end}}</h2>
@@ -31,7 +31,7 @@
     <fieldset class="fieldset">
       <legend class="fieldset-legend">Type</legend>
       <select id="src-type" name="type" class="select w-full"
-              hx-get="/ui/frag/source-type-fields" hx-include="closest form"
+              hx-get="/frag/source-type-fields" hx-include="closest form"
               hx-target="#source-type-fields" hx-swap="innerHTML">
         <option value="socketcan" {{if eq .TypeFields.Type "socketcan"}}selected{{end}}>socketcan</option>
         <option value="usbcan" {{if eq .TypeFields.Type "usbcan"}}selected{{end}}>usbcan</option>
@@ -51,7 +51,7 @@
       {{template "source-type-fields" .TypeFields}}
     </div>
     <div class="card-actions justify-end">
-      <a class="btn" href="/ui/sources">Cancel</a>
+      <a class="btn" href="/sources">Cancel</a>
       <button type="submit" class="btn btn-primary">Save</button>
     </div>
   </div>

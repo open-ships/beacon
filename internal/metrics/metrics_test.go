@@ -103,7 +103,6 @@ func TestPrometheusExposesSharedSourcePGNMetrics(t *testing.T) {
 		"beacon_source_pgn_last_seen_unixtime",
 		"beacon_source_pgn_payload_bytes",
 		"beacon_source_pgn_gap_active",
-		"beacon_source_pgn_anomaly_active",
 		"beacon_source_pgn_timing_seconds",
 		"beacon_source_pgn_traffic",
 		"beacon_source_pgn_decode_messages_total",
@@ -111,7 +110,6 @@ func TestPrometheusExposesSharedSourcePGNMetrics(t *testing.T) {
 		"beacon_source_pgn_payload_length_messages_total",
 		"beacon_source_pgn_destination_messages_total",
 		"beacon_source_pgn_priority_messages_total",
-		"beacon_source_pgn_baseline_state",
 		"beacon_source_pgn_status",
 		"beacon_source_pgn_raw_payload",
 		"beacon_source_pgn_raw_byte",
@@ -122,6 +120,7 @@ func TestPrometheusExposesSharedSourcePGNMetrics(t *testing.T) {
 		`pgn="127250"`,
 		`source="can0"`,
 		`source_address="12"`,
+		`statistic="p90"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("source PGN exposition missing %q:\n%s", want, body)

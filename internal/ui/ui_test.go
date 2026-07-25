@@ -30,14 +30,9 @@ type fakeReconciler struct{}
 func (fakeReconciler) Reconcile(ctx context.Context) error { return nil }
 func (fakeReconciler) Statuses() []supervisor.Status       { return nil }
 
-// newAppMountedServer builds ui.Handler and serves it exactly as
-// internal/app mounts it in the real deployment: mux.Handle("/ui/",
-// handler), mux.Handle("/ui", handler) (see ui.Handler's doc comment for
-// why both are needed), plus the "GET /{$}" -> /ui/dashboard redirect (see
-// app.go's Run). ui.go's routes are registered with full "/ui/..." paths on
-// the assumption they're reached this way, so tests exercise that exact
-// shape rather than serving the handler bare at "/" (same reasoning as
-// internal/api/docsui_test.go's newAppMountedServer).
+// newAppMountedServer serves ui.Handler as internal/app's root fallback.
+// The handler itself owns the bare-root redirect and every root-level UI
+// route; app registers the more-specific API, MCP, health, and metrics paths.
 func newAppMountedServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -48,13 +43,7 @@ func newAppMountedServer(t *testing.T) *httptest.Server {
 	svc := config.NewService(st, fakeReconciler{}, nil)
 	handler := ui.Handler(svc, stats.NewRegistry(), fakeReconciler{}.Statuses, nil, "test", nil)
 
-	mux := http.NewServeMux()
-	mux.Handle("/ui/", handler)
-	mux.Handle("/ui", handler)
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/ui/dashboard", http.StatusFound)
-	})
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -105,36 +94,26 @@ func TestRootRedirectsToDashboard(t *testing.T) {
 	mustStatus(t, resp, http.StatusFound)
 
 	loc := resp.Header.Get("Location")
-	if loc != "/ui/dashboard" {
-		t.Fatalf("Location = %q, want /ui/dashboard", loc)
+	if loc != "/dashboard" {
+		t.Fatalf("Location = %q, want /dashboard", loc)
 	}
 }
 
-// --- GET /ui and GET /ui/ -> 302 /ui/dashboard ---
-
-func TestUIRootPathsRedirectToDashboard(t *testing.T) {
+func TestLegacyUIPathsAreRemoved(t *testing.T) {
 	srv := newAppMountedServer(t)
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	for _, path := range []string{"/ui", "/ui/"} {
+	for _, path := range []string{"/ui", "/ui/dashboard", "/ui/sources"} {
 		t.Run(path, func(t *testing.T) {
-			resp, err := client.Get(srv.URL + path)
+			resp, err := http.Get(srv.URL + path)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer func() { _ = resp.Body.Close() }()
-			mustStatus(t, resp, http.StatusFound)
-			if loc := resp.Header.Get("Location"); loc != "/ui/dashboard" {
-				t.Fatalf("Location = %q, want /ui/dashboard", loc)
-			}
+			mustStatus(t, resp, http.StatusNotFound)
 		})
 	}
 }
 
-// --- Same-origin guard on POST /ui/* ---
+// --- Same-origin guard on POST /* ---
 
 // samePOSTOriginTarget is a POST endpoint that never needs any prior setup
 // and, when the request reaches the handler (i.e. the guard let it
@@ -142,7 +121,7 @@ func TestUIRootPathsRedirectToDashboard(t *testing.T) {
 // "not found" alert rather than erroring. That makes it a good same-origin
 // guard test target: any status other than 200 or 403 would mean the test
 // itself is broken, not the guard.
-const samePOSTOriginTarget = "/ui/connectors/nope/delete"
+const samePOSTOriginTarget = "/connectors/nope/delete"
 
 func TestSameOriginGuardBlocksCrossOriginPOST(t *testing.T) {
 	srv := newAppMountedServer(t)
@@ -219,7 +198,7 @@ func TestSameOriginGuardAllowsHeaderlessPOST(t *testing.T) {
 
 func TestSameOriginGuardDoesNotApplyToGET(t *testing.T) {
 	srv := newAppMountedServer(t)
-	req, err := http.NewRequest(http.MethodGet, srv.URL+"/ui/dashboard", nil)
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/dashboard", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +213,7 @@ func TestSameOriginGuardDoesNotApplyToGET(t *testing.T) {
 func TestDashboardPageIsSelfContained(t *testing.T) {
 	srv := newAppMountedServer(t)
 
-	resp, err := http.Get(srv.URL + "/ui/dashboard")
+	resp, err := http.Get(srv.URL + "/dashboard")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,10 +244,10 @@ func TestDashboardPageIsSelfContained(t *testing.T) {
 	if strings.Contains(html, "app-sidebar") {
 		t.Fatalf("dashboard page should not render a sidebar:\n%s", html)
 	}
-	if !strings.Contains(html, `href="/ui/assets/favicon.svg`) {
+	if !strings.Contains(html, `href="/assets/favicon.svg`) {
 		t.Fatalf("dashboard page does not reference the site favicon:\n%s", html)
 	}
-	for _, nav := range []string{`href="https://openships.ai"`, `href="/ui/dashboard"`, `href="/ui/docs"`, `href="/ui/mcp"`} {
+	for _, nav := range []string{`href="https://openships.ai"`, `href="/dashboard"`, `href="/docs"`, `href="/mcp/info"`} {
 		if !strings.Contains(html, nav) {
 			t.Fatalf("dashboard page header does not link to %q:\n%s", nav, html)
 		}
@@ -284,7 +263,7 @@ func TestDashboardPageIsSelfContained(t *testing.T) {
 	if strings.Contains(html, `class="nav-link brand-site" href="https://openships.ai"`) {
 		t.Fatalf("openships.ai should use the same nav-link text styling as docs:\n%s", html)
 	}
-	if product := strings.Index(html, `href="/ui/dashboard"`); product < brandStart || product > navStart {
+	if product := strings.Index(html, `href="/dashboard"`); product < brandStart || product > navStart {
 		t.Fatalf("beacon should be the only left-side brand link:\n%s", html)
 	}
 	if ext := externalURLs(html); len(ext) != 1 || ext[0] != "https://openships.ai" {
@@ -294,7 +273,7 @@ func TestDashboardPageIsSelfContained(t *testing.T) {
 
 func TestMCPReferencePageIsCompleteAndSelfContained(t *testing.T) {
 	srv := newAppMountedServer(t)
-	resp, err := http.Get(srv.URL + "/ui/mcp")
+	resp, err := http.Get(srv.URL + "/mcp/info")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +291,7 @@ func TestMCPReferencePageIsCompleteAndSelfContained(t *testing.T) {
 		"claude mcp add --transport http beacon http://127.0.0.1:2112/mcp",
 		"gemini mcp add beacon http://127.0.0.1:2112/mcp --transport http",
 		`.vscode/mcp.json`, "get_health",
-		`"url": "http://127.0.0.1:2112/mcp"`, `href="/ui/mcp" class="nav-link menu-active"`,
+		`"url": "http://127.0.0.1:2112/mcp"`, `href="/mcp/info" class="nav-link menu-active"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("MCP page does not contain %q:\n%s", want, html)
@@ -343,7 +322,7 @@ func TestAssetsServed(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {
-			resp, err := http.Get(srv.URL + "/ui/assets/" + tc.path)
+			resp, err := http.Get(srv.URL + "/assets/" + tc.path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -379,7 +358,7 @@ func TestOpenBridgeAssetsAreNotServed(t *testing.T) {
 
 	for _, path := range []string{"openbridge.bundle.js", "palettes.css", "NotoSans.ttf"} {
 		t.Run(path, func(t *testing.T) {
-			resp, err := http.Get(srv.URL + "/ui/assets/" + path)
+			resp, err := http.Get(srv.URL + "/assets/" + path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -446,13 +425,13 @@ func TestDocsIndexRedirectsToFirstPage(t *testing.T) {
 			return http.ErrUseLastResponse
 		},
 	}
-	resp, err := client.Get(srv.URL + "/ui/docs")
+	resp, err := client.Get(srv.URL + "/docs")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	mustStatus(t, resp, http.StatusFound)
-	want := "/ui/docs/" + wantDocPages[0].slug
+	want := "/docs/" + wantDocPages[0].slug
 	if loc := resp.Header.Get("Location"); loc != want {
 		t.Fatalf("Location = %q, want %q", loc, want)
 	}
@@ -460,7 +439,7 @@ func TestDocsIndexRedirectsToFirstPage(t *testing.T) {
 
 func TestDocPageServesKnownSlug(t *testing.T) {
 	srv := newAppMountedServer(t)
-	resp, err := http.Get(srv.URL + "/ui/docs/getting-started")
+	resp, err := http.Get(srv.URL + "/docs/getting-started")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +466,7 @@ func TestDocPageServesKnownSlug(t *testing.T) {
 
 func TestDocPageUnknownSlugIs404(t *testing.T) {
 	srv := newAppMountedServer(t)
-	resp, err := http.Get(srv.URL + "/ui/docs/does-not-exist")
+	resp, err := http.Get(srv.URL + "/docs/does-not-exist")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,7 +475,7 @@ func TestDocPageUnknownSlugIs404(t *testing.T) {
 }
 
 // TestDocsSidebarListsAllPages checks every shipped page's sidebar entry —
-// href AND title, as one `<a href="/ui/docs/{slug}"...>{title}</a>` anchor,
+// href AND title, as one `<a href="/docs/{slug}"...>{title}</a>` anchor,
 // so a page whose title went blank or got swapped fails here even though
 // its slug link would still be present — appears on a single rendered docs
 // page (the sidebar is identical across every page; see docs.html), and
@@ -504,7 +483,7 @@ func TestDocPageUnknownSlugIs404(t *testing.T) {
 // (neither list a stray extra nor missing one).
 func TestDocsSidebarListsAllPages(t *testing.T) {
 	srv := newAppMountedServer(t)
-	resp, err := http.Get(srv.URL + "/ui/docs/getting-started")
+	resp, err := http.Get(srv.URL + "/docs/getting-started")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,14 +495,14 @@ func TestDocsSidebarListsAllPages(t *testing.T) {
 	}
 	html := string(body)
 
-	if got := strings.Count(html, `href="/ui/docs/`); got != len(wantDocPages) {
-		t.Fatalf("sidebar has %d /ui/docs/ links, want %d (%v)", got, len(wantDocPages), wantDocPages)
+	if got := strings.Count(html, `href="/docs/`); got != len(wantDocPages) {
+		t.Fatalf("sidebar has %d /docs/ links, want %d (%v)", got, len(wantDocPages), wantDocPages)
 	}
 	// One regexp per page: its anchor must carry the right href AND close
 	// with the right link text (docs.html renders the active page's anchor
 	// with an extra class attribute between href and >, hence the [^>]*).
 	for _, p := range wantDocPages {
-		anchor := regexp.MustCompile(`<a href="/ui/docs/` + regexp.QuoteMeta(p.slug) + `"[^>]*>` + regexp.QuoteMeta(p.title) + `</a>`)
+		anchor := regexp.MustCompile(`<a href="/docs/` + regexp.QuoteMeta(p.slug) + `"[^>]*>` + regexp.QuoteMeta(p.title) + `</a>`)
 		if !anchor.MatchString(html) {
 			t.Fatalf("sidebar missing anchor for slug %q with title %q:\n%s", p.slug, p.title, html)
 		}
@@ -539,7 +518,7 @@ func TestDocsPagesAreSelfContained(t *testing.T) {
 	srv := newAppMountedServer(t)
 	for _, p := range wantDocPages {
 		t.Run(p.slug, func(t *testing.T) {
-			resp, err := http.Get(srv.URL + "/ui/docs/" + p.slug)
+			resp, err := http.Get(srv.URL + "/docs/" + p.slug)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -571,7 +550,7 @@ func TestDocsPagesContainNoInlineStyling(t *testing.T) {
 	styleTag := regexp.MustCompile(`(?i)<style[\s>]`)
 	for _, p := range wantDocPages {
 		t.Run(p.slug, func(t *testing.T) {
-			resp, err := http.Get(srv.URL + "/ui/docs/" + p.slug)
+			resp, err := http.Get(srv.URL + "/docs/" + p.slug)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -592,10 +571,10 @@ func TestDocsPagesContainNoInlineStyling(t *testing.T) {
 }
 
 // TestDocsNavItemPresent checks layout.html's main nav (shared by every
-// full page, not just docs) has the docs entry pointing at /ui/docs.
+// full page, not just docs) has the docs entry pointing at /docs.
 func TestDocsNavItemPresent(t *testing.T) {
 	srv := newAppMountedServer(t)
-	resp, err := http.Get(srv.URL + "/ui/dashboard")
+	resp, err := http.Get(srv.URL + "/dashboard")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -605,8 +584,8 @@ func TestDocsNavItemPresent(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := string(body)
-	if !strings.Contains(html, `href="/ui/docs"`) {
-		t.Fatalf("main nav does not link to /ui/docs:\n%s", html)
+	if !strings.Contains(html, `href="/docs"`) {
+		t.Fatalf("main nav does not link to /docs:\n%s", html)
 	}
 	if !strings.Contains(html, ">docs<") {
 		t.Fatalf("main nav does not label the docs link \"docs\":\n%s", html)

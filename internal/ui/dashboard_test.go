@@ -62,7 +62,7 @@ func newDashboardTestServer(t *testing.T) (*httptest.Server, *config.Service, *s
 	handler := ui.Handler(svc, reg, rec.Statuses, nil, "test", nil)
 
 	mux := http.NewServeMux()
-	mux.Handle("/ui/", handler)
+	mux.Handle("/", handler)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv, svc, reg, rec
@@ -90,7 +90,7 @@ func markerSnippet(t *testing.T, body, marker string) string {
 
 func dashboardFrag(t *testing.T, srv *httptest.Server) string {
 	t.Helper()
-	resp, err := http.Get(srv.URL + "/ui/frag/dashboard")
+	resp, err := http.Get(srv.URL + "/frag/dashboard")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,13 +104,13 @@ func TestDashboardFragEmptyStateNoSourcesPointsAtSources(t *testing.T) {
 	srv, _, _, _ := newDashboardTestServer(t)
 
 	body := dashboardFrag(t, srv)
-	for _, want := range []string{"Add your first source", `href="/ui/sources/new"`} {
+	for _, want := range []string{"Add your first source", `href="/sources/new"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("empty dashboard fragment missing %q:\n%s", want, body)
 		}
 	}
 	empty := markerSnippet(t, body, "Add your first source")
-	if !strings.Contains(empty, `href="/ui/sources/new"`) {
+	if !strings.Contains(empty, `href="/sources/new"`) {
 		t.Fatalf("initial empty-state CTA should point at sources:\n%s", empty)
 	}
 }
@@ -122,7 +122,7 @@ func TestDashboardFragEmptyStateWithSourceNeedsSink(t *testing.T) {
 	}, true))
 
 	body := dashboardFrag(t, srv)
-	for _, want := range []string{"Add your first sink", `href="/ui/sinks/new"`} {
+	for _, want := range []string{"Add your first sink", `href="/sinks/new"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard fragment (sources, no connectors) missing %q:\n%s", want, body)
 		}
@@ -137,7 +137,7 @@ func TestDashboardFragEmptyStateWithSourceAndSinkPointsAtConnectors(t *testing.T
 	seedSourceSink(t, svc)
 
 	body := dashboardFrag(t, srv)
-	for _, want := range []string{"Add your first connector", `href="/ui/connectors/new"`} {
+	for _, want := range []string{"Add your first connector", `href="/connectors/new"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard fragment (source+sink, no connectors) missing %q:\n%s", want, body)
 		}
@@ -159,12 +159,12 @@ func TestDashboardFragRendersConnectorDAG(t *testing.T) {
 	for _, want := range []string{
 		"dag-board", "dag-node-source", "dag-node-connector", "dag-node-sink",
 		`data-node-id="src1"`, `data-connector-id="heading"`, `data-node-id="sink1"`,
-		`href="/ui/sources/src1/"`, `href="/ui/sinks/sink1/"`,
-		`href="/ui/sources/new"`, `href="/ui/sinks/new"`, `href="/ui/connectors/new"`,
+		`href="/sources/src1/"`, `href="/sinks/sink1/"`,
+		`href="/sources/new"`, `href="/sinks/new"`, `href="/connectors/new"`,
 		"metadata-stack", "metadata-table",
 		"<th>Detail</th>", "<code>can0</code>", "<code>127.0.0.1:9000</code>",
-		"Heading only", `href="/ui/connectors/heading/"`, "Source One", "Sink One",
-		`href="/ui/sources/src1/">Source One</a>`, `href="/ui/sinks/sink1/">Sink One</a>`,
+		"Heading only", `href="/connectors/heading/"`, "Source One", "Sink One",
+		`href="/sources/src1/">Source One</a>`, `href="/sinks/sink1/">Sink One</a>`,
 		"badge-success\">enabled</span>", "msg/s", "B/s", "queued",
 	} {
 		if !strings.Contains(body, want) {
@@ -228,7 +228,7 @@ func TestDashboardFragConnectorErrorBadge(t *testing.T) {
 	for _, want := range []string{
 		`dag-node-connector component-status-surface state-error`,
 		`dag-link state-error`,
-		`<tr class="component-status-row state-error" data-href="/ui/connectors/heading/">`,
+		`<tr class="component-status-row state-error" data-href="/connectors/heading/">`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard fragment missing connector error colorization %q:\n%s", want, body)
@@ -292,13 +292,13 @@ func TestDashboardFragEndpointNodeStates(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		`<tr class="component-status-row state-up" data-href="/ui/sources/up-src/">`,
-		`<tr class="component-status-row state-degraded" data-href="/ui/sources/degraded-src/">`,
-		`<tr class="component-status-row state-error" data-href="/ui/sinks/err-sink/">`,
-		`<tr class="component-status-row state-up" data-href="/ui/connectors/up-conn/">`,
-		`<tr class="component-status-row state-degraded" data-href="/ui/connectors/degraded-conn/">`,
-		`<tr class="component-status-row state-restarting" data-href="/ui/connectors/restarting-conn/">`,
-		`<tr class="component-status-row state-disabled" data-href="/ui/connectors/off-conn/">`,
+		`<tr class="component-status-row state-up" data-href="/sources/up-src/">`,
+		`<tr class="component-status-row state-degraded" data-href="/sources/degraded-src/">`,
+		`<tr class="component-status-row state-error" data-href="/sinks/err-sink/">`,
+		`<tr class="component-status-row state-up" data-href="/connectors/up-conn/">`,
+		`<tr class="component-status-row state-degraded" data-href="/connectors/degraded-conn/">`,
+		`<tr class="component-status-row state-restarting" data-href="/connectors/restarting-conn/">`,
+		`<tr class="component-status-row state-disabled" data-href="/connectors/off-conn/">`,
 		`<div class="dag-link state-up" aria-hidden="true"></div>`,
 		`<div class="dag-link state-degraded" aria-hidden="true"></div>`,
 		`<div class="dag-link state-restarting" aria-hidden="true"></div>`,
@@ -312,12 +312,12 @@ func TestDashboardFragEndpointNodeStates(t *testing.T) {
 	for _, tc := range []struct {
 		path, want string
 	}{
-		{"/ui/sources", `<tr class="component-status-row state-up" data-href="/ui/sources/up-src/">`},
-		{"/ui/sinks", `<tr class="component-status-row state-error" data-href="/ui/sinks/err-sink/">`},
-		{"/ui/connectors", `<tr class="component-status-row state-up" data-href="/ui/connectors/up-conn/">`},
-		{"/ui/frag/sources/up-src/overview", `<section class="overview-card component-status-surface state-up" aria-label="Status">`},
-		{"/ui/frag/sinks/err-sink/overview", `<section class="overview-card component-status-surface state-error" aria-label="Status">`},
-		{"/ui/frag/connectors/up-conn/overview", `<section class="overview-card component-status-surface state-up" aria-label="Status">`},
+		{"/sources", `<tr class="component-status-row state-up" data-href="/sources/up-src/">`},
+		{"/sinks", `<tr class="component-status-row state-error" data-href="/sinks/err-sink/">`},
+		{"/connectors", `<tr class="component-status-row state-up" data-href="/connectors/up-conn/">`},
+		{"/frag/sources/up-src/overview", `<section class="overview-card component-status-surface state-up" aria-label="Status and metrics">`},
+		{"/frag/sinks/err-sink/overview", `<section class="overview-card component-status-surface state-error" aria-label="Status and metrics">`},
+		{"/frag/connectors/up-conn/overview", `<section class="overview-card component-status-surface state-up" aria-label="Status and metrics">`},
 	} {
 		resp, err := http.Get(srv.URL + tc.path)
 		if err != nil {
@@ -346,9 +346,17 @@ func TestDashboardFragMetadataTablesCountEndpointUsage(t *testing.T) {
 		"metadata-stack", "Sources", "Sinks", "Connectors",
 		"Used source", "2 connectors", "Unused source", "0 connectors",
 		"Used sink", "Unused sink", "usage-dot-used", "usage-dot-unused",
+		`<tr class="component-status-row state-restarting" data-href="/sources/src1/">`,
+		`<tr class="component-status-row state-restarting" data-href="/sinks/sink1/">`,
+		`<tr class="component-status-row state-restarting" data-href="/connectors/conn1/">`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard metadata tables missing %q:\n%s", want, body)
+		}
+	}
+	for _, notWant := range []string{`>View</a>`, `>Edit</a>`, `<th>Actions</th>`} {
+		if strings.Contains(body, notWant) {
+			t.Fatalf("dashboard metadata tables unexpectedly contain row action %q:\n%s", notWant, body)
 		}
 	}
 }
@@ -358,7 +366,7 @@ func TestDashboardFragMetadataTablesCountEndpointUsage(t *testing.T) {
 func TestDashboardPageHostsPollingContainer(t *testing.T) {
 	srv, _, _, _ := newDashboardTestServer(t)
 
-	resp, err := http.Get(srv.URL + "/ui/dashboard")
+	resp, err := http.Get(srv.URL + "/dashboard")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +374,7 @@ func TestDashboardPageHostsPollingContainer(t *testing.T) {
 	body := mustBody(t, resp)
 	for _, want := range []string{
 		`id="dashboard-panel"`,
-		`hx-get="/ui/frag/dashboard"`,
+		`hx-get="/frag/dashboard"`,
 		`hx-trigger="load, every 2s"`,
 		`hx-swap="innerHTML"`,
 	} {

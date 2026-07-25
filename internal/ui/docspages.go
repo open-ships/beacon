@@ -1,13 +1,11 @@
-// docspages.go implements beacon's onboard operator manual at GET /ui/docs
-// and GET /ui/docs/{slug}: the markdown files embedded from docs/*.md,
+// docspages.go implements beacon's onboard operator manual at GET /docs
+// and GET /docs/{slug}: the markdown files embedded from docs/*.md,
 // rendered to HTML once per file and cached (the embedded content never
 // changes at runtime, so there is nothing to invalidate), and served inside
 // templates/docs.html's sidebar + <article> layout — see pages.go's "docs"
-// entry and ui.go's route registrations. internal/app additionally
-// 301-redirects the bare "/docs" and "/docs/{slug}" paths (on the admin
-// mux, spec §5) to these /ui/docs equivalents; "/docs" is one of
-// model.ReservedPathPrefixes, so no HTTP sink can ever be configured to
-// collide with either mount.
+// entry and ui.go's root-level route registrations. "/docs" is reserved
+// from HTTP sink paths, so configured data endpoints cannot collide with
+// the manual.
 package ui
 
 import (
@@ -195,9 +193,9 @@ func docNavItems() []docNavItem {
 	return items
 }
 
-// handleDocsIndex serves GET /ui/docs: a 302 to the first manual page (the
+// handleDocsIndex serves GET /docs: a 302 to the first manual page (the
 // same convention as a directory index), so operators can bookmark or link
-// to plain "/ui/docs" without needing to know page order or which file is
+// to plain "/docs" without needing to know page order or which file is
 // first.
 func handleDocsIndex() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -205,11 +203,11 @@ func handleDocsIndex() http.HandlerFunc {
 		if len(docPages) > 0 {
 			first = docPages[0].Slug
 		}
-		http.Redirect(w, r, "/ui/docs/"+first, http.StatusFound)
+		http.Redirect(w, r, "/docs/"+first, http.StatusFound)
 	}
 }
 
-// handleDocPage serves GET /ui/docs/{slug}: the manual page whose slug
+// handleDocPage serves GET /docs/{slug}: the manual page whose slug
 // matches, or a 404 for an unknown one.
 func handleDocPage(version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

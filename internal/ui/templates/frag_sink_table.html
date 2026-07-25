@@ -31,8 +31,8 @@
     </thead>
     <tbody>
       {{range .Sinks}}
-      <tr class="component-status-row state-{{.State}}" data-href="/ui/sinks/{{.ID}}/">
-        <td><a class="link" href="/ui/sinks/{{.ID}}/">{{.Name}}</a></td>
+      <tr class="component-status-row state-{{.State}}" data-href="/sinks/{{.ID}}/">
+        <td><a class="link" href="/sinks/{{.ID}}/">{{.Name}}</a></td>
         <td><code>{{.ID}}</code></td>
         <td>{{.Type}}</td>
         <td>{{if .Detail}}<code>{{.Detail}}</code>{{else}}<span class="opacity-70">-</span>{{end}}</td>
@@ -47,9 +47,9 @@
           {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
         </td>
         <td class="flex gap-2 justify-end">
-          <a class="btn btn-sm" href="/ui/sinks/{{.ID}}/edit">Edit</a>
+          <a class="btn btn-sm" href="/sinks/{{.ID}}/edit">Edit</a>
           <button type="button" class="btn btn-sm btn-error"
-                  hx-post="/ui/sinks/{{.ID}}/delete" hx-target="#sink-panel" hx-swap="outerHTML"
+                  hx-post="/sinks/{{.ID}}/delete" hx-target="#sink-panel" hx-swap="outerHTML"
                   hx-confirm="Delete sink &quot;{{.ID}}&quot;? Connectors using it must be removed or repointed first.">
             Delete
           </button>
