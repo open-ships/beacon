@@ -301,13 +301,6 @@ func observeSourcePGNMetrics(o api.Observer, set *Set, all map[string][]stats.So
 	}
 }
 
-func boolMetric(value bool) int64 {
-	if value {
-		return 1
-	}
-	return 0
-}
-
 func categorySummary(field stats.FieldDistribution) (distinct int, total int64, topShare float64) {
 	var top int64
 	for _, count := range field.Values {

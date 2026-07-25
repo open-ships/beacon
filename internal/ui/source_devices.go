@@ -126,22 +126,24 @@ func sourceDeviceRows(metrics []stats.SourcePGNMetric, sorting sourceDeviceSort)
 		}
 	}
 
-	addresses := make([]int, 0, len(byAddress))
+	addresses := make([]uint8, 0, len(byAddress))
 	for address := range byAddress {
-		addresses = append(addresses, int(address))
+		addresses = append(addresses, address)
 	}
-	sort.Ints(addresses)
+	sort.Slice(addresses, func(i, j int) bool {
+		return addresses[i] < addresses[j]
+	})
 
 	rows := make([]sourceDeviceRow, 0, len(addresses))
 	for _, address := range addresses {
-		device := byAddress[uint8(address)]
+		device := byAddress[address]
 		share := 0.0
 		if totalObservedBytes > 0 {
 			share = device.observedBytes / totalObservedBytes * 100
 		}
 		device.sourceDeviceRow.messagesPerSec = device.messagesPerSec
 		device.sourceDeviceRow.bytesPerSec = device.bytesPerSec
-		device.sourceDeviceRow.trafficShare = share
+		device.trafficShare = share
 		device.sourceDeviceRow.lastSeen = device.lastSeen
 		device.TrafficShareText = fmt.Sprintf("%.1f%%", share)
 		device.MessagesPerSecText = fmt.Sprintf("%.2f", device.messagesPerSec)
