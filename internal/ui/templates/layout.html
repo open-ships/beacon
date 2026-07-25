@@ -4,21 +4,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}} - beacon</title>
-<link rel="icon" type="image/svg+xml" href="/ui/assets/favicon.svg?v={{.AssetVersion}}">
-<link rel="stylesheet" href="/ui/assets/app.css?v={{.AssetVersion}}">
-<script src="/ui/assets/htmx.min.js?v={{.AssetVersion}}" defer></script>
-<script src="/ui/assets/app.js?v={{.AssetVersion}}" defer></script>
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v={{.AssetVersion}}">
+<link rel="stylesheet" href="/assets/app.css?v={{.AssetVersion}}">
+<script src="/assets/htmx.min.js?v={{.AssetVersion}}" defer></script>
+<script src="/assets/app.js?v={{.AssetVersion}}" defer></script>
 </head>
 <body>
 <div class="app-shell">
   <header class="app-header">
     <div class="brand-strip">
-      <a class="brand-product" href="/ui/dashboard" hx-boost="true">beacon</a>
+      <a class="brand-product" href="/dashboard" hx-boost="true">beacon</a>
     </div>
     <nav class="app-nav" aria-label="Primary">
-      <a href="/ui/config" class="nav-link{{if eq .Active "config"}} menu-active{{end}}" hx-boost="true">config</a>
-      <a href="/ui/docs" class="nav-link{{if eq .Active "docs"}} menu-active{{end}}" hx-boost="true">docs</a>
-      <a href="/ui/mcp" class="nav-link{{if eq .Active "mcp"}} menu-active{{end}}" hx-boost="true">mcp</a>
+      <a href="/config" class="nav-link{{if eq .Active "config"}} menu-active{{end}}" hx-boost="true">config</a>
+      <a href="/docs" class="nav-link{{if eq .Active "docs"}} menu-active{{end}}" hx-boost="true">docs</a>
+      <a href="/mcp/info" class="nav-link{{if eq .Active "mcp"}} menu-active{{end}}" hx-boost="true">mcp</a>
       <a class="nav-link" href="https://openships.ai">openships.ai</a>
     </nav>
   </header>

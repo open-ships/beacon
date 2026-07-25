@@ -25,7 +25,7 @@ func renderPage(w http.ResponseWriter, log *slog.Logger, name string, data any) 
 	t, ok := pages[name]
 	if !ok {
 		// Unreachable from HTTP: callers only pass names they've registered
-		// a "GET /ui/<name>" route for, which by construction exist in
+		// a "GET /<name>" route for, which by construction exist in
 		// pages. Guarded anyway so a future routing/pages drift fails loud
 		// instead of executing a nil template.
 		log.Error("ui: render failed", "page", name, "err", "no template registered for page")
@@ -44,7 +44,7 @@ func renderPage(w http.ResponseWriter, log *slog.Logger, name string, data any) 
 
 // renderFragment executes the named template out of fragTemplates (an
 // htmx response fragment — no layout.html wrapper) and writes it to w.
-// Used by every /ui/frag/* handler and by every source/sink write/delete
+// Used by every /frag/* handler and by every source/sink write/delete
 // handler in forms.go to re-render the table or form fragment. Buffered
 // for the same reason renderPage is: a partial write on a mid-render
 // failure would leave htmx swapping in truncated HTML with no clean way to

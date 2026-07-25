@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"math"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -49,6 +48,9 @@ func TestSourcePGNMetricsTrackSenderFrequencyPayloadAndValues(t *testing.T) {
 	}
 	if math.Abs(stream.FrequencyHz-1) > 0.001 || math.Abs(stream.ExpectedPeriodSeconds-1) > 0.001 {
 		t.Fatalf("frequency = %v Hz period = %v s, want 1", stream.FrequencyHz, stream.ExpectedPeriodSeconds)
+	}
+	if math.Abs(stream.PeriodP90Seconds-1) > 0.001 || math.Abs(stream.PeriodP99Seconds-1) > 0.001 {
+		t.Fatalf("period p90/p99 = %v / %v, want 1", stream.PeriodP90Seconds, stream.PeriodP99Seconds)
 	}
 	if stream.PayloadBytesLast != 8 || stream.PayloadBytesMin != 8 || stream.PayloadBytesMax != 8 || stream.PayloadBytesMean != 8 {
 		t.Fatalf("payload distribution = %+v", stream)
@@ -100,12 +102,12 @@ func TestSourcePGNMetricsExposeWireDecodeAddressingAndFieldQuality(t *testing.T)
 	if field.PresentMessages != 2 || field.MissingMessages != 1 || math.Abs(field.AvailabilityPercent-66.6667) > 0.01 {
 		t.Fatalf("field availability = %+v", field)
 	}
-	if field.OutOfRangeCount != 1 || !field.Anomalous || field.LastRateOfChange == nil {
+	if field.LastRateOfChange == nil || field.Maximum == nil || *field.Maximum != 1000 {
 		t.Fatalf("field quality = %+v", field)
 	}
 }
 
-func TestSourceTrafficBaselineAndEventsSurviveRestart(t *testing.T) {
+func TestSourceMetricEventsSurviveRestart(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "beacon.db")
 	now := time.Unix(1_700_000_000, 0).UTC()
 	st, err := store.Open(dbPath)
@@ -122,22 +124,6 @@ func TestSourceTrafficBaselineAndEventsSurviveRestart(t *testing.T) {
 			Raw: []byte{1, 2, 3, 4}, Decode: msg.DecodeInfo{Status: "decoded", Complete: true},
 		})
 		now = now.Add(time.Second)
-	}
-	baselines, err := reg.CommitSourceTrafficBaseline(t.Context(), "can0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(baselines) != 1 || math.Abs(baselines[0].ExpectedFrequencyHz-1) > 0.001 {
-		t.Fatalf("committed baselines = %+v", baselines)
-	}
-	reg.RecordSource("can0", &msg.Envelope{
-		PGN: 127250, PGNName: "Vessel Heading", Source: 12, Dest: 255, Priority: 2,
-		Raw: []byte{1, 2, 3, 255}, Decode: msg.DecodeInfo{Status: "decoded", Complete: true},
-	})
-	changed := reg.SourcePGNMetrics("can0")[0]
-	if changed.BaselineStatus != "changed" || changed.Status != "changed" ||
-		!strings.Contains(strings.Join(changed.BaselineIssues, " "), "raw byte") {
-		t.Fatalf("raw baseline change = %+v", changed)
 	}
 	if err := reg.CloseSourceMetricPersistence(t.Context()); err != nil {
 		t.Fatal(err)
@@ -156,16 +142,11 @@ func TestSourceTrafficBaselineAndEventsSurviveRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = restarted.CloseSourceMetricPersistence(t.Context()) }()
-	if loaded := restarted.SourceTrafficBaselines("can0"); len(loaded) != 1 || loaded[0].PGN != 127250 {
-		t.Fatalf("loaded baselines = %+v", loaded)
+	if events := restarted.SourceMetricEvents("can0", 20); len(events) == 0 {
+		t.Fatalf("loaded events = %+v, want persisted source lifecycle events", events)
 	}
-	if events := restarted.SourceMetricEvents("can0", 20); len(events) < 2 {
-		t.Fatalf("loaded events = %+v, want stream and baseline events", events)
-	}
-	now = now.Add(11 * time.Second)
-	metrics := restarted.SourcePGNMetrics("can0")
-	if len(metrics) != 1 || metrics[0].Observed || metrics[0].Status != "missing" || !metrics[0].GapActive {
-		t.Fatalf("missing expected stream = %+v", metrics)
+	if metrics := restarted.SourcePGNMetrics("can0"); len(metrics) != 0 {
+		t.Fatalf("live metrics should remain process-local after restart: %+v", metrics)
 	}
 }
 
@@ -188,58 +169,6 @@ func TestSourcePGNMetricsDetectCurrentAndRecoveredGaps(t *testing.T) {
 	stream = reg.SourcePGNMetrics("can0")[0]
 	if stream.GapActive || stream.GapCount != 1 || stream.LastGapAt == nil || stream.LongestGapSeconds < 4 {
 		t.Fatalf("recovered gap not retained: %+v", stream)
-	}
-}
-
-func TestSourcePGNMetricsFlagLargePhysicalValueChange(t *testing.T) {
-	now := time.Unix(1_700_000_000, 0).UTC()
-	reg := newRegistryAt(func() time.Time { return now })
-	record := func(value float64) {
-		reg.RecordSource("can0", &msg.Envelope{
-			PGN: 130312, Source: 9, Payload: json.RawMessage(`{"temperature":10}`),
-			Physical: map[string]n2kcatalog.PhysicalField{"temperature": {Value: value, Unit: "K"}},
-		})
-		now = now.Add(time.Second)
-	}
-	for i := 0; i < 6; i++ {
-		record(10)
-	}
-	record(100)
-
-	stream := reg.SourcePGNMetrics("can0")[0]
-	if !stream.AnomalyActive || !stream.RecentAnomaly || stream.Status != "anomaly" || stream.AnomalyCount != 1 {
-		t.Fatalf("stream anomaly = %+v", stream)
-	}
-	if stream.AnomalyField != "temperature" || stream.AnomalyReason == "" {
-		t.Fatalf("anomaly explanation = %+v", stream)
-	}
-	field := findField(t, stream.Fields, "temperature")
-	if !field.Anomalous || field.AnomalyCount != 1 || field.Maximum == nil || *field.Maximum != 100 {
-		t.Fatalf("field anomaly = %+v", field)
-	}
-
-	record(10)
-	stream = reg.SourcePGNMetrics("can0")[0]
-	if stream.AnomalyActive || !stream.RecentAnomaly || stream.AnomalyField != "temperature" {
-		t.Fatalf("recent anomaly context should survive a normal sample: %+v", stream)
-	}
-}
-
-func TestSourcePGNMetricsFlagLargeGenericDecodedValueChange(t *testing.T) {
-	now := time.Unix(1_700_000_000, 0).UTC()
-	reg := newRegistryAt(func() time.Time { return now })
-	for i := 0; i < 6; i++ {
-		reg.RecordSource("gateway", &msg.Envelope{
-			PGN: 99999, Source: 3, Payload: json.RawMessage(`{"sensor":10}`),
-		})
-		now = now.Add(time.Second)
-	}
-	reg.RecordSource("gateway", &msg.Envelope{
-		PGN: 99999, Source: 3, Payload: json.RawMessage(`{"sensor":1000}`),
-	})
-	stream := reg.SourcePGNMetrics("gateway")[0]
-	if !stream.AnomalyActive || stream.AnomalyField != "sensor" {
-		t.Fatalf("generic decoded anomaly = %+v", stream)
 	}
 }
 

@@ -36,7 +36,10 @@ Gateway streams use an `address` in `host:port` form and a `format` of
 NMEA 2000 address; a `tcp_gateway` sink is writable, claims an address, and
 participates on the remote bus. A `file` source takes an absolute
 `file_path`, replays its capture once at the recorded timing, then remains
-up and idle.
+up and idle. Gzip-compressed captures are detected from their contents, so
+the filename does not need a `.gz` suffix. When the configured path is
+missing, Beacon also tries the same path with `.gz` appended; an existing
+exact path always takes precedence.
 
 ## Running beacon
 
@@ -76,7 +79,7 @@ exists on the host (see the CAN setup page). The image's healthcheck polls
 
 ## Your first pipeline, via the UI
 
-1. Open `/ui` (redirects to the dashboard).
+1. Open `/` (redirects to `/dashboard`).
 2. **Sources** → Add source. For a quick test without hardware, use a
    `socketcan` source pointed at `vcan0` (see the CAN setup page for
    bringing up a virtual interface).

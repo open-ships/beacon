@@ -1,5 +1,5 @@
 {{/* Data: internal/ui/pages.go's pageData (this page carries nothing
-     beyond it — see ui.go's "GET /ui/dashboard" handler). The dashboard's
+     beyond it — see ui.go's "GET /dashboard" handler). The dashboard's
      actual content ships empty and fetches "dashboard-content"
      (frag_dashboard.html, part of fragTemplates) client-side immediately
      after load, then every 2s — exactly templates/connector_detail.html's
@@ -9,6 +9,6 @@
      renders one round-trip later). */}}
 {{define "content"}}
 <div class="flex flex-col gap-4">
-  <div id="dashboard-panel" hx-get="/ui/frag/dashboard" hx-trigger="load, every 2s" hx-swap="innerHTML"></div>
+  <div id="dashboard-panel" hx-get="/frag/dashboard" hx-trigger="load, every 2s" hx-swap="innerHTML"></div>
 </div>
 {{end}}

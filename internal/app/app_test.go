@@ -82,13 +82,7 @@ func TestHandleHealthRollup(t *testing.T) {
 	}
 }
 
-// TestDocsRedirectToUIDocs covers app.go's "/docs" and "/docs/{slug}"
-// permanent redirects (spec §5) to their internal/ui/docspages.go
-// equivalents — registered on the admin mux itself, not internal/ui's own
-// handler, so this is the one place that composition is exercised
-// end-to-end. "/docs" is one of model.ReservedPathPrefixes, so no sink
-// config can ever be written that would collide with either route.
-func TestDocsRedirectToUIDocs(t *testing.T) {
+func TestDocsRoutesAreServedAtRoot(t *testing.T) {
 	a := startTestApp(t)
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -97,11 +91,12 @@ func TestDocsRedirectToUIDocs(t *testing.T) {
 	}
 
 	cases := []struct {
-		path string
-		want string
+		path       string
+		wantStatus int
+		want       string
 	}{
-		{"/docs", "/ui/docs"},
-		{"/docs/getting-started", "/ui/docs/getting-started"},
+		{"/docs", http.StatusFound, "/docs/getting-started"},
+		{"/docs/getting-started", http.StatusOK, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.path, func(t *testing.T) {
@@ -110,8 +105,45 @@ func TestDocsRedirectToUIDocs(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = resp.Body.Close() }()
-			if resp.StatusCode != http.StatusMovedPermanently {
-				t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusMovedPermanently)
+			if resp.StatusCode != c.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, c.wantStatus)
+			}
+			if loc := resp.Header.Get("Location"); loc != c.want {
+				t.Fatalf("Location = %q, want %q", loc, c.want)
+			}
+		})
+	}
+}
+
+func TestAdminUIIsMountedAtRoot(t *testing.T) {
+	a := startTestApp(t)
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	cases := []struct {
+		path       string
+		wantStatus int
+		want       string
+	}{
+		{"/", http.StatusFound, "/dashboard"},
+		{"/dashboard", http.StatusOK, ""},
+		{"/sources", http.StatusOK, ""},
+		{"/mcp/info", http.StatusOK, ""},
+		{"/ui", http.StatusNotFound, ""},
+		{"/ui/dashboard", http.StatusNotFound, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.path, func(t *testing.T) {
+			resp, err := client.Get("http://" + a.AdminAddr() + c.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != c.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, c.wantStatus)
 			}
 			if loc := resp.Header.Get("Location"); loc != c.want {
 				t.Fatalf("Location = %q, want %q", loc, c.want)

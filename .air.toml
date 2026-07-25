@@ -1,0 +1,22 @@
+root = "."
+tmp_dir = ".air"
+
+[build]
+  cmd = "go build -o ./.air/beacon ./cmd/beacon"
+  entrypoint = ["./.air/beacon"]
+  delay = 300
+  exclude_dir = [".air", ".git", "data", "node_modules", "playwright-report", "test-results"]
+  exclude_regex = ["_test.go"]
+  include_dir = ["cmd", "internal"]
+  include_ext = ["css", "go", "html", "js", "md", "svg"]
+  include_file = ["go.mod", "go.sum"]
+  kill_delay = "1s"
+  send_interrupt = true
+  stop_on_error = true
+
+[misc]
+  clean_on_exit = true
+
+[screen]
+  clear_on_rebuild = false
+  keep_scroll = true

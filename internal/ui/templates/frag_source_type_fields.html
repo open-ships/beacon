@@ -1,5 +1,5 @@
 {{/* Data: internal/ui/forms.go's sourceTypeFieldsData. Rendered both
-     standalone (GET /ui/frag/source-type-fields, the type select's hx-get
+     standalone (GET /frag/source-type-fields, the type select's hx-get
      target) and inline inside frag_source_form.html's "source-form".
      Only the selected type's fields render as inputs, so values typed
      into another type's fields are discarded when the type select changes
@@ -65,7 +65,7 @@
   <legend class="fieldset-legend">Capture file path</legend>
   <input type="text" id="src-file-path" name="file_path" value="{{.FilePath}}"
          placeholder="/data/capture.log" class="input w-full" required>
-  <p class="text-xs opacity-70">Replays a candump/canboat/YD/Actisense log at its recorded timing.</p>
+  <p class="text-xs opacity-70">Replays a candump/canboat/YD/Actisense log at its recorded timing. Gzip is detected automatically; if this path is missing, its .gz counterpart is tried.</p>
 </fieldset>
 {{end}}
 {{end}}

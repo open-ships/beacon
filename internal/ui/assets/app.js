@@ -49,7 +49,7 @@
 
   function loadCatalog() {
     if (catalogPromise) return catalogPromise;
-    catalogPromise = fetch("/ui/cel-completions", {
+    catalogPromise = fetch("/cel-completions", {
       headers: { Accept: "application/json" }
     })
       .then(function (response) {
@@ -352,7 +352,7 @@
       validationRequest = new AbortController();
       var body = new URLSearchParams();
       body.set("filters", value);
-      fetch("/ui/frag/validate-filters", {
+      fetch("/frag/validate-filters", {
         method: "POST",
         headers: {
           Accept: "application/json",
@@ -503,14 +503,894 @@
     return 100;
   }
 
+  var activeSourceDeviceRow = null;
+
+  function sourceDeviceRowFromTarget(target) {
+    return target && target.closest && target.closest("[data-source-device-detail-row]");
+  }
+
+  function reconcileSourceDeviceRows(responseText) {
+    var currentBody = document.getElementById("source-device-rows");
+    if (!currentBody) return;
+
+    var response = new DOMParser().parseFromString(responseText, "text/html");
+    var snapshot = response.querySelector("[data-source-device-row-snapshot]");
+    if (!snapshot) return;
+
+    var nextRows = Array.prototype.slice.call(
+      snapshot.querySelectorAll("[data-source-device-detail-row]")
+    );
+    var currentRows = Array.prototype.slice.call(
+      currentBody.querySelectorAll("[data-source-device-detail-row]")
+    );
+    var currentByAddress = Object.create(null);
+    var nextAddresses = Object.create(null);
+
+    currentRows.forEach(function (row) {
+      currentByAddress[row.dataset.deviceAddress] = row;
+    });
+
+    if (nextRows.length) {
+      var empty = currentBody.querySelector("[data-source-device-empty-row]");
+      if (empty) empty.remove();
+    }
+
+    nextRows.forEach(function (nextRow, index) {
+      var address = nextRow.dataset.deviceAddress;
+      var currentRow = currentByAddress[address];
+      nextAddresses[address] = true;
+
+      if (currentRow) {
+        // Keep the row and its click handler stable. Replacing only its cells
+        // avoids losing a click between pointer-down and pointer-up.
+        if (currentRow !== activeSourceDeviceRow) {
+          var cells = Array.prototype.map.call(nextRow.children, function (cell) {
+            return cell.cloneNode(true);
+          });
+          currentRow.replaceChildren.apply(currentRow, cells);
+        }
+        return;
+      }
+
+      var inserted = nextRow.cloneNode(true);
+      var before = null;
+      for (var nextIndex = index + 1; nextIndex < nextRows.length; nextIndex += 1) {
+        before = currentByAddress[nextRows[nextIndex].dataset.deviceAddress];
+        if (before) break;
+      }
+      currentBody.insertBefore(inserted, before);
+      currentByAddress[address] = inserted;
+      if (window.htmx && typeof window.htmx.process === "function") {
+        window.htmx.process(inserted);
+      }
+    });
+
+    currentRows.forEach(function (row) {
+      if (!nextAddresses[row.dataset.deviceAddress] && row !== activeSourceDeviceRow) {
+        row.remove();
+      }
+    });
+
+    if (!nextRows.length && !currentBody.querySelector("[data-source-device-empty-row]")) {
+      var nextEmpty = snapshot.querySelector("[data-source-device-empty-row]");
+      if (nextEmpty) currentBody.appendChild(nextEmpty.cloneNode(true));
+    }
+  }
+
+  function syncSourceDevicePGNSortControls(responseText) {
+    var response = new DOMParser().parseFromString(responseText, "text/html");
+    var nextControls = response.querySelectorAll("[data-source-device-pgn-sort-control]");
+
+    Array.prototype.forEach.call(nextControls, function (nextControl) {
+      var key = nextControl.dataset.sourceDevicePgnSortControl;
+      var currentControl = document.querySelector(
+        '[data-source-device-pgn-sort-control="' + key + '"]'
+      );
+      if (!currentControl) return;
+
+      var currentHeading = currentControl.closest("th");
+      var nextHeading = nextControl.closest("th");
+      if (currentHeading && nextHeading) {
+        currentHeading.setAttribute("aria-sort", nextHeading.getAttribute("aria-sort") || "none");
+      }
+
+      var replacement = nextControl.cloneNode(true);
+      currentControl.replaceWith(replacement);
+      if (window.htmx && typeof window.htmx.process === "function") {
+        window.htmx.process(replacement);
+      }
+    });
+  }
+
+  var streamCaptureLimit = 200;
+
+  function initStreamPanels(root) {
+    var scope = root && root.querySelectorAll ? root : document;
+    var panels = Array.prototype.slice.call(scope.querySelectorAll("[data-stream-panel]"));
+    if (scope.matches && scope.matches("[data-stream-panel]")) panels.unshift(scope);
+    panels.forEach(initStreamPanel);
+  }
+
+  function initStreamPanel(panel) {
+    if (panel.dataset.streamReady === "true") return;
+    panel.dataset.streamReady = "true";
+
+    var startButton = panel.querySelector("[data-stream-start]");
+    var stopButton = panel.querySelector("[data-stream-stop]");
+    var clearButton = panel.querySelector("[data-stream-clear]");
+    var copyButton = panel.querySelector("[data-stream-copy]");
+    var copyFeedback = panel.querySelector("[data-stream-copy-feedback]");
+    var filterInput = panel.querySelector("[data-stream-filter]");
+    var filterFeedback = panel.querySelector("[data-stream-filter-feedback]");
+    var celInspector = panel.querySelector("[data-stream-cel-inspector]");
+    var celPath = panel.querySelector("[data-stream-cel-path]");
+    var celExpression = panel.querySelector("[data-stream-cel-expression]");
+    var celUseButton = panel.querySelector("[data-stream-cel-use]");
+    var celCopyButton = panel.querySelector("[data-stream-cel-copy]");
+    var celCloseButton = panel.querySelector("[data-stream-cel-close]");
+    var status = panel.querySelector("[data-stream-status]");
+    var empty = panel.querySelector("[data-stream-empty]");
+    var emptyTitle = empty && empty.querySelector("strong");
+    var emptyDetail = empty && empty.querySelector("span");
+    var list = panel.querySelector("[data-stream-list]");
+    var viewButtons = Array.prototype.slice.call(panel.querySelectorAll("[data-stream-view]"));
+    var exportButtons = Array.prototype.slice.call(panel.querySelectorAll("[data-stream-export]"));
+    if (!startButton || !stopButton || !clearButton || !status || !empty || !list) return;
+
+    var entries = [];
+    var totalCaptured = 0;
+    var stream = null;
+    var starting = false;
+    var appliedFilter = "";
+    var displayFormat = "json";
+    var renderPending = false;
+    var filterTimer = null;
+    var validationSequence = 0;
+    var copyFeedbackTimer = null;
+
+    function isStreaming() {
+      return stream !== null;
+    }
+
+    function setStatus(label) {
+      var summary = totalCaptured.toLocaleString() + " captured";
+      if (totalCaptured > entries.length) {
+        summary += " \u00b7 latest " + entries.length.toLocaleString() + " shown";
+      }
+      status.textContent = label + " \u00b7 " + summary;
+    }
+
+    function setFilterError(message) {
+      if (!filterInput || !filterFeedback) return;
+      filterInput.setAttribute("aria-invalid", message ? "true" : "false");
+      filterFeedback.textContent = message || "";
+      filterFeedback.hidden = !message;
+    }
+
+    function updateControls() {
+      startButton.hidden = isStreaming();
+      stopButton.hidden = !isStreaming();
+      startButton.disabled = starting;
+      stopButton.disabled = false;
+      if (filterInput) filterInput.disabled = starting;
+      clearButton.disabled = entries.length === 0;
+      exportButtons.forEach(function (button) {
+        if (button.dataset.streamExport === "can") {
+          button.disabled = !entries.some(function (entry) {
+            return streamRawBytes(entry.raw).length > 0;
+          });
+        } else {
+          button.disabled = entries.length === 0;
+        }
+      });
+      if (copyButton) {
+        copyButton.disabled = entries.length === 0 || (
+          displayFormat === "can" && !entries.some(function (entry) {
+            return streamRawBytes(entry.raw).length > 0;
+          })
+        );
+      }
+    }
+
+    function updateEmpty() {
+      if (entries.length > 0) {
+        empty.hidden = true;
+        list.hidden = false;
+        return;
+      }
+      empty.hidden = false;
+      list.hidden = true;
+      if (isStreaming()) {
+        emptyTitle.textContent = "Waiting for messages\u2026";
+        emptyDetail.textContent = "New " + panel.dataset.streamKind + " messages will appear here.";
+      } else {
+        emptyTitle.textContent = "Streaming is stopped.";
+        emptyDetail.textContent = "Choose Start to capture messages arriving at this " + panel.dataset.streamKind + ".";
+      }
+    }
+
+    function queueRender() {
+      if (renderPending) return;
+      renderPending = true;
+      window.requestAnimationFrame(function () {
+        renderPending = false;
+        renderEntries();
+      });
+    }
+
+    function renderEntries() {
+      var fragment = document.createDocumentFragment();
+      entries.forEach(function (entry) {
+        fragment.appendChild(streamMessageElement(entry, displayFormat));
+      });
+      list.replaceChildren(fragment);
+      updateEmpty();
+      updateControls();
+      setStatus(isStreaming() ? "Streaming" : "Stopped");
+    }
+
+    function validateFilter(filterExpression) {
+      if (!filterExpression) {
+        return Promise.resolve({ valid: true, diagnostics: [] });
+      }
+      var body = new URLSearchParams();
+      body.set("filters", filterExpression);
+      return fetch("/frag/validate-filters", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: body.toString(),
+        credentials: "same-origin"
+      }).then(function (response) {
+        if (!response.ok) throw new Error("validation request failed");
+        return response.json();
+      });
+    }
+
+    function validationError(result, suffix) {
+      var diagnostics = Array.isArray(result.diagnostics) ? result.diagnostics : [];
+      var message = diagnostics.length > 0
+        ? "Invalid CEL: " + diagnostics[0].message
+        : "Invalid CEL filter.";
+      return suffix ? message + " " + suffix : message;
+    }
+
+    function openStream(filterExpression) {
+      if (stream) stream.close();
+      var streamURL = new URL(panel.dataset.streamUrl, window.location.href);
+      if (filterExpression) streamURL.searchParams.set("filter", filterExpression);
+      var nextStream = new EventSource(streamURL.toString());
+      stream = nextStream;
+      appliedFilter = filterExpression;
+      starting = false;
+      setFilterError("");
+      setStatus("Connecting");
+      updateControls();
+      updateEmpty();
+
+      nextStream.onopen = function () {
+        if (stream === nextStream) setStatus("Streaming");
+      };
+      nextStream.onmessage = function (event) {
+        if (stream !== nextStream) return;
+        var envelope;
+        try {
+          envelope = JSON.parse(event.data);
+        } catch (_) {
+          return;
+        }
+        if (!envelope || typeof envelope !== "object" || !("payload" in envelope)) return;
+        // Keep the exact Go-produced payload text alongside the parsed object.
+        // JSON.parse would round uint64/int64 values above JavaScript's safe
+        // integer range, corrupting both the inspector and a later export.
+        envelope.streamPayloadJSON = streamPayloadJSON(event.data) || JSON.stringify(envelope.payload);
+        totalCaptured += 1;
+        entries.unshift(envelope);
+        if (entries.length > streamCaptureLimit) entries.length = streamCaptureLimit;
+        queueRender();
+      };
+      nextStream.onerror = function () {
+        if (stream === nextStream) setStatus("Reconnecting");
+      };
+    }
+
+    function start() {
+      if (stream || starting || !panel.dataset.streamUrl) return;
+      var filterExpression = filterInput ? filterInput.value.trim() : "";
+      setFilterError("");
+      if (!filterExpression) {
+        openStream("");
+        return;
+      }
+
+      starting = true;
+      var sequence = ++validationSequence;
+      setStatus("Checking filter");
+      updateControls();
+      validateFilter(filterExpression)
+        .then(function (result) {
+          if (!starting || sequence !== validationSequence) return;
+          if (!result.valid) {
+            starting = false;
+            setFilterError(validationError(result));
+            setStatus("Filter error");
+            updateControls();
+            return;
+          }
+          openStream(filterExpression);
+        })
+        .catch(function () {
+          if (!starting || sequence !== validationSequence) return;
+          starting = false;
+          setFilterError("CEL validation is unavailable. Try again.");
+          setStatus("Filter error");
+          updateControls();
+        });
+    }
+
+    function applyRunningFilter() {
+      window.clearTimeout(filterTimer);
+      filterTimer = null;
+      if (!stream || !filterInput) return;
+      var filterExpression = filterInput.value.trim();
+      if (filterExpression === appliedFilter) {
+        setFilterError("");
+        return;
+      }
+
+      var sequence = ++validationSequence;
+      validateFilter(filterExpression)
+        .then(function (result) {
+          if (!stream || sequence !== validationSequence) return;
+          if (!result.valid) {
+            setFilterError(validationError(result, "The current stream filter is unchanged."));
+            return;
+          }
+          openStream(filterExpression);
+        })
+        .catch(function () {
+          if (!stream || sequence !== validationSequence) return;
+          setFilterError("CEL validation is unavailable. The current stream filter is unchanged.");
+        });
+    }
+
+    function scheduleRunningFilter() {
+      window.clearTimeout(filterTimer);
+      filterTimer = window.setTimeout(applyRunningFilter, 350);
+    }
+
+    function stop() {
+      window.clearTimeout(filterTimer);
+      filterTimer = null;
+      validationSequence += 1;
+      if (stream) stream.close();
+      stream = null;
+      starting = false;
+      updateControls();
+      updateEmpty();
+      setStatus("Stopped");
+    }
+
+    function clear() {
+      entries = [];
+      totalCaptured = 0;
+      list.replaceChildren();
+      if (celInspector) celInspector.hidden = true;
+      if (copyFeedback) copyFeedback.textContent = "";
+      updateControls();
+      updateEmpty();
+      setStatus(isStreaming() ? "Streaming" : "Stopped");
+    }
+
+    startButton.addEventListener("click", start);
+    stopButton.addEventListener("click", stop);
+    clearButton.addEventListener("click", clear);
+    if (filterInput) {
+      filterInput.addEventListener("input", function () {
+        setFilterError("");
+        if (isStreaming()) scheduleRunningFilter();
+      });
+      filterInput.addEventListener("keydown", function (event) {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        if (isStreaming()) applyRunningFilter();
+        else if (!startButton.disabled) start();
+      });
+    }
+
+    list.addEventListener("click", function (event) {
+      var content = event.target.closest && event.target.closest(".stream-message-content[data-stream-json]");
+      if (!content || !celInspector || !celPath || !celExpression) return;
+      var target = event.target.closest("[data-cel-expression]");
+      celPath.textContent = target ? target.dataset.celPath : "msg.payload";
+      celExpression.textContent = target ? target.dataset.celExpression : "has(msg.payload)";
+      celInspector.hidden = false;
+    });
+
+    if (celUseButton && celExpression && filterInput) {
+      celUseButton.addEventListener("click", function () {
+        filterInput.value = celExpression.textContent;
+        setFilterError("");
+        filterInput.focus();
+        if (isStreaming()) applyRunningFilter();
+      });
+    }
+
+    if (celCopyButton && celExpression) {
+      celCopyButton.addEventListener("click", function () {
+        writeClipboard(celExpression.textContent).then(function () {
+          if (copyFeedback) copyFeedback.textContent = "CEL copied.";
+        }).catch(function () {
+          if (copyFeedback) copyFeedback.textContent = "Copy failed.";
+        });
+      });
+    }
+
+    if (celCloseButton && celInspector) {
+      celCloseButton.addEventListener("click", function () {
+        celInspector.hidden = true;
+      });
+    }
+
+    viewButtons.forEach(function (button) {
+      button.addEventListener("click", function () {
+        displayFormat = button.dataset.streamView;
+        viewButtons.forEach(function (candidate) {
+          var selected = candidate === button;
+          candidate.setAttribute("aria-pressed", selected ? "true" : "false");
+          candidate.classList.toggle("btn-primary", selected);
+          candidate.classList.toggle("btn-ghost", !selected);
+        });
+        if (displayFormat !== "json" && celInspector) celInspector.hidden = true;
+        queueRender();
+      });
+    });
+
+    exportButtons.forEach(function (button) {
+      button.addEventListener("click", function () {
+        exportStream(entries, button.dataset.streamExport, panel.dataset.streamKind, panel.dataset.streamId);
+      });
+    });
+
+    if (copyButton) {
+      copyButton.addEventListener("click", function () {
+        var output = streamClipboardText(entries, displayFormat);
+        if (!output) return;
+        writeClipboard(output).then(function () {
+          window.clearTimeout(copyFeedbackTimer);
+          if (copyFeedback) {
+            var copiedLines = output.trimEnd().split("\n").length;
+            copyFeedback.textContent = "Copied " + copiedLines.toLocaleString() + " retained message" +
+              (copiedLines === 1 ? "." : "s.");
+          }
+          copyFeedbackTimer = window.setTimeout(function () {
+            if (copyFeedback) copyFeedback.textContent = "";
+          }, 2500);
+        }).catch(function () {
+          if (copyFeedback) copyFeedback.textContent = "Copy failed.";
+        });
+      });
+    }
+
+    panel.stopStreamCapture = stop;
+    updateControls();
+    updateEmpty();
+  }
+
+  function streamMessageElement(envelope, format) {
+    var article = document.createElement("article");
+    article.className = "stream-message";
+    var payload = envelope.payload && typeof envelope.payload === "object" ? envelope.payload : {};
+    var info = payload.info && typeof payload.info === "object" ? payload.info : {};
+    var metadata = envelope.metadata && typeof envelope.metadata === "object" ? envelope.metadata : {};
+    var identityParts = [];
+    if (info.pgn !== undefined && info.pgn !== null) identityParts.push("PGN " + info.pgn);
+    if (metadata.pgn_name) identityParts.push(metadata.pgn_name);
+    if (info.sourceId !== undefined && info.sourceId !== null) identityParts.push("source " + info.sourceId);
+    var bytes = streamRawBytes(envelope.raw);
+    article.title = identityParts.join(" \u00b7 ") || "N2K message";
+    var code = document.createElement("code");
+    code.className = "stream-message-content";
+    if (format === "can") {
+      code.textContent = bytes.length ? streamBytesHex(bytes, true) : "No raw CAN payload available.";
+    } else {
+      code.dataset.streamJson = "true";
+      code.title = "Click a JSON key or value to inspect its CEL filter";
+      renderStreamJSON(code, envelope.streamPayloadJSON || JSON.stringify(envelope.payload));
+    }
+    article.appendChild(code);
+    return article;
+  }
+
+  function renderStreamJSON(code, text) {
+    var targets = streamJSONCELTargets(text);
+    if (targets.length === 0) {
+      code.textContent = text;
+      return;
+    }
+    var cursor = 0;
+    targets.forEach(function (target) {
+      if (target.start < cursor) return;
+      if (target.start > cursor) {
+        code.appendChild(document.createTextNode(text.slice(cursor, target.start)));
+      }
+      var span = document.createElement("span");
+      span.className = "stream-json-cel-target";
+      span.dataset.celPath = target.path;
+      span.dataset.celExpression = target.expression;
+      span.textContent = text.slice(target.start, target.end);
+      span.title = target.expression;
+      code.appendChild(span);
+      cursor = target.end;
+    });
+    if (cursor < text.length) {
+      code.appendChild(document.createTextNode(text.slice(cursor)));
+    }
+  }
+
+  function streamJSONCELTargets(text) {
+    var targets = [];
+    var cursor = 0;
+
+    function skipWhitespace() {
+      while (cursor < text.length && /\s/.test(text[cursor])) cursor += 1;
+    }
+
+    function readString() {
+      var start = cursor;
+      cursor += 1;
+      var escaped = false;
+      while (cursor < text.length) {
+        var character = text[cursor];
+        cursor += 1;
+        if (escaped) {
+          escaped = false;
+        } else if (character === "\\") {
+          escaped = true;
+        } else if (character === '"') {
+          break;
+        }
+      }
+      var raw = text.slice(start, cursor);
+      return { start: start, end: cursor, raw: raw, value: JSON.parse(raw) };
+    }
+
+    function presenceExpression(path) {
+      return path.endsWith("]") ? path + " != null" : "has(" + path + ")";
+    }
+
+    function childPath(path, key) {
+      return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)
+        ? path + "." + key
+        : path + "[" + JSON.stringify(key) + "]";
+    }
+
+    function primitiveExpression(path, raw) {
+      if (/^-?\d+$/.test(raw) && typeof BigInt === "function") {
+        try {
+          var integer = BigInt(raw);
+          if (integer > BigInt("9223372036854775807") || integer < BigInt("-9223372036854775808")) {
+            return presenceExpression(path);
+          }
+        } catch (_) {
+          return presenceExpression(path);
+        }
+      }
+      return path + " == " + raw;
+    }
+
+    function parseValue(path) {
+      skipWhitespace();
+      var start = cursor;
+      var character = text[cursor];
+      if (character === "{") {
+        cursor += 1;
+        skipWhitespace();
+        while (cursor < text.length && text[cursor] !== "}") {
+          var key = readString();
+          skipWhitespace();
+          if (text[cursor] !== ":") throw new Error("invalid JSON object");
+          cursor += 1;
+          var nextPath = childPath(path, key.value);
+          var value = parseValue(nextPath);
+          targets.push({
+            start: key.start,
+            end: key.end,
+            path: nextPath,
+            expression: value.expression
+          });
+          skipWhitespace();
+          if (text[cursor] === ",") {
+            cursor += 1;
+            skipWhitespace();
+          } else {
+            break;
+          }
+        }
+        if (text[cursor] !== "}") throw new Error("invalid JSON object");
+        cursor += 1;
+        return { start: start, end: cursor, expression: presenceExpression(path) };
+      }
+      if (character === "[") {
+        cursor += 1;
+        skipWhitespace();
+        var arrayIndex = 0;
+        while (cursor < text.length && text[cursor] !== "]") {
+          parseValue(path + "[" + arrayIndex + "]");
+          arrayIndex += 1;
+          skipWhitespace();
+          if (text[cursor] === ",") {
+            cursor += 1;
+            skipWhitespace();
+          } else {
+            break;
+          }
+        }
+        if (text[cursor] !== "]") throw new Error("invalid JSON array");
+        cursor += 1;
+        return { start: start, end: cursor, expression: presenceExpression(path) };
+      }
+      if (character === '"') {
+        var stringValue = readString();
+        var stringExpression = path + " == " + stringValue.raw;
+        targets.push({
+          start: stringValue.start,
+          end: stringValue.end,
+          path: path,
+          expression: stringExpression
+        });
+        return { start: start, end: cursor, expression: stringExpression };
+      }
+
+      while (cursor < text.length && !/[\s,\]}]/.test(text[cursor])) cursor += 1;
+      if (cursor === start) throw new Error("invalid JSON value");
+      var raw = text.slice(start, cursor);
+      var expression = primitiveExpression(path, raw);
+      targets.push({ start: start, end: cursor, path: path, expression: expression });
+      return { start: start, end: cursor, expression: expression };
+    }
+
+    try {
+      parseValue("msg.payload");
+      skipWhitespace();
+      if (cursor !== text.length) return [];
+    } catch (_) {
+      return [];
+    }
+    return targets.sort(function (left, right) {
+      return left.start - right.start || left.end - right.end;
+    });
+  }
+
+  function streamRawBytes(raw) {
+    if (typeof raw !== "string" || raw === "") return new Uint8Array(0);
+    try {
+      var decoded = window.atob(raw);
+      var bytes = new Uint8Array(decoded.length);
+      for (var index = 0; index < decoded.length; index += 1) {
+        bytes[index] = decoded.charCodeAt(index);
+      }
+      return bytes;
+    } catch (_) {
+      return new Uint8Array(0);
+    }
+  }
+
+  function streamBytesHex(bytes, spaced) {
+    return Array.prototype.map.call(bytes, function (byte) {
+      return byte.toString(16).padStart(2, "0").toUpperCase();
+    }).join(spaced ? " " : "");
+  }
+
+  function streamPayloadJSON(documentText) {
+    // MarshalJSON emits payload as the first top-level field. Extract that
+    // value without parsing it so integer tokens and native n2k key order stay
+    // exactly as Go serialized them.
+    var keyIndex = documentText.indexOf('"payload"');
+    if (keyIndex < 0) return "";
+    var colon = documentText.indexOf(":", keyIndex + 9);
+    if (colon < 0) return "";
+    var start = colon + 1;
+    while (start < documentText.length && /\s/.test(documentText[start])) start += 1;
+    if (start >= documentText.length) return "";
+
+    var opening = documentText[start];
+    if (opening !== "{" && opening !== "[" && opening !== '"') {
+      var primitiveEnd = start;
+      while (primitiveEnd < documentText.length && documentText[primitiveEnd] !== "," && documentText[primitiveEnd] !== "}") {
+        primitiveEnd += 1;
+      }
+      return documentText.slice(start, primitiveEnd).trim();
+    }
+
+    var depth = 0;
+    var inString = false;
+    var escaped = false;
+    for (var index = start; index < documentText.length; index += 1) {
+      var character = documentText[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') {
+          inString = false;
+          if (opening === '"' && depth === 0) return documentText.slice(start, index + 1);
+        }
+        continue;
+      }
+      if (character === '"') {
+        inString = true;
+      } else if (character === "{" || character === "[") {
+        depth += 1;
+      } else if (character === "}" || character === "]") {
+        depth -= 1;
+        if (depth === 0) return documentText.slice(start, index + 1);
+      }
+    }
+    return "";
+  }
+
+  function streamClipboardText(entries, format) {
+    var chronological = entries.slice().reverse();
+    var lines;
+    if (format === "can") {
+      lines = chronological
+        .map(function (entry) { return streamRawBytes(entry.raw); })
+        .filter(function (bytes) { return bytes.length > 0; })
+        .map(function (bytes) { return streamBytesHex(bytes, true); });
+    } else {
+      lines = chronological.map(function (entry) {
+        return entry.streamPayloadJSON || JSON.stringify(entry.payload);
+      });
+    }
+    return lines.length ? lines.join("\n") + "\n" : "";
+  }
+
+  function writeClipboard(text) {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      var textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      var copied = document.execCommand("copy");
+      textarea.remove();
+      if (copied) resolve();
+      else reject(new Error("copy failed"));
+    });
+  }
+
+  function exportStream(entries, format, kind, id) {
+    var chronological = entries.slice().reverse();
+    var body;
+    var extension;
+    var mime;
+    if (format === "can") {
+      body = chronological
+        .map(function (entry) { return streamRawBytes(entry.raw); })
+        .filter(function (bytes) { return bytes.length > 0; })
+        .map(function (bytes) { return streamBytesHex(bytes, false); })
+        .join("\n") + "\n";
+      extension = "can.hex";
+      mime = "text/plain";
+    } else {
+      body = chronological.map(function (entry) {
+        return entry.streamPayloadJSON || JSON.stringify(entry.payload);
+      }).join("\n") + "\n";
+      extension = "n2k.jsonl";
+      mime = "application/x-ndjson";
+    }
+
+    var safeID = String(id || "stream").replace(/[^A-Za-z0-9_.-]+/g, "-");
+    var stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+    var name = String(kind || "component") + "-" + safeID + "-" + stamp + "." + extension;
+    var url = URL.createObjectURL(new Blob([body], { type: mime }));
+    var link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+  }
+
+  function initSourceDeviceDialog(root) {
+    var scope = root && root.querySelector ? root : document;
+    var dialog = scope.matches && scope.matches("[data-source-device-dialog]")
+      ? scope
+      : scope.querySelector("[data-source-device-dialog]");
+    if (!dialog || dialog.dataset.dialogReady === "true") return;
+    dialog.dataset.dialogReady = "true";
+
+    var close = dialog.querySelector("[data-source-device-dialog-close]");
+    function requestClose(event) {
+      if (event) event.preventDefault();
+      if (close) close.click();
+      else dialog.close();
+    }
+
+    dialog.addEventListener("cancel", requestClose);
+    dialog.addEventListener("click", function (event) {
+      if (event.target === dialog) requestClose(event);
+    });
+
+    if (typeof dialog.showModal === "function") {
+      if (!dialog.open) dialog.showModal();
+    } else {
+      dialog.setAttribute("open", "");
+    }
+  }
+
+  document.addEventListener("pointerdown", function (event) {
+    activeSourceDeviceRow = sourceDeviceRowFromTarget(event.target);
+  });
+  ["pointerup", "pointercancel"].forEach(function (eventName) {
+    document.addEventListener(eventName, function () {
+      window.setTimeout(function () {
+        activeSourceDeviceRow = null;
+      }, 0);
+    });
+  });
+
+  document.addEventListener("keydown", function (event) {
+    var row = sourceDeviceRowFromTarget(event.target);
+    if (row && (event.key === "Enter" || event.key === " " || event.key === "Spacebar")) {
+      event.preventDefault();
+      row.click();
+      return;
+    }
+    if (event.key !== "Escape") return;
+    var panel = document.getElementById("source-device-detail-panel");
+    var close = panel && panel.tagName === "DIALOG" && panel.open &&
+      panel.querySelector("[data-source-device-dialog-close]");
+    if (close) {
+      event.preventDefault();
+      close.click();
+    }
+  });
+
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", function () {
       initCELAutocomplete(document);
+      initSourceDeviceDialog(document);
+      initStreamPanels(document);
     });
   } else {
     initCELAutocomplete(document);
+    initSourceDeviceDialog(document);
+    initStreamPanels(document);
   }
   document.addEventListener("htmx:load", function (event) {
-    initCELAutocomplete(event.detail && event.detail.elt ? event.detail.elt : document);
+    var root = event.detail && event.detail.elt ? event.detail.elt : document;
+    initCELAutocomplete(root);
+    initSourceDeviceDialog(root);
+    initStreamPanels(root);
+  });
+  document.addEventListener("htmx:beforeCleanupElement", function (event) {
+    var root = event.detail && event.detail.elt;
+    if (!root || !root.querySelectorAll) return;
+    var panels = Array.prototype.slice.call(root.querySelectorAll("[data-stream-panel]"));
+    if (root.matches && root.matches("[data-stream-panel]")) panels.unshift(root);
+    panels.forEach(function (panel) {
+      if (typeof panel.stopStreamCapture === "function") panel.stopStreamCapture();
+    });
+  });
+  document.addEventListener("htmx:afterRequest", function (event) {
+    var trigger = event.detail && event.detail.elt;
+    if (!trigger) return;
+    if (!event.detail.successful) return;
+    if (trigger.matches("[data-source-device-row-refresh]")) {
+      reconcileSourceDeviceRows(event.detail.xhr.responseText);
+      return;
+    }
+    if (trigger.matches("[data-source-device-pgn-sort-control]")) {
+      syncSourceDevicePGNSortControls(event.detail.xhr.responseText);
+    }
   });
 })();

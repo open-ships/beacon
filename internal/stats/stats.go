@@ -363,11 +363,12 @@ type Registry struct {
 	sink                  map[string]*counters
 	events                map[string]*eventRing
 	sourceStreams         map[sourceStreamKey]*sourceStream
-	sourceBaselines       map[sourceBaselineKey]SourceTrafficBaseline
 	sourceMetricEvents    map[string]*sourceMetricEventRing
 	sourcePersistence     *sourceMetricPersistence
 	sourceAddressNames    map[sourceAddressKey]uint64
 	sourceDeviceAddresses map[sourceDeviceKey]uint8
+	streamSubscribers     map[string]map[uint64]chan []byte
+	nextStreamSubscriber  uint64
 }
 
 // NewRegistry returns an empty Registry using the real wall clock.
@@ -386,10 +387,10 @@ func newRegistryAt(now func() time.Time) *Registry {
 		sink:                  map[string]*counters{},
 		events:                map[string]*eventRing{},
 		sourceStreams:         map[sourceStreamKey]*sourceStream{},
-		sourceBaselines:       map[sourceBaselineKey]SourceTrafficBaseline{},
 		sourceMetricEvents:    map[string]*sourceMetricEventRing{},
 		sourceAddressNames:    map[sourceAddressKey]uint64{},
 		sourceDeviceAddresses: map[sourceDeviceKey]uint8{},
+		streamSubscribers:     map[string]map[uint64]chan []byte{},
 	}
 }
 
@@ -470,6 +471,7 @@ func (r *Registry) RecordSource(source string, e *msg.Envelope) {
 		r.recordSourceMetricEvent(event)
 	}
 	r.recordEvent("source", source, ev)
+	r.publishStream("source", source, e)
 }
 
 func (r *Registry) RecordSink(sink, connector string, e *msg.Envelope) {
@@ -480,6 +482,7 @@ func (r *Registry) RecordSink(sink, connector string, e *msg.Envelope) {
 	ev := eventFromEnvelope(now, "sent", connector, e)
 	r.getSink(sink).record(now, 1, int64(ev.SizeBytes))
 	r.recordEvent("sink", sink, ev)
+	r.publishStream("sink", sink, e)
 }
 
 func (r *Registry) RecordConnectorEvent(connector, stage string, e *msg.Envelope) {
@@ -637,6 +640,7 @@ func (r *Registry) RemoveSource(source string) {
 	r.mu.Lock()
 	delete(r.source, source)
 	delete(r.events, "source:"+source)
+	r.closeStreamLocked("source", source)
 	for key := range r.sourceStreams {
 		if key.source == source {
 			delete(r.sourceStreams, key)
@@ -652,6 +656,7 @@ func (r *Registry) RemoveSink(sink string) {
 	r.mu.Lock()
 	delete(r.sink, sink)
 	delete(r.events, "sink:"+sink)
+	r.closeStreamLocked("sink", sink)
 	r.mu.Unlock()
 }
 

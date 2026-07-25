@@ -10,7 +10,7 @@ require (
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/google/cel-go v0.29.2
 	github.com/modelcontextprotocol/go-sdk v1.6.1
-	github.com/open-ships/n2k v0.3.0
+	github.com/open-ships/n2k v1.0.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/cobra v1.10.2
 	github.com/yuin/goldmark v1.8.4

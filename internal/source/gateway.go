@@ -1,7 +1,14 @@
 package source
 
 import (
+	"compress/gzip"
 	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	n2k "github.com/open-ships/n2k"
@@ -54,10 +61,103 @@ func runReceive(ctx context.Context, publish func(*msg.Envelope), connected func
 }
 
 // runFile replays a capture log once at its recorded timing, then holds the
-// source "up" until stopped. n2k.File auto-detects candump/canboat/YD/Actisense
-// log formats.
+// source "up" until stopped. If the configured path does not exist, its .gz
+// counterpart is tried. Gzip is detected by content and expanded to a
+// short-lived file because n2k.File accepts paths rather than readers.
 func runFile(ctx context.Context, cfg model.Source, publish func(*msg.Envelope), connected func()) error {
-	return runReceive(ctx, publish, connected, true, n2k.File(cfg.FilePath, n2k.OriginalTiming()))
+	sourcePath := discoverReplayFile(cfg.FilePath)
+	replayPath, cleanup, err := prepareReplayFile(ctx, sourcePath)
+	if err != nil {
+		return err
+	}
+
+	var connectedOnce sync.Once
+	markConnected := func() { connectedOnce.Do(connected) }
+	err = runReceive(ctx, publish, markConnected, false, n2k.File(replayPath, n2k.OriginalTiming()))
+	cleanup()
+	if err != nil && ctx.Err() == nil {
+		return fmt.Errorf("replaying capture file %q: %w", sourcePath, err)
+	}
+	if err != nil {
+		return err
+	}
+
+	// A clean EOF proves that even an empty capture opened successfully. The
+	// decompressed copy is already gone; keep only the source state up and idle.
+	markConnected()
+	if ctx.Err() == nil {
+		<-ctx.Done()
+	}
+	return ctx.Err()
+}
+
+// discoverReplayFile preserves an explicitly configured file when it exists.
+// Only a missing path earns the conventional .gz fallback; this avoids
+// silently choosing a compressed sidecar over an operator's exact selection.
+func discoverReplayFile(path string) string {
+	if _, err := os.Stat(path); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return path
+	}
+	if strings.EqualFold(filepath.Ext(path), ".gz") {
+		return path
+	}
+	gzipPath := path + ".gz"
+	if _, err := os.Stat(gzipPath); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return gzipPath
+	}
+	return path
+}
+
+func prepareReplayFile(ctx context.Context, path string) (string, func(), error) {
+	f, err := os.Open(path) // #nosec G304 -- replaying the configured capture file is this source's purpose.
+	if err != nil {
+		return "", func() {}, fmt.Errorf("opening log file %q: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	var magic [2]byte
+	n, readErr := f.ReadAt(magic[:], 0)
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return "", func() {}, fmt.Errorf("inspecting capture file %q: %w", path, readErr)
+	}
+	if n < len(magic) || magic != [2]byte{0x1f, 0x8b} {
+		return path, func() {}, nil
+	}
+
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		return "", func() {}, fmt.Errorf("opening gzip capture file %q: %w", path, err)
+	}
+
+	tmp, err := os.CreateTemp("", "beacon-replay-*.log")
+	if err != nil {
+		_ = zr.Close()
+		return "", func() {}, fmt.Errorf("creating temporary file for gzip capture %q: %w", path, err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+
+	_, copyErr := io.Copy(tmp, contextReader{ctx: ctx, r: zr})
+	closeErr := errors.Join(zr.Close(), tmp.Close())
+	if err := errors.Join(copyErr, closeErr); err != nil {
+		cleanup()
+		return "", func() {}, fmt.Errorf("decompressing gzip capture file %q: %w", path, err)
+	}
+	return tmpPath, cleanup, nil
+}
+
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	select {
+	case <-r.ctx.Done():
+		return 0, r.ctx.Err()
+	default:
+		return r.r.Read(p)
+	}
 }
 
 // runTCP ingests from a TCP NMEA-2000 gateway; the dialer's reconnect loop

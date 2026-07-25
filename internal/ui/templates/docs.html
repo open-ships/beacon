@@ -1,5 +1,5 @@
 {{/* Data: internal/ui/docspages.go's docsPageData. Served at GET
-     /ui/docs/{slug} (see handleDocPage; GET /ui/docs itself 302s to the
+     /docs/{slug} (see handleDocPage; GET /docs itself 302s to the
      first page rather than rendering here). .Body is goldmark-rendered
      HTML (raw <...> in the source markdown renders escaped, not
      passed through — see docsMarkdown's doc comment), safe to emit
@@ -8,7 +8,7 @@
 <div class="flex flex-col lg:flex-row gap-6">
   <ul class="menu bg-base-200 text-base-content rounded-box w-full lg:w-64 shrink-0 gap-1 h-fit" hx-boost="true">
     {{range .Pages}}
-    <li><a href="/ui/docs/{{.Slug}}"{{if eq .Slug $.ActiveSlug}} class="menu-active"{{end}}>{{.Title}}</a></li>
+    <li><a href="/docs/{{.Slug}}"{{if eq .Slug $.ActiveSlug}} class="menu-active"{{end}}>{{.Title}}</a></li>
     {{end}}
   </ul>
   <article class="prose max-w-none min-w-0">

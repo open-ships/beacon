@@ -4,15 +4,14 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/open-ships/beacon/internal/model"
-	"github.com/open-ships/beacon/internal/msg"
 	"github.com/open-ships/beacon/internal/queue"
 )
 
@@ -66,7 +65,7 @@ func TestMQTTSinkBroadcastWithoutBrokerReportsDegraded(t *testing.T) {
 	}
 	defer rt.Stop()
 
-	rt.(Broadcaster).Broadcast([]queue.Entry{{Env: &msg.Envelope{PGN: 127250}}})
+	rt.(Broadcaster).Broadcast([]queue.Entry{entry("", 0, 127250)})
 	state, stateErr := rt.State()
 	if state != "degraded" || stateErr == nil {
 		t.Fatalf("state = %q/%v, want degraded/non-nil error", state, stateErr)
@@ -127,16 +126,27 @@ func TestMQTTSinkConnectsAndPublishes(t *testing.T) {
 		t.Fatalf("state = %q/%v, want up", state, stateErr)
 	}
 
-	rt.(Broadcaster).Broadcast([]queue.Entry{{Env: &msg.Envelope{PGN: 127250}}})
+	rt.(Broadcaster).Broadcast([]queue.Entry{entry("", 0, 127250)})
 	select {
 	case packet := <-published:
 		topic, body, ok := mqttPublishBody(packet)
 		if !ok {
 			t.Fatalf("invalid publish packet: %#v", packet)
 		}
-		if topic != "beacon/test" || !strings.Contains(string(body), `"pgn":127250`) {
+		if topic != "beacon/test" {
 			t.Fatalf("publish = topic %q body %s", topic, body)
 		}
+		var event map[string]any
+		if err := json.Unmarshal(body, &event); err != nil {
+			t.Fatalf("MQTT body is not JSON: %v", err)
+		}
+		if consumerEnvelopePGN(t, event) != 127250 {
+			t.Fatalf("publish = topic %q body %s", topic, body)
+		}
+		if _, ok := event["raw"].(string); !ok {
+			t.Fatalf("MQTT raw CAN bytes are not a top-level base64 value: %s", body)
+		}
+		assertNativeMessageInfoPreserved(t, event)
 	case <-time.After(time.Second):
 		t.Fatal("broker did not receive publish")
 	}

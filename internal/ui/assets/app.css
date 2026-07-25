@@ -540,9 +540,12 @@ code {
   min-width: 0;
 }
 
+/* Status and metrics share one full-width card, so this is a single column.
+   It stays a grid (rather than collapsing to a block) to keep the row gap if
+   a second card is ever added back alongside it. */
 .overview-grid {
   display: grid;
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-5);
 }
 
@@ -555,6 +558,238 @@ code {
   background: var(--surface);
   box-shadow: var(--shadow);
   padding: var(--space-4);
+}
+
+.stream-panel {
+  gap: var(--space-4);
+}
+
+.stream-panel-heading {
+  align-items: flex-start;
+}
+
+.stream-panel-heading > div:first-child {
+  display: grid;
+  flex: 1 1 0;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.stream-panel-heading p {
+  max-width: 58rem;
+  margin: 0;
+  color: #666;
+  font-size: 0.84rem;
+}
+
+.stream-primary-controls,
+.stream-export-controls,
+.stream-view-switch {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.stream-primary-controls {
+  align-items: flex-start;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+}
+
+.stream-primary-controls > [hidden] {
+  display: none;
+}
+
+.stream-filter-control {
+  display: grid;
+  flex: 0 1 28rem;
+  gap: var(--space-1);
+  width: clamp(16rem, 28vw, 28rem);
+}
+
+.stream-filter-input {
+  width: 100%;
+  min-height: 2rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--gray-dark);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1;
+  padding: 0.42rem 0.66rem;
+}
+
+.stream-filter-input:focus {
+  border-color: var(--accent);
+  outline: 3px solid rgba(35, 55, 255, 0.12);
+}
+
+.stream-filter-input[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.stream-filter-input[aria-invalid="true"]:focus {
+  outline-color: rgba(180, 35, 24, 0.14);
+}
+
+.stream-filter-input:disabled {
+  background: var(--surface-muted);
+  color: var(--gray);
+}
+
+.stream-filter-feedback {
+  color: var(--error);
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.stream-filter-feedback[hidden] {
+  display: none;
+}
+
+.stream-copy-feedback {
+  align-self: center;
+  color: var(--success);
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.stream-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  border-block: 1px solid var(--border);
+  padding-block: var(--space-3);
+}
+
+.stream-status {
+  margin-left: auto;
+  color: #555;
+  font-size: 0.8rem;
+  font-weight: 750;
+}
+
+.stream-cel-inspector {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  padding: var(--space-2) var(--space-3);
+}
+
+.stream-cel-inspector[hidden] {
+  display: none;
+}
+
+.stream-cel-inspector-copy {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.stream-cel-inspector-label {
+  color: #555;
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.stream-cel-expression {
+  display: block;
+  max-width: min(60rem, calc(100vw - 4rem));
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: #111827;
+  font-size: 0.78rem;
+  padding: 0.32rem 0.5rem;
+  white-space: nowrap;
+}
+
+.stream-cel-inspector-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.stream-empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-1);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  color: #666;
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+}
+
+.stream-empty[hidden],
+.stream-list[hidden] {
+  display: none;
+}
+
+.stream-empty strong {
+  color: var(--black);
+}
+
+.stream-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  max-height: 34rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid #64748b;
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.stream-message {
+  display: block;
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: visible;
+  background: transparent;
+}
+
+code.stream-message-content {
+  display: block;
+  box-sizing: border-box;
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  border-radius: 0;
+  background: #fff;
+  color: #111827;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.78rem;
+  line-height: 1.3;
+  white-space: pre;
+}
+
+.stream-message-content[data-stream-json] {
+  cursor: pointer;
+}
+
+.stream-json-cel-target {
+  border-radius: 2px;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+
+.stream-message-content[data-stream-json]:hover .stream-json-cel-target:hover {
+  background: #e8ecff;
+  color: var(--accent-dark);
+  outline: 1px solid #9da8ff;
 }
 
 .config-list {
@@ -618,9 +853,14 @@ code {
   border-left-color: var(--warning);
 }
 
+/* Full-width now that it shares the status card, and the tile count varies by
+   kind: two for a source, up to eight for a connector. auto-fit packs the
+   connector's row, while the capped track keeps a source's pair from
+   stretching to half the page each. */
 .overview-stats {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(135px, 160px));
+  justify-content: start;
   gap: var(--space-2);
 }
 
@@ -680,12 +920,379 @@ code {
   vertical-align: top;
 }
 
-.source-stream-gap td {
-  background: rgba(180, 35, 24, 0.055);
+.source-device-table {
+  width: 100%;
+  min-width: 1160px;
+  table-layout: fixed;
 }
 
-.source-stream-anomaly td {
-  background: rgba(166, 95, 0, 0.06);
+.source-device-table th,
+.source-device-table td {
+  vertical-align: top;
+}
+
+.source-device-table td {
+  overflow-wrap: anywhere;
+}
+
+.source-device-table .source-device-col-address {
+  width: 5rem;
+}
+
+.source-device-table .source-device-col-name {
+  width: 13rem;
+}
+
+.source-device-table .source-device-col-manufacturer {
+  width: 12rem;
+}
+
+.source-device-table .source-device-col-role {
+  width: 12rem;
+}
+
+.source-device-table .source-device-col-rate {
+  width: 7rem;
+}
+
+.source-device-table .source-device-col-share {
+  width: 9rem;
+}
+
+.source-device-table .source-device-col-last-seen {
+  width: 7rem;
+}
+
+.source-device-address,
+.source-device-stat,
+.source-device-table time {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.source-device-sort-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.35rem;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+  text-transform: inherit;
+}
+
+.source-device-sort-button:hover,
+.source-device-sort-button:focus-visible {
+  color: var(--black);
+}
+
+.source-device-sort-button:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.source-device-sort-indicator {
+  min-width: 1em;
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1;
+  opacity: 0.72;
+  text-align: center;
+}
+
+.source-device-browser {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.source-device-row {
+  cursor: pointer;
+}
+
+.source-device-row:hover td,
+.source-device-row:focus td {
+  background: var(--surface-muted);
+}
+
+.source-device-row:focus {
+  outline: 3px solid rgba(35, 55, 255, 0.22);
+  outline-offset: -3px;
+}
+
+.source-device-row-selected td {
+  background: rgba(35, 55, 255, 0.065);
+}
+
+.source-device-row-selected td:first-child {
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
+/* Sized to the table's content (~1120px) rather than the viewport: a
+   full-width dialog strands each column header far from its own data and
+   leaves dead space below short PGN lists. Height follows the content and
+   only scrolls once a device has more PGNs than the viewport can hold. */
+.source-device-detail-panel {
+  width: min(1120px, calc(100vw - 2rem));
+  /* fit-content, not auto: the UA stylesheet pins dialogs with both block
+     insets at 0, so height:auto stretches to the full viewport instead of
+     wrapping the content. */
+  height: fit-content;
+  max-width: none;
+  max-height: calc(100vh - 3rem);
+  margin: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  box-shadow: 0 24px 80px rgba(16, 19, 29, 0.34);
+  padding: 0;
+}
+
+.source-device-detail-panel::backdrop {
+  background: rgba(16, 19, 29, 0.56);
+  backdrop-filter: blur(2px);
+}
+
+.source-device-dialog-surface {
+  display: grid;
+  grid-template-rows: auto auto auto;
+  gap: var(--space-4);
+  min-width: 0;
+  overflow: visible;
+  padding: var(--space-4);
+}
+
+.source-device-detail-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.source-device-detail-heading {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.source-device-detail-heading h4,
+.source-device-detail-heading p,
+.source-device-pgn-heading h4,
+.source-device-pgn-heading p {
+  margin: 0;
+}
+
+.source-device-detail-heading h4,
+.source-device-pgn-heading h4 {
+  color: var(--black);
+  font-size: 1.15rem;
+}
+
+.source-device-detail-heading p:not(.eyebrow),
+.source-device-pgn-heading p {
+  color: #666;
+  font-size: 0.84rem;
+}
+
+.source-device-detail-metadata {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.source-device-detail-metadata > div {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: var(--space-2) var(--space-3);
+}
+
+.source-device-detail-metadata dt {
+  color: #666;
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.source-device-detail-metadata dd {
+  min-width: 0;
+  margin: 0.2rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.source-device-pgn-heading {
+  align-items: start;
+}
+
+/* The generic .section-heading cap wraps this caption to two lines inside the
+   dialog, which leaves the PGN count badge floating below the title. */
+.source-device-pgn-heading p {
+  max-width: none;
+}
+
+.source-device-pgn-heading > div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.source-device-pgn-table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+  box-shadow: none;
+}
+
+/* Balanced against the dialog's 1120px content width: the PGN column carries
+   wrapping proprietary-range names, timing holds a 3-up percentile grid, and
+   activity only needs a dot plus a relative timestamp. */
+.source-device-pgn-table th:nth-child(1) {
+  width: 25%;
+}
+
+.source-device-pgn-table th:nth-child(2) {
+  width: 12%;
+}
+
+.source-device-pgn-table th:nth-child(3) {
+  width: 14%;
+}
+
+.source-device-pgn-table th:nth-child(4) {
+  width: 22%;
+}
+
+.source-device-pgn-table th:nth-child(5) {
+  width: 16%;
+}
+
+.source-device-pgn-table th:nth-child(6) {
+  width: 11%;
+}
+
+.source-device-pgn-table th,
+.source-device-pgn-table td {
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  padding: clamp(0.48rem, 0.9vh, 0.78rem) clamp(0.52rem, 0.75vw, 0.82rem);
+  font-size: clamp(0.84rem, 0.84vw, 1rem);
+  line-height: 1.3;
+}
+
+.source-device-pgn-table th:first-child {
+  font-size: clamp(0.9rem, 0.92vw, 1.08rem);
+}
+
+.source-device-pgn-table td.source-device-pgn-identity {
+  font-size: clamp(1rem, 0.98vw, 1.15rem);
+  line-height: 1.32;
+}
+
+.source-device-pgn-identity .badge {
+  font-size: 0.85em;
+}
+
+.source-device-pgn-link {
+  color: var(--accent);
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.source-device-pgn-link code {
+  color: inherit;
+  font-size: 1.12em;
+}
+
+.source-device-pgn-link:hover,
+.source-device-pgn-link:focus-visible {
+  color: var(--accent-dark);
+  text-decoration: underline;
+}
+
+.source-device-pgn-viewport {
+  min-width: 0;
+  min-height: 0;
+  overflow-x: clip;
+  overflow-y: visible;
+}
+
+.source-device-pgn-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.source-device-pgn-timing {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.source-device-pgn-timing > span {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.source-device-pgn-timing small {
+  color: #666;
+  font-size: 0.68em;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.source-device-pgn-timing strong {
+  font-size: 0.95em;
+  white-space: nowrap;
+}
+
+/* Recency dot, graded against each PGN's own p90 period. Shares the dot
+   language used by .usage-dot/.connector-dot; the aria-label/title carries the
+   same state in words so color is never the sole signal. */
+.source-device-pgn-activity {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  white-space: nowrap;
+}
+
+.source-device-pgn-dot {
+  flex: none;
+  width: 0.62rem;
+  height: 0.62rem;
+  border-radius: 999px;
+  background: var(--gray);
+  box-shadow: 0 0 0 3px var(--surface-muted);
+}
+
+.source-device-pgn-dot-fresh {
+  background: var(--success);
+  box-shadow: 0 0 0 3px var(--success-bg);
+}
+
+.source-device-pgn-dot-late {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px var(--warning-bg);
+}
+
+.source-device-pgn-dot-stale {
+  background: var(--error);
+  box-shadow: 0 0 0 3px var(--error-bg);
+}
+
+.source-stream-gap td {
+  background: rgba(180, 35, 24, 0.055);
 }
 
 .source-stream-changed td,
@@ -700,18 +1307,6 @@ code {
 .source-gap-text {
   color: var(--error);
   font-weight: 800;
-}
-
-.source-anomaly-note {
-  display: block;
-  max-width: 11rem;
-  margin-top: 0.35rem;
-  overflow: hidden;
-  color: var(--warning);
-  font-size: 0.75rem;
-  font-weight: 750;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .source-baseline-state {
@@ -802,10 +1397,6 @@ code {
 .source-value-row > small {
   color: #666;
   line-height: 1.35;
-}
-
-.source-value-anomaly {
-  border-left-color: var(--warning);
 }
 
 .event-table td:last-child code {
@@ -1033,7 +1624,15 @@ code {
 }
 
 .overview-card.component-status-surface {
-  box-shadow: inset 4px 0 0 var(--component-state-accent), var(--shadow);
+  border-color: var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.overview-card .status-line .badge {
+  min-height: 1.75rem;
+  font-size: 0.95rem;
+  padding: 0.3rem 0.65rem;
 }
 
 .component-status-row {
@@ -1882,10 +2481,6 @@ code {
     flex-direction: column;
   }
 
-  .overview-grid {
-    grid-template-columns: 1fr;
-  }
-
   .mcp-install-grid,
   .mcp-call-grid {
     grid-template-columns: 1fr;
@@ -1893,6 +2488,22 @@ code {
 
   .overview-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .stream-status {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .stream-primary-controls {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .stream-filter-control {
+    flex: 1 1 20rem;
+    width: auto;
   }
 
   .config-list {

@@ -43,9 +43,9 @@ docker run --rm \
 
 Once it is running:
 
-- **Dashboard:** [localhost:2112/ui](http://localhost:2112/ui)
-- **Onboard manual:** [localhost:2112/ui/docs](http://localhost:2112/ui/docs)
-- **MCP agent reference:** [localhost:2112/ui/mcp](http://localhost:2112/ui/mcp)
+- **Dashboard:** [localhost:2112](http://localhost:2112)
+- **Onboard manual:** [localhost:2112/docs](http://localhost:2112/docs)
+- **MCP agent reference:** [localhost:2112/mcp/info](http://localhost:2112/mcp/info)
 - **Interactive API reference:** [localhost:2112/api/docs](http://localhost:2112/api/docs)
 - **Health:** [localhost:2112/health](http://localhost:2112/health)
 
@@ -211,21 +211,52 @@ read [Concepts](internal/ui/docs/03-concepts.md) and
 
 ## The envelope
 
-Every source is normalized into one JSON envelope used by buffers, filters, and
-network sinks. Its canonical representation keeps wire truth intact and adds
-semantic metadata rather than replacing raw values.
+MQTT, SSE, WebSocket, TCP, and NDJSON consumers receive exactly three top-level
+keys:
 
-| Field group | What it carries |
-|---|---|
-| Wire identity | `pgn`, `source`, `dest`, `priority`, `timestamp`, `raw` |
-| Route identity | `id`, `connector` after the message enters a route buffer |
-| Provenance | `observed_at`, `ingress`, `origin_ingress` |
-| Stable device identity | `device_name` and JavaScript-safe `device_name_hex` after address claim |
-| Catalog metadata | `pgn_name`, `variant`, `transport`, `manufacturer_code`, `decode` |
-| Values | Lossless raw-tick `payload` plus additive unit-scaled `physical` values |
+```json
+{
+  "payload": {
+    "info": {
+      "timestamp": "2026-07-25T12:00:00Z",
+      "receivedAt": "2026-07-25T12:00:00Z",
+      "adapterId": "socketcan:can0",
+      "networkId": "can0",
+      "direction": "received",
+      "priority": 2,
+      "pgn": 127250,
+      "sourceId": 12,
+      "targetId": null
+    },
+    "heading": 15708
+  },
+  "metadata": {
+    "id": 42,
+    "connector": "heading",
+    "observed_at": "2026-07-25T12:00:00Z",
+    "ingress": "can0",
+    "pgn_name": "Vessel Heading",
+    "decode": {"status": "decoded", "complete": true}
+  },
+  "raw": "XC9///////8="
+}
+```
+
+`payload` is the verbatim JSON representation of the decoded
+[`open-ships/n2k`](https://github.com/open-ships/n2k) Go struct, including every
+exported `MessageInfo` field such as receive time, transport timing, adapter,
+network, and direction. A consumer that knows the PGN can unmarshal `payload`
+directly into the corresponding `pgn` type. The raw-tick values are unchanged.
+
+`metadata` holds only what Beacon adds: queue and connector identity, ingress
+provenance, stable Device NAME, catalog/decode details, and physical values.
+
+`raw` is the assembled CAN payload as base64 bytes. It is top-level data, not
+metadata.
 
 Unknown PGNs still move through HTTP, TCP, MQTT, file, observe, and transparent
-routes with their raw bytes. See
+routes. Their `payload` is the complete `pgn.UnknownPGN` JSON and their original
+bytes remain available at top-level `raw`. See
 [ADR 0004](docs/adr/0004-keep-wire-values-canonical.md) for the compatibility
 rationale and [Concepts](internal/ui/docs/03-concepts.md#the-envelope) for the
 complete field contract.
@@ -307,10 +338,10 @@ take away the control surface used to repair it.
 
 | Surface | Default location | Purpose |
 |---|---|---|
-| Dashboard | `:2112/ui` | Route graph, pending/retained state, bus diagnostics, device commissioning |
-| Manual | `:2112/ui/docs` | Offline getting started, CAN setup, concepts, filters, API, troubleshooting |
+| Dashboard | `:2112/dashboard` | Route graph, pending/retained state, bus diagnostics, device commissioning |
+| Manual | `:2112/docs` | Offline getting started, CAN setup, concepts, filters, API, troubleshooting |
 | MCP endpoint | `:2112/mcp` | Streamable HTTP tools for agent configuration, health, delivery, and source PGN metrics |
-| MCP reference | `:2112/ui/mcp` | Embedded connection guide, tool catalog, and call examples |
+| MCP reference | `:2112/mcp/info` | Embedded connection guide, tool catalog, and call examples |
 | REST API | `:2112/api/v1/...` | Configuration, live state, PGN catalog, inventory, commissioning |
 | API reference | `:2112/api/docs` | Interactive, embedded OpenAPI 3.1 documentation |
 | OpenAPI document | `:2112/api/openapi.json` | Machine-readable discovery for SDKs, scripts, and agents |
@@ -329,11 +360,10 @@ An MCP client can connect without a cloud relay or companion process:
 }
 ```
 
-The MCP server exposes twelve tools to read the complete configuration, create or
+The MCP server exposes tools to read the complete configuration, create or
 update sources, sinks, and connector routes, delete each entity type, and read
-health, delivery metrics, or per-source PGN traffic metrics. Operators and
-agents can approve or clear persistent expected-traffic baselines for each
-source. It uses the same validation, SQLite persistence, and hot reconciliation as the UI and REST API.
+health, delivery metrics, or per-source PGN traffic metrics. It uses the same
+validation, SQLite persistence, and hot reconciliation as the UI and REST API.
 The server, tool schemas, and reference page are all embedded in the Beacon
 binary; no internet connection, remote schema, CDN, or hosted MCP service is
 required.
@@ -347,6 +377,20 @@ baselines make missing streams, frequency drift, payload/decode changes, address
 moves, and out-of-range values visible after a restart. The scrape-safe subset
 is exported as `beacon_source_pgn_*` at `/metrics`; raw payloads and fingerprint
 identifiers stay in the UI/MCP response to avoid unbounded Prometheus labels.
+
+Every source and sink overview also has a stopped-by-default stream inspector.
+Start captures future source-received or sink-sent messages without consuming
+connector queues or blocking routing; Stop freezes the current browser-local
+capture. An optional CEL expression beside Start filters the server-side
+preview using the same `msg` fields as connector filters and can be changed
+while streaming without clearing captured rows. Clicking a JSON key or value
+shows a usable CEL expression for that field. The inspector switches between
+the verbatim decoded n2k JSON and assembled CAN payload bytes in hexadecimal,
+with exactly one message per line in either view. Captures can be copied,
+exported as n2k JSONL, or exported as one hexadecimal CAN payload per line,
+preserving message boundaries. The captured counter tracks the entire browser
+session even though only its latest 200 messages remain available for display,
+copy, and export.
 
 The admin API also exposes the complete PGN and field catalog, best-effort
 CAN/USB hardware discovery, stable Device NAME inventory, commissioning

@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -122,8 +121,8 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("start data server: %w", err)
 	}
-	// Load approved expectations before sources start so even their first
-	// observed stream/change event is compared and persisted.
+	// Load recent source lifecycle events before sources start, then persist
+	// new events through the registry's bounded asynchronous writer.
 	if err := reg.AttachSourceMetricPersistence(ctx, st.DB()); err != nil {
 		_ = ds.Stop(ctx)
 		_ = st.Close()
@@ -175,24 +174,9 @@ func Run(ctx context.Context, opts Options) (*App, error) {
 	mux.HandleFunc("GET /health", a.handleHealth)
 	mux.Handle(mcpserver.EndpointPath, mcpserver.Handler(cfgSvc, reg, version, log))
 	mux.Handle("/api/", apiHandler)
-	mux.Handle("/ui/", uiHandler)
-	// The exact-path "/ui" mount (alongside the "/ui/" subtree mount above)
-	// is required for GET /ui to reach uiHandler's own "GET /ui" redirect
-	// route at all — see ui.Handler's doc comment for why.
-	mux.Handle("/ui", uiHandler)
-	// "/docs" and "/docs/{slug}" (spec §5) are permanent redirects to their
-	// /ui/docs equivalents (internal/ui/docspages.go), not a second copy of
-	// the manual — "/docs" is one of model.ReservedPathPrefixes, so no HTTP
-	// sink config can ever collide with either pattern.
-	mux.HandleFunc("GET /docs", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/ui/docs", http.StatusMovedPermanently)
-	})
-	mux.HandleFunc("GET /docs/{slug}", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/ui/docs/"+url.PathEscape(r.PathValue("slug")), http.StatusMovedPermanently)
-	})
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/ui/dashboard", http.StatusFound)
-	})
+	// The UI owns the remaining root-level admin paths. More-specific API,
+	// MCP, health, and metrics patterns above continue to win.
+	mux.Handle("/", uiHandler)
 	a.adminSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	ln, err := net.Listen("tcp", opts.AdminAddr)
 	if err != nil {

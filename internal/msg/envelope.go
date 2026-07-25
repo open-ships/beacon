@@ -1,5 +1,5 @@
 // Package msg defines the canonical message envelope that flows through
-// queues, HTTP wire formats, and CEL filters.
+// queues, software-facing wire formats, and CEL filters.
 package msg
 
 import (
@@ -51,12 +51,17 @@ const (
 	broadcastDest   = 255
 )
 
-// FromPGN converts a decoded n2k message into an Envelope. Known PGNs get
-// their payload marshaled to JSON and Raw set to the canonical re-encoding;
-// UnknownPGN keeps its original bytes and a null payload.
+// FromPGN converts a decoded n2k message into an Envelope. Payload is the
+// complete native JSON representation of the n2k Go struct, including every
+// exported MessageInfo field. Known PGNs get Raw set to the canonical
+// re-encoding; UnknownPGN keeps its original bytes.
 func FromPGN(m pgn.Message) (*Envelope, error) {
 	// Handle UnknownPGN separately since it doesn't implement pgn.PGN
 	if u, isUnknown := m.(*pgn.UnknownPGN); isUnknown {
+		payload, err := json.Marshal(u)
+		if err != nil {
+			return nil, fmt.Errorf("marshal unknown PGN %d payload: %w", u.Info.PGN, err)
+		}
 		e := &Envelope{
 			PGN:        u.Info.PGN,
 			Source:     u.Info.SourceId,
@@ -64,7 +69,7 @@ func FromPGN(m pgn.Message) (*Envelope, error) {
 			Priority:   defaultPriority,
 			Timestamp:  u.Info.Timestamp,
 			ObservedAt: time.Now().UTC(),
-			Payload:    json.RawMessage("null"),
+			Payload:    payload,
 			Raw:        append([]byte(nil), u.Data...),
 			Decode:     DecodeInfo{Status: "unknown"},
 		}
@@ -116,10 +121,6 @@ func FromPGN(m pgn.Message) (*Envelope, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal PGN %d payload: %w", e.PGN, err)
 	}
-	payload, err = stripInfo(payload)
-	if err != nil {
-		return nil, fmt.Errorf("strip info from PGN %d payload: %w", e.PGN, err)
-	}
 	e.Payload = payload
 	raw, err := pgn.EncodeMessage(m)
 	if err != nil {
@@ -135,20 +136,6 @@ func FromPGN(m pgn.Message) (*Envelope, error) {
 	e.Decode.Missing = metadata.Missing
 	e.Physical = physical
 	return e, nil
-}
-
-// stripInfo removes the redundant top-level "info" key that pgn.PGN types
-// embed in their JSON encoding (MessageInfo: timestamp, priority, pgn,
-// source/target id). The envelope header fields already carry that data, so
-// keeping it in the payload too would duplicate it on the wire. Done once at
-// envelope creation, not per read.
-func stripInfo(payload json.RawMessage) (json.RawMessage, error) {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &m); err != nil {
-		return nil, err
-	}
-	delete(m, "info")
-	return json.Marshal(m)
 }
 
 // Info rebuilds the MessageInfo for encoding this envelope back onto a CAN bus.

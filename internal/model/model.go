@@ -56,7 +56,11 @@ const (
 )
 
 // ReservedPathPrefixes cannot be used by HTTP sink paths.
-var ReservedPathPrefixes = []string{"/api", "/ui", "/docs", "/mcp", "/metrics", "/health"}
+var ReservedPathPrefixes = []string{
+	"/api", "/assets", "/cel-completions", "/config", "/connectors",
+	"/dashboard", "/docs", "/frag", "/health", "/mcp", "/metrics",
+	"/n2k", "/sinks", "/sources",
+}
 
 // Duration marshals as a Go duration string ("90s", "24h").
 type Duration time.Duration
@@ -88,7 +92,7 @@ type Source struct {
 	URL       string            `json:"url,omitempty"`       // http_sse / http_ws / mqtt broker
 	Topic     string            `json:"topic,omitempty"`     // mqtt
 	Headers   map[string]string `json:"headers,omitempty"`   // http_sse / http_ws
-	FilePath  string            `json:"file_path,omitempty"` // file: capture log to replay
+	FilePath  string            `json:"file_path,omitempty"` // file: capture log to replay; gzip is transparent
 	Address   string            `json:"address,omitempty"`   // tcp/udp: gateway host:port
 	Format    string            `json:"format,omitempty"`    // tcp/udp: "ydraw" or "actisense"
 }

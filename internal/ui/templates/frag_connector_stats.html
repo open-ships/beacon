@@ -1,5 +1,5 @@
 {{/* Data: internal/ui/forms.go's connectorStatsData. Rendered at GET
-     /ui/frag/connectors/{id}/stats, hx-swap="outerHTML"'d in place of
+     /frag/connectors/{id}/stats, hx-swap="outerHTML"'d in place of
      connector_detail.html's #connector-stats container (or its own
      previous response — see below) every 2s.
 
@@ -17,7 +17,7 @@
      comment for the other half of this. */}}
 {{define "connector-stats"}}
 <div id="connector-stats" class="stats stats-vertical sm:stats-horizontal shadow bg-base-200"
-     hx-get="/ui/frag/connectors/{{.ConnectorID}}/stats" hx-trigger="load, every 2s" hx-swap="outerHTML">
+     hx-get="/frag/connectors/{{.ConnectorID}}/stats" hx-trigger="load, every 2s" hx-swap="outerHTML">
   <div class="stat">
     <div class="stat-title">Total messages</div>
     <div class="stat-value">{{.Snapshot.TotalMessages}}</div>

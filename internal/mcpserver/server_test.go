@@ -278,50 +278,6 @@ func TestGetSourceMetricsReturnsAndFiltersSharedPGNStore(t *testing.T) {
 	}
 }
 
-func TestSourceTrafficBaselineToolsPersistAndReportEvents(t *testing.T) {
-	tm := newTestMCP(t)
-	if err := tm.svc.PutSource(context.Background(), model.Source{
-		ID: "can0", Name: "CAN", Type: model.SourceSocketCAN, Interface: "can0",
-	}, true); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 4; i++ {
-		tm.stats.RecordSource("can0", &msg.Envelope{
-			PGN: 127250, PGNName: "Vessel Heading", Source: 12, Dest: 255, Priority: 2,
-			Raw: []byte{1, 2, 3, byte(i)}, Decode: msg.DecodeInfo{Status: "decoded", Complete: true},
-		})
-	}
-
-	result := callTool(t, tm.client, "commit_source_traffic_baseline", map[string]any{"source_id": "can0"})
-	if result.IsError {
-		t.Fatalf("commit baseline: %s", toolErrorText(result))
-	}
-	committed := decodeStructured[sourceTrafficBaselineOutput](t, result)
-	if len(committed.Baselines) != 1 || committed.Baselines[0].PGN != 127250 {
-		t.Fatalf("committed baseline = %+v", committed)
-	}
-
-	result = callTool(t, tm.client, "get_source_metrics", map[string]any{"source_id": "can0", "event_limit": 10})
-	if result.IsError {
-		t.Fatalf("get metrics after baseline: %s", toolErrorText(result))
-	}
-	out := decodeStructured[sourceMetricsOutput](t, result)
-	if len(out.Baselines["can0"]) != 1 || len(out.Events["can0"]) == 0 {
-		t.Fatalf("baseline/event output = %+v", out)
-	}
-	if got := out.Sources["can0"][0].BaselineStatus; got != "matching" {
-		t.Fatalf("baseline status = %q, want matching", got)
-	}
-
-	result = callTool(t, tm.client, "clear_source_traffic_baseline", map[string]any{"source_id": "can0"})
-	if result.IsError {
-		t.Fatalf("clear baseline: %s", toolErrorText(result))
-	}
-	if baselines := tm.stats.SourceTrafficBaselines("can0"); len(baselines) != 0 {
-		t.Fatalf("baselines after clear = %+v", baselines)
-	}
-}
-
 func TestValidationAndDependencyFailuresAreToolErrors(t *testing.T) {
 	tm := newTestMCP(t)
 

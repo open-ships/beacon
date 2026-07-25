@@ -6,7 +6,7 @@ start from its own documentation rather than this page:
 
 - `/api/docs` — an interactive, offline reference (no CDN dependency)
 - `/api/openapi.json` — the machine-readable OpenAPI 3.1 document backing it
-- `/ui/mcp` — the offline MCP connection guide, tool catalog, and call examples
+- `/mcp/info` — the offline MCP connection guide, tool catalog, and call examples
 
 ## MCP (for AI agents)
 
@@ -23,16 +23,14 @@ session headers:
 ```
 
 The tools are `get_config`, `put_source`, `put_sink`, `put_connector`,
-`delete_source`, `delete_sink`, `delete_connector`, `get_health`, and
-`get_delivery_metrics`, plus `get_source_metrics`,
-`commit_source_traffic_baseline`, and `clear_source_traffic_baseline`. Source
-metrics can be filtered by configured source id, PGN, and NMEA 2000 source
-address. They include learned timing/jitter, rates and estimated bus load,
-addressing, decode quality, payload-size and raw-byte distributions, last-seen
-age, gaps/bursts, anomalies, decoded-field quantiles and availability, approved
-expectations, and recent lifecycle events. Input and output JSON Schemas are
-returned by MCP `tools/list`. Configuration and baseline writes persist to
-SQLite; configuration changes also reconcile immediately through the
+`delete_source`, `delete_sink`, `delete_connector`, `get_health`,
+`get_delivery_metrics`, and `get_source_metrics`. Source metrics can be
+filtered by configured source id, PGN, and NMEA 2000 source address. They
+include learned timing/jitter, rates and estimated bus load, addressing,
+decode quality, payload-size and raw-byte distributions, last-seen age,
+gaps/bursts, decoded-field quantiles and availability, and recent lifecycle
+events. Input and output JSON Schemas are returned by MCP `tools/list`.
+Configuration writes persist to SQLite and reconcile immediately through the
 supervisor.
 
 MCP needs no cloud relay, separate process, remote schema, or internet access.
@@ -155,10 +153,10 @@ stream. The same process-local store is available to agents through
 `get_source_metrics` and at `/metrics` under the
 `beacon_source_pgn_*` metric families. Frequency and gap thresholds are learned
 from recent arrival intervals. Live observation windows reset when Beacon
-restarts; operator-approved expected-traffic baselines and bounded lifecycle
-events persist in SQLite. Prometheus exports bounded numeric summaries and
-finite labels, while raw hexdumps and payload fingerprints remain available in
-the UI and MCP response rather than becoming high-cardinality time series.
+restarts; bounded lifecycle events persist in SQLite. Prometheus exports
+bounded numeric summaries and finite labels, while raw hexdumps and payload
+fingerprints remain available in the UI and MCP response rather than becoming
+high-cardinality time series.
 
 ## Health and system info
 

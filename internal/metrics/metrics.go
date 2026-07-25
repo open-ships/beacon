@@ -21,44 +21,39 @@ import (
 type gaugeKey struct{ kind, id string }
 
 type Set struct {
-	connectorMessages       api.Int64Counter
-	connectorBytes          api.Int64Counter
-	sourceMessages          api.Int64Counter
-	subscriberDrops         api.Int64Counter
-	queueDepth              api.Int64ObservableGauge
-	queueBytes              api.Int64ObservableGauge
-	componentState          api.Int64ObservableGauge
-	sinkClients             api.Int64UpDownCounter
-	sourcePGNMessages       api.Int64ObservableCounter
-	sourcePGNFrequency      api.Float64ObservableGauge
-	sourcePGNPeriod         api.Float64ObservableGauge
-	sourcePGNLastSeen       api.Float64ObservableGauge
-	sourcePGNPayload        api.Float64ObservableGauge
-	sourcePGNGap            api.Int64ObservableGauge
-	sourcePGNGapRatio       api.Float64ObservableGauge
-	sourcePGNGaps           api.Int64ObservableCounter
-	sourcePGNAnomaly        api.Int64ObservableGauge
-	sourcePGNAnomalies      api.Int64ObservableCounter
-	sourcePGNTiming         api.Float64ObservableGauge
-	sourcePGNTraffic        api.Float64ObservableGauge
-	sourcePGNDecode         api.Int64ObservableCounter
-	sourcePGNDecodeOutcome  api.Int64ObservableCounter
-	sourcePGNDecodeMissing  api.Int64ObservableCounter
-	sourcePGNBursts         api.Int64ObservableCounter
-	sourcePGNPayloadLength  api.Int64ObservableCounter
-	sourcePGNDestination    api.Int64ObservableCounter
-	sourcePGNPriority       api.Int64ObservableCounter
-	sourcePGNIdentity       api.Int64ObservableCounter
-	sourcePGNStatus         api.Int64ObservableGauge
-	sourcePGNBaseline       api.Int64ObservableGauge
-	sourcePGNBaselineValue  api.Float64ObservableGauge
-	sourcePGNRaw            api.Float64ObservableGauge
-	sourcePGNRawByte        api.Float64ObservableGauge
-	sourcePGNField          api.Float64ObservableGauge
-	sourcePGNFieldState     api.Float64ObservableGauge
-	sourcePGNFieldQuality   api.Int64ObservableCounter
-	sourcePGNFieldAnomalies api.Int64ObservableCounter
-	sourcePGNCategory       api.Float64ObservableGauge
+	connectorMessages      api.Int64Counter
+	connectorBytes         api.Int64Counter
+	sourceMessages         api.Int64Counter
+	subscriberDrops        api.Int64Counter
+	queueDepth             api.Int64ObservableGauge
+	queueBytes             api.Int64ObservableGauge
+	componentState         api.Int64ObservableGauge
+	sinkClients            api.Int64UpDownCounter
+	sourcePGNMessages      api.Int64ObservableCounter
+	sourcePGNFrequency     api.Float64ObservableGauge
+	sourcePGNPeriod        api.Float64ObservableGauge
+	sourcePGNLastSeen      api.Float64ObservableGauge
+	sourcePGNPayload       api.Float64ObservableGauge
+	sourcePGNGap           api.Int64ObservableGauge
+	sourcePGNGapRatio      api.Float64ObservableGauge
+	sourcePGNGaps          api.Int64ObservableCounter
+	sourcePGNTiming        api.Float64ObservableGauge
+	sourcePGNTraffic       api.Float64ObservableGauge
+	sourcePGNDecode        api.Int64ObservableCounter
+	sourcePGNDecodeOutcome api.Int64ObservableCounter
+	sourcePGNDecodeMissing api.Int64ObservableCounter
+	sourcePGNBursts        api.Int64ObservableCounter
+	sourcePGNPayloadLength api.Int64ObservableCounter
+	sourcePGNDestination   api.Int64ObservableCounter
+	sourcePGNPriority      api.Int64ObservableCounter
+	sourcePGNIdentity      api.Int64ObservableCounter
+	sourcePGNStatus        api.Int64ObservableGauge
+	sourcePGNRaw           api.Float64ObservableGauge
+	sourcePGNRawByte       api.Float64ObservableGauge
+	sourcePGNField         api.Float64ObservableGauge
+	sourcePGNFieldState    api.Float64ObservableGauge
+	sourcePGNFieldQuality  api.Int64ObservableCounter
+	sourcePGNCategory      api.Float64ObservableGauge
 
 	mu     sync.Mutex
 	depths map[string][2]int64 // connector -> {depth, bytes}
@@ -91,8 +86,6 @@ func New(registries ...*stats.Registry) (*Set, http.Handler, error) {
 	s.sourcePGNGap, _ = meter.Int64ObservableGauge("beacon.source.pgn.gap_active")
 	s.sourcePGNGapRatio, _ = meter.Float64ObservableGauge("beacon.source.pgn.gap_ratio")
 	s.sourcePGNGaps, _ = meter.Int64ObservableCounter("beacon.source.pgn.gaps")
-	s.sourcePGNAnomaly, _ = meter.Int64ObservableGauge("beacon.source.pgn.anomaly_active")
-	s.sourcePGNAnomalies, _ = meter.Int64ObservableCounter("beacon.source.pgn.anomalies")
 	s.sourcePGNTiming, _ = meter.Float64ObservableGauge("beacon.source.pgn.timing_seconds")
 	s.sourcePGNTraffic, _ = meter.Float64ObservableGauge("beacon.source.pgn.traffic")
 	s.sourcePGNDecode, _ = meter.Int64ObservableCounter("beacon.source.pgn.decode.messages")
@@ -104,14 +97,11 @@ func New(registries ...*stats.Registry) (*Set, http.Handler, error) {
 	s.sourcePGNPriority, _ = meter.Int64ObservableCounter("beacon.source.pgn.priority.messages")
 	s.sourcePGNIdentity, _ = meter.Int64ObservableCounter("beacon.source.pgn.identity_changes")
 	s.sourcePGNStatus, _ = meter.Int64ObservableGauge("beacon.source.pgn.status")
-	s.sourcePGNBaseline, _ = meter.Int64ObservableGauge("beacon.source.pgn.baseline_state")
-	s.sourcePGNBaselineValue, _ = meter.Float64ObservableGauge("beacon.source.pgn.baseline_value")
 	s.sourcePGNRaw, _ = meter.Float64ObservableGauge("beacon.source.pgn.raw_payload")
 	s.sourcePGNRawByte, _ = meter.Float64ObservableGauge("beacon.source.pgn.raw_byte")
 	s.sourcePGNField, _ = meter.Float64ObservableGauge("beacon.source.pgn.field.value")
 	s.sourcePGNFieldState, _ = meter.Float64ObservableGauge("beacon.source.pgn.field.state")
 	s.sourcePGNFieldQuality, _ = meter.Int64ObservableCounter("beacon.source.pgn.field.quality")
-	s.sourcePGNFieldAnomalies, _ = meter.Int64ObservableCounter("beacon.source.pgn.field.anomalies")
 	s.sourcePGNCategory, _ = meter.Float64ObservableGauge("beacon.source.pgn.field.category_summary")
 	_, err = meter.RegisterCallback(func(_ context.Context, o api.Observer) error {
 		s.mu.Lock()
@@ -136,14 +126,12 @@ func New(registries ...*stats.Registry) (*Set, http.Handler, error) {
 			return nil
 		}, s.sourcePGNMessages, s.sourcePGNFrequency, s.sourcePGNPeriod,
 			s.sourcePGNLastSeen, s.sourcePGNPayload, s.sourcePGNGap,
-			s.sourcePGNGapRatio, s.sourcePGNGaps, s.sourcePGNAnomaly,
-			s.sourcePGNAnomalies, s.sourcePGNTiming, s.sourcePGNTraffic,
+			s.sourcePGNGapRatio, s.sourcePGNGaps, s.sourcePGNTiming, s.sourcePGNTraffic,
 			s.sourcePGNDecode, s.sourcePGNDecodeOutcome, s.sourcePGNDecodeMissing,
 			s.sourcePGNBursts, s.sourcePGNPayloadLength, s.sourcePGNDestination,
-			s.sourcePGNPriority, s.sourcePGNIdentity, s.sourcePGNStatus, s.sourcePGNBaseline,
-			s.sourcePGNBaselineValue, s.sourcePGNRaw, s.sourcePGNRawByte,
-			s.sourcePGNField, s.sourcePGNFieldState, s.sourcePGNFieldQuality,
-			s.sourcePGNFieldAnomalies, s.sourcePGNCategory)
+			s.sourcePGNPriority, s.sourcePGNIdentity, s.sourcePGNStatus,
+			s.sourcePGNRaw, s.sourcePGNRawByte,
+			s.sourcePGNField, s.sourcePGNFieldState, s.sourcePGNFieldQuality, s.sourcePGNCategory)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -168,20 +156,8 @@ func observeSourcePGNMetrics(o api.Observer, set *Set, all map[string][]stats.So
 				attribute.String("transport", stream.Transport),
 				attribute.String("manufacturer_code", manufacturerCode),
 			}
-			baselineAttrs := appendMetricAttribute(base, attribute.String("status", stream.BaselineStatus))
-			o.ObserveInt64(set.sourcePGNBaseline, boolMetric(stream.Expected), api.WithAttributes(baselineAttrs...))
 			statusAttrs := appendMetricAttribute(base, attribute.String("status", stream.Status))
 			o.ObserveInt64(set.sourcePGNStatus, 1, api.WithAttributes(statusAttrs...))
-			if stream.Expected {
-				for statistic, value := range map[string]float64{
-					"expected_frequency_hz":       stream.BaselineFrequencyHz,
-					"frequency_tolerance_percent": stream.BaselineTolerancePercent,
-					"frequency_drift_percent":     stream.FrequencyDriftPercent,
-				} {
-					attrs := appendMetricAttribute(base, attribute.String("statistic", statistic))
-					o.ObserveFloat64(set.sourcePGNBaselineValue, value, api.WithAttributes(attrs...))
-				}
-			}
 			if !stream.Observed {
 				continue
 			}
@@ -191,7 +167,7 @@ func observeSourcePGNMetrics(o api.Observer, set *Set, all map[string][]stats.So
 			o.ObserveFloat64(set.sourcePGNLastSeen, float64(stream.LastSeen.UnixNano())/1e9, api.WithAttributes(base...))
 			for statistic, value := range map[string]float64{
 				"shortest": stream.ShortestPeriodSeconds, "median": stream.ExpectedPeriodSeconds,
-				"p95": stream.PeriodP95Seconds, "p99": stream.PeriodP99Seconds,
+				"p90": stream.PeriodP90Seconds, "p95": stream.PeriodP95Seconds, "p99": stream.PeriodP99Seconds,
 				"mad": stream.JitterMADSeconds,
 			} {
 				attrs := appendMetricAttribute(base, attribute.String("statistic", statistic))
@@ -245,12 +221,6 @@ func observeSourcePGNMetrics(o api.Observer, set *Set, all map[string][]stats.So
 			o.ObserveInt64(set.sourcePGNGap, gap, api.WithAttributes(base...))
 			o.ObserveFloat64(set.sourcePGNGapRatio, stream.GapRatio, api.WithAttributes(base...))
 			o.ObserveInt64(set.sourcePGNGaps, stream.GapCount, api.WithAttributes(base...))
-			anomaly := int64(0)
-			if stream.AnomalyActive {
-				anomaly = 1
-			}
-			o.ObserveInt64(set.sourcePGNAnomaly, anomaly, api.WithAttributes(base...))
-			o.ObserveInt64(set.sourcePGNAnomalies, stream.AnomalyCount, api.WithAttributes(base...))
 			if stream.Raw != nil {
 				for length, count := range stream.Raw.LengthCounts {
 					attrs := appendMetricAttribute(base, attribute.String("length_bytes", length))
@@ -301,20 +271,17 @@ func observeSourcePGNMetrics(o api.Observer, set *Set, all map[string][]stats.So
 						attrs := appendMetricAttribute(fieldBase, attribute.String("statistic", statistic))
 						o.ObserveFloat64(set.sourcePGNField, *value, api.WithAttributes(attrs...))
 					}
-					o.ObserveInt64(set.sourcePGNFieldAnomalies, field.AnomalyCount, api.WithAttributes(fieldBase...))
 				}
 				for statistic, value := range map[string]float64{
 					"availability_percent": field.AvailabilityPercent,
 					"stuck_seconds":        field.StuckSeconds,
-					"anomaly_score":        field.AnomalyScore,
 				} {
 					attrs := appendMetricAttribute(fieldBase, attribute.String("statistic", statistic))
 					o.ObserveFloat64(set.sourcePGNFieldState, value, api.WithAttributes(attrs...))
 				}
 				for kind, count := range map[string]int64{
 					"present": field.PresentMessages, "missing": field.MissingMessages,
-					"invalid": field.InvalidCount, "out_of_range": field.OutOfRangeCount,
-					"novel_category": field.NovelValueCount,
+					"invalid": field.InvalidCount, "novel_category": field.NovelValueCount,
 				} {
 					attrs := appendMetricAttribute(fieldBase, attribute.String("kind", kind))
 					o.ObserveInt64(set.sourcePGNFieldQuality, count, api.WithAttributes(attrs...))

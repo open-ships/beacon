@@ -67,7 +67,8 @@ func TestTCPLiveTail(t *testing.T) {
 	if err := json.Unmarshal(line, &m); err != nil {
 		t.Fatal(err)
 	}
-	if m["pgn"].(float64) != 127250 || m["connector"].(string) != "nav" {
+	_, metadata := consumerEnvelopeParts(t, m)
+	if consumerEnvelopePGN(t, m) != 127250 || metadata["connector"] != "nav" {
 		t.Fatalf("line = %s", line)
 	}
 }

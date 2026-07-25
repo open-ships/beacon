@@ -2,7 +2,7 @@
 // page/fragment data types templates/sources.html, sinks.html,
 // connectors.html, connector_detail.html, and every frag_*.html render
 // against, the model<->form conversions, and the HTTP handlers Handler
-// (ui.go) wires up at /ui/sources, /ui/sinks, /ui/connectors, /ui/frag/*.
+// (ui.go) wires up at /sources, /sinks, /connectors, /frag/*.
 //
 // Sources and sinks are handled by deliberately parallel, non-generic code
 // (sourceX / sinkX pairs) rather than a shared generic implementation: the
@@ -392,7 +392,7 @@ func renderSourcesPage(w http.ResponseWriter, r *http.Request, svc *config.Servi
 			current = "Edit " + form.ID
 		}
 		page = page.withBreadcrumbs(
-			breadcrumbItem{Label: "Sources", Href: "/ui/sources"},
+			breadcrumbItem{Label: "Sources", Href: "/sources"},
 			breadcrumbItem{Label: current},
 		)
 	}
@@ -404,14 +404,14 @@ func renderSourcesPage(w http.ResponseWriter, r *http.Request, svc *config.Servi
 	renderPage(w, log, "sources", data)
 }
 
-// handleSourcesPage serves GET /ui/sources: the full list page.
+// handleSourcesPage serves GET /sources: the full list page.
 func handleSourcesPage(svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		renderSourcesPage(w, r, svc, statuses, version, log, nil)
 	}
 }
 
-// handleSourceNewPage serves GET /ui/sources/new: the canonical create page.
+// handleSourceNewPage serves GET /sources/new: the canonical create page.
 func handleSourceNewPage(svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		can, serial := discoverHardware()
@@ -420,7 +420,7 @@ func handleSourceNewPage(svc *config.Service, statuses func() []supervisor.Statu
 	}
 }
 
-// handleSourceEditPage serves GET /ui/sources/{id}/edit: the canonical edit page.
+// handleSourceEditPage serves GET /sources/{id}/edit: the canonical edit page.
 func handleSourceEditPage(svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		can, serial := discoverHardware()
@@ -439,7 +439,7 @@ func handleSourceEditPage(svc *config.Service, statuses func() []supervisor.Stat
 	}
 }
 
-// handleSourceTypeFieldsFrag serves GET /ui/frag/source-type-fields: the
+// handleSourceTypeFieldsFrag serves GET /frag/source-type-fields: the
 // type select's hx-get target. hx-include="closest form" resends every
 // field currently in the form as a query parameter, so the newly selected
 // type's own field keeps its value if it happens to still be in the DOM —
@@ -468,14 +468,14 @@ func handleSourceTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
 	}
 }
 
-// handleSourceCreate serves POST /ui/sources.
+// handleSourceCreate serves POST /sources.
 func handleSourceCreate(svc *config.Service, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		writeSource(w, r, svc, log, true, "")
 	}
 }
 
-// handleSourceUpdate serves POST /ui/sources/{id}.
+// handleSourceUpdate serves POST /sources/{id}.
 func handleSourceUpdate(svc *config.Service, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		writeSource(w, r, svc, log, false, r.PathValue("id"))
@@ -521,7 +521,7 @@ func writeSource(w http.ResponseWriter, r *http.Request, svc *config.Service, lo
 		return
 	}
 	if isCreate {
-		flashRedirect(w, fmt.Sprintf("Source %q created", v.ID), "/ui/dashboard")
+		flashRedirect(w, fmt.Sprintf("Source %q created", v.ID), "/dashboard")
 		return
 	}
 	sources, err := svc.ListSources(r.Context())
@@ -566,7 +566,7 @@ func entityWriteErrorMessage(err error, kind, id string) string {
 	}
 }
 
-// handleSourceDelete serves POST /ui/sources/{id}/delete.
+// handleSourceDelete serves POST /sources/{id}/delete.
 func handleSourceDelete(svc *config.Service, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
@@ -845,7 +845,7 @@ func renderSinksPage(w http.ResponseWriter, r *http.Request, svc *config.Service
 			current = "Edit " + form.ID
 		}
 		page = page.withBreadcrumbs(
-			breadcrumbItem{Label: "Sinks", Href: "/ui/sinks"},
+			breadcrumbItem{Label: "Sinks", Href: "/sinks"},
 			breadcrumbItem{Label: current},
 		)
 	}
@@ -857,14 +857,14 @@ func renderSinksPage(w http.ResponseWriter, r *http.Request, svc *config.Service
 	renderPage(w, log, "sinks", data)
 }
 
-// handleSinksPage serves GET /ui/sinks: the full list page.
+// handleSinksPage serves GET /sinks: the full list page.
 func handleSinksPage(svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		renderSinksPage(w, r, svc, statuses, version, log, nil)
 	}
 }
 
-// handleSinkNewPage serves GET /ui/sinks/new: the canonical create page.
+// handleSinkNewPage serves GET /sinks/new: the canonical create page.
 func handleSinkNewPage(svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		can, serial := discoverHardware()
@@ -873,7 +873,7 @@ func handleSinkNewPage(svc *config.Service, statuses func() []supervisor.Status,
 	}
 }
 
-// handleSinkEditPage serves GET /ui/sinks/{id}/edit: the canonical edit page.
+// handleSinkEditPage serves GET /sinks/{id}/edit: the canonical edit page.
 func handleSinkEditPage(svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		can, serial := discoverHardware()
@@ -892,7 +892,7 @@ func handleSinkEditPage(svc *config.Service, statuses func() []supervisor.Status
 	}
 }
 
-// handleSinkTypeFieldsFrag serves GET /ui/frag/sink-type-fields. The same
+// handleSinkTypeFieldsFrag serves GET /frag/sink-type-fields. The same
 // type-switch caveat as handleSourceTypeFieldsFrag applies: a previously
 // selected type's field values are discarded on switch, not carried over.
 func handleSinkTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
@@ -921,14 +921,14 @@ func handleSinkTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
 	}
 }
 
-// handleSinkCreate serves POST /ui/sinks.
+// handleSinkCreate serves POST /sinks.
 func handleSinkCreate(svc *config.Service, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		writeSink(w, r, svc, log, true, "")
 	}
 }
 
-// handleSinkUpdate serves POST /ui/sinks/{id}.
+// handleSinkUpdate serves POST /sinks/{id}.
 func handleSinkUpdate(svc *config.Service, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		writeSink(w, r, svc, log, false, r.PathValue("id"))
@@ -966,7 +966,7 @@ func writeSink(w http.ResponseWriter, r *http.Request, svc *config.Service, log 
 		return
 	}
 	if isCreate {
-		flashRedirect(w, fmt.Sprintf("Sink %q created", v.ID), "/ui/dashboard")
+		flashRedirect(w, fmt.Sprintf("Sink %q created", v.ID), "/dashboard")
 		return
 	}
 	sinks, err := svc.ListSinks(r.Context())
@@ -982,7 +982,7 @@ func writeSink(w http.ResponseWriter, r *http.Request, svc *config.Service, log 
 	writeFragmentSuccess(w, log, "sink-panel-oob", "sink-form-container", data)
 }
 
-// handleSinkDelete serves POST /ui/sinks/{id}/delete.
+// handleSinkDelete serves POST /sinks/{id}/delete.
 func handleSinkDelete(svc *config.Service, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
@@ -1333,7 +1333,7 @@ func renderConnectorsPage(w http.ResponseWriter, r *http.Request, svc *config.Se
 			current = "Edit " + form.ID
 		}
 		page = page.withBreadcrumbs(
-			breadcrumbItem{Label: "Connectors", Href: "/ui/connectors"},
+			breadcrumbItem{Label: "Connectors", Href: "/connectors"},
 			breadcrumbItem{Label: current},
 		)
 	}
@@ -1345,14 +1345,14 @@ func renderConnectorsPage(w http.ResponseWriter, r *http.Request, svc *config.Se
 	renderPage(w, log, "connectors", data)
 }
 
-// handleConnectorsPage serves GET /ui/connectors: the full list page.
+// handleConnectorsPage serves GET /connectors: the full list page.
 func handleConnectorsPage(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		renderConnectorsPage(w, r, svc, reg, statuses, version, log, nil)
 	}
 }
 
-// handleConnectorNewPage serves GET /ui/connectors/new: the canonical create page.
+// handleConnectorNewPage serves GET /connectors/new: the canonical create page.
 func handleConnectorNewPage(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sources, sinks, err := listSourcesAndSinks(r.Context(), svc)
@@ -1366,7 +1366,7 @@ func handleConnectorNewPage(svc *config.Service, reg *stats.Registry, statuses f
 	}
 }
 
-// handleConnectorEditPage serves GET /ui/connectors/{id}/edit: the canonical edit page.
+// handleConnectorEditPage serves GET /connectors/{id}/edit: the canonical edit page.
 func handleConnectorEditPage(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sources, sinks, err := listSourcesAndSinks(r.Context(), svc)
@@ -1399,7 +1399,7 @@ type filterValidateData struct {
 	Err string
 }
 
-// handleValidateFiltersFrag serves POST /ui/frag/validate-filters. Requests
+// handleValidateFiltersFrag serves POST /frag/validate-filters. Requests
 // accepting application/json receive source ranges for live editor
 // underlines; other callers retain the original HTML status fragment.
 func handleValidateFiltersFrag(svc *config.Service, log *slog.Logger) http.HandlerFunc {
@@ -1427,14 +1427,14 @@ func handleValidateFiltersFrag(svc *config.Service, log *slog.Logger) http.Handl
 	}
 }
 
-// handleConnectorCreate serves POST /ui/connectors.
+// handleConnectorCreate serves POST /connectors.
 func handleConnectorCreate(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		writeConnector(w, r, svc, reg, statuses, log, true, "")
 	}
 }
 
-// handleConnectorUpdate serves POST /ui/connectors/{id}.
+// handleConnectorUpdate serves POST /connectors/{id}.
 func handleConnectorUpdate(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		writeConnector(w, r, svc, reg, statuses, log, false, r.PathValue("id"))
@@ -1479,7 +1479,7 @@ func writeConnector(w http.ResponseWriter, r *http.Request, svc *config.Service,
 		return
 	}
 	if isCreate {
-		flashRedirect(w, fmt.Sprintf("Connector %q created", v.ID), "/ui/dashboard")
+		flashRedirect(w, fmt.Sprintf("Connector %q created", v.ID), "/dashboard")
 		return
 	}
 	connectors, err := svc.ListConnectors(r.Context())
@@ -1495,7 +1495,7 @@ func writeConnector(w http.ResponseWriter, r *http.Request, svc *config.Service,
 	writeFragmentSuccess(w, log, "connector-panel-oob", "connector-form-container", data)
 }
 
-// handleConnectorDelete serves POST /ui/connectors/{id}/delete. Unlike
+// handleConnectorDelete serves POST /connectors/{id}/delete. Unlike
 // handleSourceDelete/handleSinkDelete there is no ErrInUse case:
 // config.Service.DeleteConnector never returns it ("nothing else
 // references a connector").
@@ -1542,7 +1542,7 @@ type connectorStatsData struct {
 	SparkPoints       string
 }
 
-// handleConnectorStatsFrag serves GET /ui/frag/connectors/{id}/stats, an
+// handleConnectorStatsFrag serves GET /frag/connectors/{id}/stats, an
 // hx-trigger="load, every 2s" polling target using hx-swap="outerHTML".
 // A known connector that has never recorded (not yet started, or
 // idle since boot) renders zero-valued tiles rather than a notice —
