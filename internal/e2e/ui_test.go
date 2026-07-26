@@ -141,13 +141,19 @@ func TestUIDrivenLifecycle(t *testing.T) {
 		"path":    {"/nav"},
 	}), http.StatusOK)
 
-	// Step 2b: with a source configured but no connector yet, the dashboard
-	// empty-state CTA switches from /sources/new to /connectors/new (see
-	// internal/ui/dashboard.go's dashboardEmptyState).
-	t.Log("step 2b: dashboard empty state now points at /connectors/new")
+	// Step 2b: configured endpoints remain visible in the graph before a
+	// connector exists, but no route edges are rendered for them.
+	t.Log("step 2b: dashboard graph shows the unconnected source and sink")
 	dash = getBody(t, adminBase+"/frag/dashboard")
-	if !strings.Contains(dash, `href="/connectors/new"`) {
-		t.Fatalf("dashboard fragment (source configured, no connector) = %s, want empty-state CTA linking /connectors/new", dash)
+	for _, want := range []string{`data-dag-node="source:can0"`, `data-dag-node="sink:nav"`} {
+		if !strings.Contains(dash, want) {
+			t.Fatalf("dashboard fragment (endpoints configured, no connector) = %s, want graph node %q", dash, want)
+		}
+	}
+	for _, notWant := range []string{`data-dag-from=`, `data-dag-to=`, "Add your first connector"} {
+		if strings.Contains(dash, notWant) {
+			t.Fatalf("dashboard fragment (endpoints configured, no connector) unexpectedly contains %q:\n%s", notWant, dash)
+		}
 	}
 
 	// Step 3: POST /connectors creates connector heading (filter
@@ -220,15 +226,21 @@ func TestUIDrivenLifecycle(t *testing.T) {
 	t.Log("step 7: POST /connectors/heading/delete removes it")
 	mustStatus(t, postForm(t, adminBase+"/connectors/heading/delete", url.Values{}), http.StatusOK)
 
-	// Step 8: the dashboard fragment falls back to its empty state — with
-	// the source (and sink) still configured, the CTA still points at
-	// /connectors/new rather than back to /sources/new.
-	t.Log("step 8: dashboard fragment shows the empty state again")
+	// Step 8: removing the connector removes only its route and card. The
+	// surviving source and sink remain visible as isolated graph nodes.
+	t.Log("step 8: dashboard graph keeps the source and sink after connector deletion")
 	dash = getBody(t, adminBase+"/frag/dashboard")
 	if strings.Contains(dash, "Heading only") {
 		t.Fatalf("dashboard fragment still shows the deleted connector's card:\n%s", dash)
 	}
-	if !strings.Contains(dash, `href="/connectors/new"`) || !strings.Contains(dash, "Add your first connector") {
-		t.Fatalf("post-delete dashboard fragment = %s, want the empty-state hero linking /connectors/new", dash)
+	for _, want := range []string{`data-dag-node="source:can0"`, `data-dag-node="sink:nav"`} {
+		if !strings.Contains(dash, want) {
+			t.Fatalf("post-delete dashboard fragment = %s, want surviving graph node %q", dash, want)
+		}
+	}
+	for _, notWant := range []string{`data-dag-from=`, `data-dag-to=`, "Add your first connector"} {
+		if strings.Contains(dash, notWant) {
+			t.Fatalf("post-delete dashboard fragment unexpectedly contains %q:\n%s", notWant, dash)
+		}
 	}
 }

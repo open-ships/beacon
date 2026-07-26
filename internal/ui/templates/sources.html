@@ -3,7 +3,8 @@
   <div class="flex justify-between items-center">
     <h1 class="text-2xl font-semibold">Sources</h1>
     {{if not .SourceForm}}
-    <a class="btn btn-primary" href="/sources/new">Add source</a>
+    <a class="btn btn-primary" data-variant="primary" href="/sources/new"
+       hx-get="/sources/new" hx-target="#entity-create-dialog-container" hx-swap="innerHTML">Add source</a>
     {{end}}
   </div>
   <div id="source-form-container">{{if .SourceForm}}{{template "source-form" .SourceForm}}{{end}}</div>

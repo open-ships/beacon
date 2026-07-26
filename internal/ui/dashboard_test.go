@@ -73,11 +73,14 @@ func newDashboardTestServer(t *testing.T) (*httptest.Server, *config.Service, *s
 // exact whitespace or nested div boundaries.
 func markerSnippet(t *testing.T, body, marker string) string {
 	t.Helper()
-	idx := strings.Index(body, marker)
+	idx := strings.Index(body, `class="dag-node-title">`+marker+`</div>`)
+	if idx < 0 {
+		idx = strings.Index(body, marker)
+	}
 	if idx < 0 {
 		t.Fatalf("dashboard fragment has no marker %q:\n%s", marker, body)
 	}
-	start := idx - 450
+	start := idx - 800
 	if start < 0 {
 		start = 0
 	}
@@ -86,6 +89,21 @@ func markerSnippet(t *testing.T, body, marker string) string {
 		end = len(body)
 	}
 	return body[start:end]
+}
+
+func dagNodeSnippet(t *testing.T, body, name string) string {
+	t.Helper()
+	title := `class="dag-node-title">` + name + `</div>`
+	idx := strings.Index(body, title)
+	if idx < 0 {
+		t.Fatalf("dashboard fragment has no DAG node %q:\n%s", name, body)
+	}
+	start := strings.LastIndex(body[:idx], "<a ")
+	endOffset := strings.Index(body[idx:], "</a>")
+	if start < 0 || endOffset < 0 {
+		t.Fatalf("dashboard DAG node %q has incomplete markup:\n%s", name, body)
+	}
+	return body[start : idx+endOffset+len("</a>")]
 }
 
 func dashboardFrag(t *testing.T, srv *httptest.Server) string {
@@ -104,7 +122,7 @@ func TestDashboardFragEmptyStateNoSourcesPointsAtSources(t *testing.T) {
 	srv, _, _, _ := newDashboardTestServer(t)
 
 	body := dashboardFrag(t, srv)
-	for _, want := range []string{"Add your first source", `href="/sources/new"`} {
+	for _, want := range []string{"Add your first source", `href="/sources/new"`, `hx-get="/sources/new"`, `hx-target="#entity-create-dialog-container"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("empty dashboard fragment missing %q:\n%s", want, body)
 		}
@@ -115,31 +133,96 @@ func TestDashboardFragEmptyStateNoSourcesPointsAtSources(t *testing.T) {
 	}
 }
 
-func TestDashboardFragEmptyStateWithSourceNeedsSink(t *testing.T) {
+func TestDashboardFragSourceWithoutConnectorRendersGraph(t *testing.T) {
 	srv, svc, _, _ := newDashboardTestServer(t)
 	must(t, svc.PutSource(context.Background(), model.Source{
 		ID: "can0", Name: "Main bus", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0",
 	}, true))
 
 	body := dashboardFrag(t, srv)
-	for _, want := range []string{"Add your first sink", `href="/sinks/new"`} {
+	for _, want := range []string{
+		"dag-board", "Unused endpoints", "Main bus",
+		`dag-node-unused dag-node-unused-source`,
+		`data-dag-node="source:can0"`,
+		`href="/sources/can0/"`,
+	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("dashboard fragment (sources, no connectors) missing %q:\n%s", want, body)
+			t.Fatalf("dashboard fragment did not render unconnected source %q:\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, "Add your first connector") {
-		t.Fatalf("dashboard fragment with no sinks should not offer to add a connector:\n%s", body)
+	for _, notWant := range []string{"Add your first sink", `data-dag-from=`} {
+		if strings.Contains(body, notWant) {
+			t.Fatalf("unconnected source graph unexpectedly contains %q:\n%s", notWant, body)
+		}
 	}
 }
 
-func TestDashboardFragEmptyStateWithSourceAndSinkPointsAtConnectors(t *testing.T) {
+func TestDashboardFragSourceAndSinkWithoutConnectorRenderGraph(t *testing.T) {
 	srv, svc, _, _ := newDashboardTestServer(t)
-	seedSourceSink(t, svc)
+	ctx := context.Background()
+	must(t, svc.PutSource(ctx, model.Source{
+		ID: "src1", Name: "Source One", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0",
+	}, true))
+	must(t, svc.PutSink(ctx, model.Sink{
+		ID: "sink1", Name: "Sink One", Type: model.SinkTCP, Enabled: true, Address: "127.0.0.1:9000",
+	}, true))
 
 	body := dashboardFrag(t, srv)
-	for _, want := range []string{"Add your first connector", `href="/connectors/new"`} {
+	for _, want := range []string{
+		"dag-board", "Unused endpoints", "Source One", "Sink One",
+		"dag-unused-group-source", "dag-unused-group-sink",
+		`dag-node-unused dag-node-unused-source`,
+		`dag-node-unused dag-node-unused-sink`,
+		`data-dag-node="source:src1"`,
+		`data-dag-node="sink:sink1"`,
+	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("dashboard fragment (source+sink, no connectors) missing %q:\n%s", want, body)
+			t.Fatalf("dashboard fragment did not render unconnected endpoints %q:\n%s", want, body)
+		}
+	}
+	for _, notWant := range []string{"Add your first connector", `data-dag-from=`, `data-dag-to=`} {
+		if strings.Contains(body, notWant) {
+			t.Fatalf("unconnected endpoint graph unexpectedly contains %q:\n%s", notWant, body)
+		}
+	}
+}
+
+func TestDashboardFragKeepsDisabledEndpointsInMainGraph(t *testing.T) {
+	srv, svc, _, rec := newDashboardTestServer(t)
+	ctx := context.Background()
+	must(t, svc.PutSource(ctx, model.Source{ID: "unused-source", Name: "Unused source", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0"}, true))
+	must(t, svc.PutSource(ctx, model.Source{ID: "disabled-source", Name: "Disabled source", Type: model.SourceSocketCAN, Enabled: false, Interface: "can1"}, true))
+	must(t, svc.PutSink(ctx, model.Sink{ID: "unused-sink", Name: "Unused sink", Type: model.SinkTCP, Enabled: true, Address: "127.0.0.1:9001"}, true))
+	must(t, svc.PutSink(ctx, model.Sink{ID: "disabled-sink", Name: "Disabled sink", Type: model.SinkTCP, Enabled: false, Address: "127.0.0.1:9002"}, true))
+	rec.setStatuses([]supervisor.Status{
+		{Kind: "source", ID: "unused-source", State: "up"},
+		{Kind: "sink", ID: "unused-sink", State: "up"},
+	})
+
+	body := dashboardFrag(t, srv)
+	for _, tc := range []struct {
+		name       string
+		wantClass  string
+		avoidClass string
+	}{
+		{"Unused source", "dag-node-unused-source", ""},
+		{"Unused sink", "dag-node-unused-sink", ""},
+		{"Disabled source", "state-disabled", "dag-node-unused"},
+		{"Disabled sink", "state-disabled", "dag-node-unused"},
+	} {
+		snip := dagNodeSnippet(t, body, tc.name)
+		if !strings.Contains(snip, tc.wantClass) {
+			t.Errorf("node for %q = %q, want class %q", tc.name, snip, tc.wantClass)
+		}
+		if tc.avoidClass != "" && strings.Contains(snip, tc.avoidClass) {
+			t.Errorf("node for %q = %q, should stay in main graph without %q", tc.name, snip, tc.avoidClass)
+		}
+	}
+
+	unusedSink := dagNodeSnippet(t, body, "Unused sink")
+	for _, want := range []string{"component-status-surface state-up", "badge-success", ">up<"} {
+		if !strings.Contains(unusedSink, want) {
+			t.Errorf("unused sink lost live up status %q: %s", want, unusedSink)
 		}
 	}
 }
@@ -174,6 +257,35 @@ func TestDashboardFragRendersConnectorDAG(t *testing.T) {
 	if strings.Contains(body, "Add your first") {
 		t.Fatalf("dashboard fragment with a connector configured should not show the empty-state hero:\n%s", body)
 	}
+	for _, unwanted := range []string{"marker-end", "dag-arrowhead"} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("dashboard fragment still renders DAG arrowhead markup %q:\n%s", unwanted, body)
+		}
+	}
+}
+
+func TestDashboardFragRendersSharedEndpointsOnceWithMultipleEdges(t *testing.T) {
+	srv, svc, _, _ := newDashboardTestServer(t)
+	ctx := context.Background()
+	must(t, svc.PutSource(ctx, model.Source{ID: "shared-source", Name: "Shared source", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0"}, true))
+	must(t, svc.PutSource(ctx, model.Source{ID: "other-source", Name: "Other source", Type: model.SourceSocketCAN, Enabled: true, Interface: "can1"}, true))
+	must(t, svc.PutSink(ctx, model.Sink{ID: "shared-sink", Name: "Shared sink", Type: model.SinkTCP, Enabled: true, Address: "127.0.0.1:9001"}, true))
+	must(t, svc.PutSink(ctx, model.Sink{ID: "other-sink", Name: "Other sink", Type: model.SinkTCP, Enabled: true, Address: "127.0.0.1:9002"}, true))
+	must(t, svc.PutConnector(ctx, model.Connector{ID: "first", SourceID: "shared-source", SinkID: "shared-sink", Enabled: true}, true))
+	must(t, svc.PutConnector(ctx, model.Connector{ID: "second", SourceID: "shared-source", SinkID: "other-sink", Enabled: true}, true))
+	must(t, svc.PutConnector(ctx, model.Connector{ID: "third", SourceID: "other-source", SinkID: "shared-sink", Enabled: true}, true))
+
+	body := dashboardFrag(t, srv)
+	for marker, want := range map[string]int{
+		`data-dag-node="source:shared-source"`: 1,
+		`data-dag-node="sink:shared-sink"`:     1,
+		`data-dag-from="source:shared-source"`: 2,
+		`data-dag-to="sink:shared-sink"`:       2,
+	} {
+		if got := strings.Count(body, marker); got != want {
+			t.Errorf("dashboard marker %q count = %d, want %d:\n%s", marker, got, want, body)
+		}
+	}
 }
 
 // TestDashboardFragConnectorDAGNameFallsBackToIDWhenEmpty is dashboard.go's
@@ -204,6 +316,14 @@ func TestDashboardFragDisabledConnectorBadge(t *testing.T) {
 	if !strings.Contains(body, "badge-ghost\">disabled</span>") {
 		t.Fatalf("dashboard fragment missing disabled connector badge:\n%s", body)
 	}
+	if strings.Contains(body, "Unused endpoints") {
+		t.Fatalf("endpoints referenced by a disabled connector should stay in the main graph:\n%s", body)
+	}
+	for _, name := range []string{"Source One", "Sink One"} {
+		if snip := dagNodeSnippet(t, body, name); strings.Contains(snip, "dag-node-unused") {
+			t.Errorf("endpoint %q referenced by disabled connector was classified unused: %s", name, snip)
+		}
+	}
 }
 
 func TestDashboardFragConnectorErrorBadge(t *testing.T) {
@@ -227,7 +347,7 @@ func TestDashboardFragConnectorErrorBadge(t *testing.T) {
 	}
 	for _, want := range []string{
 		`dag-node-connector component-status-surface state-error`,
-		`dag-link state-error`,
+		`dag-edge state-error`,
 		`<tr class="component-status-row state-error" data-href="/connectors/heading/">`,
 	} {
 		if !strings.Contains(body, want) {
@@ -299,10 +419,10 @@ func TestDashboardFragEndpointNodeStates(t *testing.T) {
 		`<tr class="component-status-row state-degraded" data-href="/connectors/degraded-conn/">`,
 		`<tr class="component-status-row state-restarting" data-href="/connectors/restarting-conn/">`,
 		`<tr class="component-status-row state-disabled" data-href="/connectors/off-conn/">`,
-		`<div class="dag-link state-up" aria-hidden="true"></div>`,
-		`<div class="dag-link state-degraded" aria-hidden="true"></div>`,
-		`<div class="dag-link state-restarting" aria-hidden="true"></div>`,
-		`<div class="dag-link state-disabled" aria-hidden="true"></div>`,
+		`class="dag-edge state-up"`,
+		`class="dag-edge state-degraded"`,
+		`class="dag-edge state-restarting"`,
+		`class="dag-edge state-disabled"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard metadata missing status-colored row %q", want)
@@ -315,9 +435,9 @@ func TestDashboardFragEndpointNodeStates(t *testing.T) {
 		{"/sources", `<tr class="component-status-row state-up" data-href="/sources/up-src/">`},
 		{"/sinks", `<tr class="component-status-row state-error" data-href="/sinks/err-sink/">`},
 		{"/connectors", `<tr class="component-status-row state-up" data-href="/connectors/up-conn/">`},
-		{"/frag/sources/up-src/overview", `<section class="overview-card component-status-surface state-up" aria-label="Status and metrics">`},
-		{"/frag/sinks/err-sink/overview", `<section class="overview-card component-status-surface state-error" aria-label="Status and metrics">`},
-		{"/frag/connectors/up-conn/overview", `<section class="overview-card component-status-surface state-up" aria-label="Status and metrics">`},
+		{"/frag/sources/up-src/overview", `<section class="overview-card overview-summary-panel component-status-surface state-up" aria-label="Status and metrics">`},
+		{"/frag/sinks/err-sink/overview", `<section class="overview-card overview-summary-panel component-status-surface state-error" aria-label="Status and metrics">`},
+		{"/frag/connectors/up-conn/overview", `<section class="overview-card overview-summary-panel component-status-surface state-up" aria-label="Status and metrics">`},
 	} {
 		resp, err := http.Get(srv.URL + tc.path)
 		if err != nil {
@@ -346,6 +466,8 @@ func TestDashboardFragMetadataTablesCountEndpointUsage(t *testing.T) {
 		"metadata-stack", "Sources", "Sinks", "Connectors",
 		"Used source", "2 connectors", "Unused source", "0 connectors",
 		"Used sink", "Unused sink", "usage-dot-used", "usage-dot-unused",
+		"Unused endpoints", "dag-node-unused-source", "dag-node-unused-sink",
+		`data-dag-node="source:src2"`, `data-dag-node="sink:sink2"`,
 		`<tr class="component-status-row state-restarting" data-href="/sources/src1/">`,
 		`<tr class="component-status-row state-restarting" data-href="/sinks/sink1/">`,
 		`<tr class="component-status-row state-restarting" data-href="/connectors/conn1/">`,

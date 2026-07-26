@@ -6,14 +6,14 @@
       <h1>Configuration JSON</h1>
       <p>Export the running configuration or load a JSON configuration into beacon.</p>
     </div>
-    <a class="btn" href="/api/v1/config/export">Export JSON</a>
+    <a class="btn" data-variant="outline" href="/api/v1/config/export">Export JSON</a>
   </div>
 
   {{if .Alert}}
   {{if eq .Alert.Kind "success"}}
-  <div class="alert alert-success" role="alert"><span>{{.Alert.Message}}</span></div>
+  <div class="alert alert-success" data-status="success" role="alert"><span>{{.Alert.Message}}</span></div>
   {{else}}
-  <div class="alert alert-error" role="alert"><span>{{.Alert.Message}}</span></div>
+  <div class="alert alert-error" data-status="error" data-variant="destructive" role="alert"><span>{{.Alert.Message}}</span></div>
   {{end}}
   {{end}}
 
@@ -33,7 +33,7 @@
       <textarea name="config_json" class="textarea config-json-textarea" spellcheck="false" rows="{{.ConfigRows}}">{{.ConfigJSON}}</textarea>
     </fieldset>
     <div class="card-actions justify-end">
-      <button type="submit" class="btn btn-primary">Load JSON</button>
+      <button type="submit" class="btn btn-primary" data-variant="primary">Load JSON</button>
     </div>
   </form>
 </div>

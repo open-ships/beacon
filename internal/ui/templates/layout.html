@@ -31,7 +31,7 @@
          of hx-on::load — which never fires for statically-rendered nodes. If
          JS is off it simply stays until the next navigation. */}}
     <div class="flash">
-      <div class="alert alert-success" role="status"><span>{{.Flash}}</span></div>
+      <div class="alert alert-success" data-status="success" role="status"><span>{{.Flash}}</span></div>
     </div>
     <script>(function(){var f=document.currentScript.previousElementSibling;setTimeout(function(){if(f)f.remove()},4000)})()</script>
     {{end}}
@@ -49,6 +49,7 @@
     {{end}}
     {{template "content" .}}
   </main>
+  <div id="entity-create-dialog-container"></div>
 </div>
 <script>
   // Whole-row navigation for the source/sink/connector tables: a click

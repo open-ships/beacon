@@ -26,6 +26,7 @@ type overviewPageData struct {
 	Kind        string
 	Heading     string
 	EditHref    string
+	DeleteHref  string
 	ConfigRows  []configRow
 	LiveDOMID   string
 	LiveHref    string
@@ -67,6 +68,7 @@ func sourceOverviewPageData(version string, s model.Source) overviewPageData {
 		Kind:        "source",
 		Heading:     title,
 		EditHref:    "/sources/" + s.ID + "/edit",
+		DeleteHref:  "/sources/" + s.ID + "/delete?context=overview",
 		ConfigRows:  sourceConfigRows(s),
 		LiveDOMID:   "source-overview-live",
 		LiveHref:    "/frag/sources/" + s.ID + "/overview",
@@ -86,6 +88,7 @@ func sinkOverviewPageData(version string, s model.Sink) overviewPageData {
 		Kind:        "sink",
 		Heading:     title,
 		EditHref:    "/sinks/" + s.ID + "/edit",
+		DeleteHref:  "/sinks/" + s.ID + "/delete?context=overview",
 		ConfigRows:  sinkConfigRows(s),
 		LiveDOMID:   "sink-overview-live",
 		LiveHref:    "/frag/sinks/" + s.ID + "/overview",
@@ -105,6 +108,7 @@ func connectorOverviewPageData(version string, c model.Connector) overviewPageDa
 		Kind:        "connector",
 		Heading:     title,
 		EditHref:    "/connectors/" + c.ID + "/edit",
+		DeleteHref:  "/connectors/" + c.ID + "/delete?context=overview",
 		ConfigRows:  connectorConfigRows(c),
 		LiveDOMID:   "connector-overview-live",
 		LiveHref:    "/frag/connectors/" + c.ID + "/overview",

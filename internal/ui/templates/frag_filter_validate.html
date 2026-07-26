@@ -7,6 +7,6 @@
 {{if .OK}}
 <div class="text-success text-sm">filters OK</div>
 {{else}}
-<div class="alert alert-error" role="alert"><span>{{.Err}}</span></div>
+<div class="alert alert-error" data-status="error" data-variant="destructive" role="alert"><span>{{.Err}}</span></div>
 {{end}}
 {{end}}

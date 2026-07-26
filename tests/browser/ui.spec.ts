@@ -1,13 +1,11 @@
 import { expect, test } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
-test('operator can create and visually trace a status-colored pipeline', async ({ page }) => {
-  const sourceID = `browser-test-${Date.now()}`;
-  const sourceName = `Playwright source ${sourceID}`;
-  const sinkID = `${sourceID}-sink`;
-  const sinkName = `Playwright sink ${sourceID}`;
-  const connectorID = `${sourceID}-connector`;
-  const connectorName = `Playwright connector ${sourceID}`;
+test('operator can create and visually trace a pipeline', async ({ page }) => {
+  const runID = Date.now();
+  const sourceName = `Playwright source ${runID}`;
+  const sinkName = `Playwright sink ${runID}`;
+  const connectorName = `Playwright connector ${runID}`;
 
   await page.goto('/');
 
@@ -17,61 +15,213 @@ test('operator can create and visually trace a status-colored pipeline', async (
   await expect(page.getByText('Add your first source')).toBeVisible();
 
   await page.getByRole('link', { name: 'Add a source', exact: true }).click();
-  await expect(page).toHaveURL(/\/sources\/new$/);
-  await expect(page).toHaveTitle('Sources - beacon');
-  await expect(page.getByRole('heading', { name: 'Add source' })).toBeVisible();
+  await expect(page).toHaveURL(/\/dashboard$/);
+  const sourceDialog = page.getByRole('dialog', { name: 'Add source' });
+  await expect(sourceDialog).toBeVisible();
+  const sourceID = await sourceDialog.locator('input[name="id"]').inputValue();
+  expect(sourceID).toMatch(/^[0-9a-f]{8}$/);
+  await expect(sourceDialog.locator('#src-id')).toHaveCount(0);
+  const sourceEnabled = sourceDialog.getByRole('checkbox', { name: 'Enabled' });
+  await expect(sourceEnabled).toBeChecked();
+  await expect(sourceEnabled).toBeFocused();
+  await expect(sourceDialog.locator('input:not([type="hidden"]), select, textarea').first()).toHaveAttribute('name', 'enabled');
 
-  await page.locator('#src-id').fill(sourceID);
-  await page.locator('#src-name').fill(sourceName);
-  await page.locator('#src-interface').fill('can0');
-  await page.getByRole('button', { name: 'Save' }).click();
+  await sourceDialog.locator('#src-name').fill(sourceName);
+  await sourceDialog.locator('#src-interface').fill('can0');
+  await sourceDialog.getByRole('button', { name: 'Save' }).click();
 
   await expect(page).toHaveURL(/\/dashboard$/);
   await expect(page.getByRole('status')).toContainText(`Source "${sourceID}" created`);
-  const sourceLink = page.getByRole('link', { name: sourceName });
+  const unconnectedSourceNode = page.locator(`[data-dag-node="source:${sourceID}"]`);
+  await expect(unconnectedSourceNode).toBeVisible();
+  await expect(page.locator(`[data-dag-from="source:${sourceID}"]`)).toHaveCount(0);
+  const sourceLink = page.getByRole('region', { name: 'Sources metadata' }).getByRole('link', { name: sourceName });
   await expect(sourceLink).toBeVisible();
   const sourceRow = sourceLink.locator('xpath=ancestor::tr');
   await expect(sourceRow).toHaveClass(/component-status-row state-(up|degraded|error|restarting|disabled)/);
-  expect(await sourceRow.evaluate((row) => getComputedStyle(row).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
+  await expect(sourceRow).toHaveCSS('background-color', 'rgb(255, 255, 255)');
 
   await page.getByRole('link', { name: 'New sink', exact: true }).click();
-  await page.locator('#sink-id').fill(sinkID);
-  await page.locator('#sink-name').fill(sinkName);
-  await page.locator('#sink-type').selectOption('tcp');
-  await expect(page.locator('#sink-address')).toBeVisible();
-  await page.locator('#sink-address').fill('127.0.0.1:0');
-  await page.getByRole('button', { name: 'Save' }).click();
   await expect(page).toHaveURL(/\/dashboard$/);
+  const sinkDialog = page.getByRole('dialog', { name: 'Add sink' });
+  await expect(sinkDialog).toBeVisible();
+  const sinkID = await sinkDialog.locator('input[name="id"]').inputValue();
+  expect(sinkID).toMatch(/^[0-9a-f]{8}$/);
+  await expect(sinkDialog.locator('#sink-id')).toHaveCount(0);
+  await expect(sinkDialog.getByRole('checkbox', { name: 'Enabled' })).toBeChecked();
+  await sinkDialog.locator('#sink-name').fill(sinkName);
+  await sinkDialog.locator('#sink-type').selectOption('tcp');
+  await expect(sinkDialog.locator('#sink-address')).toBeVisible();
+  await sinkDialog.locator('#sink-address').fill('127.0.0.1:0');
+  await sinkDialog.getByRole('button', { name: 'Save' }).click();
+  await expect(page).toHaveURL(/\/dashboard$/);
+  const unconnectedSinkNode = page.locator(`[data-dag-node="sink:${sinkID}"]`);
+  await expect(unconnectedSinkNode).toBeVisible();
+  await expect(page.locator(`[data-dag-to="sink:${sinkID}"]`)).toHaveCount(0);
 
   await page.getByRole('link', { name: 'New connector', exact: true }).click();
-  await page.locator('#conn-id').fill(connectorID);
-  await page.locator('#conn-name').fill(connectorName);
-  await page.locator('#conn-source').selectOption(sourceID);
-  await page.locator('#conn-sink').selectOption(sinkID);
-  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page).toHaveURL(/\/dashboard$/);
+  const connectorDialog = page.getByRole('dialog', { name: 'Add connector' });
+  await expect(connectorDialog).toBeVisible();
+  const connectorID = await connectorDialog.locator('input[name="id"]').inputValue();
+  expect(connectorID).toMatch(/^[0-9a-f]{8}$/);
+  await expect(connectorDialog.locator('#conn-id')).toHaveCount(0);
+  await expect(connectorDialog.getByRole('checkbox', { name: 'Enabled' })).toBeChecked();
+  await connectorDialog.locator('#conn-name').fill(connectorName);
+  await connectorDialog.locator('#conn-source').selectOption(sourceID);
+  await connectorDialog.locator('#conn-sink').selectOption(sinkID);
+  await connectorDialog.getByRole('button', { name: 'Save' }).click();
   await expect(page).toHaveURL(/\/dashboard$/);
 
   const connectorNode = page.locator(`[data-connector-id="${connectorID}"]`);
   await expect(connectorNode).toHaveClass(/component-status-surface state-(up|degraded|error|restarting|disabled)/);
-  expect(await connectorNode.evaluate((node) => getComputedStyle(node).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
+  await expect(connectorNode).toHaveCSS('background-color', 'rgb(255, 255, 255)');
 
   const connectorState = ((await connectorNode.getAttribute('class')) ?? '').match(/state-(up|degraded|error|restarting|disabled)/)?.[1];
   expect(connectorState).toBeTruthy();
-  const routeLinks = connectorNode.locator('xpath=ancestor::div[contains(@class,"dag-row")]').locator('.dag-link');
+  const routeLinks = page.locator(
+    `[data-dag-from="source:${sourceID}"][data-dag-to="connector:${connectorID}"], ` +
+    `[data-dag-from="connector:${connectorID}"][data-dag-to="sink:${sinkID}"]`,
+  );
   await expect(routeLinks).toHaveCount(2);
   for (const routeLink of await routeLinks.all()) {
     await expect(routeLink).toHaveClass(new RegExp(`state-${connectorState}`));
-    expect(await routeLink.evaluate((link) => getComputedStyle(link, '::before').backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
+    await expect(routeLink).toHaveAttribute('d', /^M /);
+    await expect(routeLink).not.toHaveAttribute('marker-end');
+    await expect(routeLink).toHaveCSS('animation-name', 'dag-edge-flash');
+    await expect(routeLink).toHaveCSS('animation-duration', '1s');
+    expect(await routeLink.evaluate((link) => getComputedStyle(link).strokeDasharray)).toMatch(/^1(px)?[, ]+7(px)?$/);
+    expect(await routeLink.evaluate((link) => getComputedStyle(link).stroke)).not.toBe('none');
   }
 
+  const edgeSelectors = [
+    `[data-dag-from="source:${sourceID}"][data-dag-to="connector:${connectorID}"]`,
+    `[data-dag-from="connector:${connectorID}"][data-dag-to="sink:${sinkID}"]`,
+  ];
+  const edgeStability = await page.evaluate(async (selectors) => {
+    const initialEdges = selectors.map((selector) => document.querySelector(selector));
+    const widths: number[] = [];
+    const opacities: number[] = [];
+    let missingFrames = 0;
+    let replacementSeen = false;
+    const stopAt = performance.now() + 2600;
+
+    while (performance.now() < stopAt) {
+      const edges = selectors.map((selector) => document.querySelector(selector));
+      if (edges.some((edge) => !edge?.getAttribute('d'))) missingFrames += 1;
+      replacementSeen ||= edges.some((edge, index) => edge !== initialEdges[index]);
+      for (const edge of edges) {
+        if (!edge) continue;
+        const style = getComputedStyle(edge);
+        widths.push(Number.parseFloat(style.strokeWidth));
+        opacities.push(Number.parseFloat(style.opacity));
+      }
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+
+    return {
+      missingFrames,
+      replacementSeen,
+      minWidth: Math.min(...widths),
+      maxWidth: Math.max(...widths),
+      minOpacity: Math.min(...opacities),
+      maxOpacity: Math.max(...opacities),
+    };
+  }, edgeSelectors);
+  expect(edgeStability.replacementSeen).toBe(true);
+  expect(edgeStability.missingFrames).toBe(0);
+  expect(edgeStability.minWidth).toBeGreaterThanOrEqual(2.2);
+  expect(edgeStability.maxWidth).toBeLessThanOrEqual(2.3);
+  expect(edgeStability.maxWidth - edgeStability.minWidth).toBeLessThanOrEqual(0.02);
+  expect(edgeStability.minOpacity).toBeLessThanOrEqual(0.6);
+  expect(edgeStability.maxOpacity - edgeStability.minOpacity).toBeGreaterThanOrEqual(0.25);
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  for (const routeLink of await routeLinks.all()) {
+    await expect(routeLink).toHaveCSS('animation-name', 'none');
+    await expect(routeLink).toHaveCSS('opacity', '0.8');
+    expect(await routeLink.evaluate((link) => getComputedStyle(link).strokeDasharray)).toMatch(/^1(px)?[, ]+7(px)?$/);
+  }
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+
+  await page.getByRole('link', { name: 'New connector', exact: true }).click();
+  const secondConnectorDialog = page.getByRole('dialog', { name: 'Add connector' });
+  await expect(secondConnectorDialog).toBeVisible();
+  const secondConnectorID = await secondConnectorDialog.locator('input[name="id"]').inputValue();
+  expect(secondConnectorID).toMatch(/^[0-9a-f]{8}$/);
+  expect(secondConnectorID).not.toBe(connectorID);
+  await secondConnectorDialog.locator('#conn-name').fill(`Second ${connectorName}`);
+  await secondConnectorDialog.locator('#conn-source').selectOption(sourceID);
+  await secondConnectorDialog.locator('#conn-sink').selectOption(sinkID);
+  await secondConnectorDialog.getByRole('button', { name: 'Save' }).click();
+  await expect(page).toHaveURL(/\/dashboard$/);
+
+  await expect(page.locator(`[data-dag-node="source:${sourceID}"]`)).toHaveCount(1);
+  await expect(page.locator(`[data-dag-node="sink:${sinkID}"]`)).toHaveCount(1);
+  const sharedSourceEdges = page.locator(`[data-dag-from="source:${sourceID}"]`);
+  const sharedSinkEdges = page.locator(`[data-dag-to="sink:${sinkID}"]`);
+  await expect(sharedSourceEdges).toHaveCount(2);
+  await expect(sharedSinkEdges).toHaveCount(2);
+  await expect(sharedSourceEdges.first()).toHaveAttribute('d', /^M /);
+  await expect(sharedSinkEdges.first()).toHaveAttribute('d', /^M /);
+  const sourcePaths = await sharedSourceEdges.evaluateAll((edges) => edges.map((edge) => edge.getAttribute('d')));
+  const sinkPaths = await sharedSinkEdges.evaluateAll((edges) => edges.map((edge) => edge.getAttribute('d')));
+  expect(new Set(sourcePaths).size).toBe(2);
+  expect(new Set(sinkPaths).size).toBe(2);
+
   await page.goto('/connectors');
-  const connectorRow = page.getByRole('link', { name: connectorName }).locator('xpath=ancestor::tr');
+  const connectorRow = page.getByRole('link', { name: connectorName, exact: true }).locator('xpath=ancestor::tr');
   await expect(connectorRow).toHaveClass(/component-status-row state-(up|degraded|error|restarting|disabled)/);
-  expect(await connectorRow.evaluate((row) => getComputedStyle(row).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
+  await expect(connectorRow).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+
+  const connectorEditLink = connectorRow.getByRole('link', { name: 'Edit', exact: true });
+  const connectorListURL = page.url();
+  await connectorEditLink.click();
+  await expect(page).toHaveURL(connectorListURL);
+  const connectorEditDialog = page.getByRole('dialog', { name: `Edit connector ${connectorID}` });
+  await expect(connectorEditDialog).toBeVisible();
+  await expect(connectorEditDialog.locator('#conn-name')).toHaveValue(connectorName);
+  await expect(connectorEditDialog.locator('#conn-source')).toHaveValue(sourceID);
+  await expect(connectorEditDialog.locator('#conn-sink')).toHaveValue(sinkID);
+  await connectorEditDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(connectorEditDialog).toBeHidden();
+  await expect(page).toHaveURL(connectorListURL);
+  await expect(connectorEditLink).toBeFocused();
+
+  await page.goto(`/sources/${sourceID}/`);
+  const sourceOverviewURL = page.url();
+  const sourceEditLink = page.getByRole('link', { name: 'Edit source', exact: true });
+  await sourceEditLink.click();
+  await expect(page).toHaveURL(sourceOverviewURL);
+  const sourceEditDialog = page.getByRole('dialog', { name: `Edit source ${sourceID}` });
+  await expect(sourceEditDialog).toBeVisible();
+  await expect(sourceEditDialog.locator('#src-name')).toHaveValue(sourceName);
+  const editedSourceName = `${sourceName} edited`;
+  await sourceEditDialog.locator('#src-name').fill(editedSourceName);
+  await sourceEditDialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page).toHaveURL(sourceOverviewURL);
+  await expect(page.getByRole('heading', { name: editedSourceName, exact: true })).toBeVisible();
+  await expect(sourceEditDialog).toHaveCount(0);
+
+  await page.goto(`/sinks/${sinkID}/`);
+  const sinkOverviewURL = page.url();
+  const sinkEditLink = page.getByRole('link', { name: 'Edit sink', exact: true });
+  await sinkEditLink.click();
+  await expect(page).toHaveURL(sinkOverviewURL);
+  const sinkEditDialog = page.getByRole('dialog', { name: `Edit sink ${sinkID}` });
+  await expect(sinkEditDialog).toBeVisible();
+  await expect(sinkEditDialog.locator('#sink-name')).toHaveValue(sinkName);
+  await page.keyboard.press('Escape');
+  await expect(sinkEditDialog).toBeHidden();
+  await expect(page).toHaveURL(sinkOverviewURL);
+  await expect(sinkEditLink).toBeFocused();
 });
 
 test('connector CEL editor provides autocomplete and live diagnostics', async ({ page }) => {
   await page.goto('/connectors/new');
+  await expect(page.locator('#conn-id')).toHaveCount(0);
+  expect(await page.locator('input[name="id"]').inputValue()).toMatch(/^[0-9a-f]{8}$/);
+  await expect(page.getByRole('checkbox', { name: 'Enabled' })).toBeChecked();
 
   const filters = page.locator('#conn-filters');
   const completions = page.getByRole('listbox', { name: 'CEL completions' });
@@ -117,9 +267,6 @@ test('source and sink overviews provide controllable JSON and CAN stream inspect
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], {
     origin: 'http://127.0.0.1:32112',
   });
-  const suffix = Date.now();
-  const sourceID = `stream-source-${suffix}`;
-  const sinkID = `stream-sink-${suffix}`;
   const envelope = {
     payload: {
       info: {
@@ -154,7 +301,8 @@ test('source and sink overviews provide controllable JSON and CAN stream inspect
   const requestedFilters: Array<string | null> = [];
 
   await page.goto('/sources/new');
-  await page.locator('#src-id').fill(sourceID);
+  const sourceID = await page.locator('input[name="id"]').inputValue();
+  expect(sourceID).toMatch(/^[0-9a-f]{8}$/);
   await page.locator('#src-name').fill('Stream source');
   await page.locator('#src-interface').fill('can0');
   await page.getByRole('button', { name: 'Save' }).click();
@@ -173,13 +321,63 @@ test('source and sink overviews provide controllable JSON and CAN stream inspect
   });
   await page.goto(`/sources/${sourceID}/`);
 
+  const configurationPanel = page.locator('[data-overview-configuration]');
+  const statusPanel = page.locator('[aria-label="Status and metrics"]');
   const sourcePanel = page.locator('[data-stream-panel]');
+  const sourceDevicesPanel = page.locator('[aria-label="Source devices"]');
   const streamFilter = sourcePanel.getByRole('textbox', { name: 'CEL stream filter' });
   const startButton = sourcePanel.getByRole('button', { name: 'Start', exact: true });
   const stopButton = sourcePanel.getByRole('button', { name: 'Stop', exact: true });
   const jsonViewButton = sourcePanel.getByRole('button', { name: 'JSONL', exact: true });
   const canViewButton = sourcePanel.getByRole('button', { name: 'CAN bytes', exact: true });
   await expect(sourcePanel.getByRole('heading', { name: 'Stream contents' })).toBeVisible();
+  await expect(configurationPanel).toBeVisible();
+  await expect(statusPanel).toBeVisible();
+  await expect(sourceDevicesPanel).toBeVisible();
+  await expect(configurationPanel.getByRole('button', { name: 'Delete', exact: true })).toBeVisible();
+  const configurationBounds = await configurationPanel.boundingBox();
+  const statusBounds = await statusPanel.boundingBox();
+  const streamBounds = await sourcePanel.boundingBox();
+  const sourceDevicesBounds = await sourceDevicesPanel.boundingBox();
+  expect(configurationBounds).not.toBeNull();
+  expect(statusBounds).not.toBeNull();
+  expect(streamBounds).not.toBeNull();
+  expect(sourceDevicesBounds).not.toBeNull();
+  expect(Math.abs(configurationBounds!.y - statusBounds!.y)).toBeLessThanOrEqual(1);
+  expect(configurationBounds!.x + configurationBounds!.width).toBeLessThanOrEqual(statusBounds!.x);
+  expect(statusBounds!.y + statusBounds!.height).toBeLessThanOrEqual(sourceDevicesBounds!.y);
+  expect(sourceDevicesBounds!.y + sourceDevicesBounds!.height).toBeLessThanOrEqual(streamBounds!.y);
+  const [configurationPadding, statusPadding] = await Promise.all([
+    configurationPanel.evaluate((panel) => getComputedStyle(panel).padding),
+    statusPanel.evaluate((panel) => getComputedStyle(panel).padding),
+  ]);
+  expect(configurationPadding).toBe(statusPadding);
+
+  const sourceDeviceTable = sourceDevicesPanel.getByRole('region', { name: 'Source devices table' });
+  await expect(sourceDeviceTable).toBeVisible();
+  await sourceDevicesPanel.locator('[data-source-device-row-refresh]').evaluate((trigger) => trigger.remove());
+  await sourceDevicesPanel.locator('#source-device-rows').evaluate((body) => {
+    body.innerHTML = `
+      <tr class="source-device-row">
+        <td class="source-device-address"><strong>7</strong></td>
+        <td class="source-device-identity"><code>0xC0508C00E83546CE</code><br><small>identity 1394382</small></td>
+        <td class="source-device-manufacturer"><strong>Simrad</strong><br><small>code 1857</small></td>
+        <td class="source-device-role">Steering and Control surfaces / Main Controller</td>
+        <td class="source-device-stat"><strong>0.02</strong></td>
+        <td class="source-device-stat"><strong>0 B/s</strong></td>
+        <td class="source-device-stat"><strong>0.0%</strong><br><small>~0.001% bus load</small></td>
+        <td class="source-device-last-seen"><time>15s ago</time></td>
+      </tr>`;
+  });
+  const representativeRole = sourceDevicesPanel.locator('.source-device-role');
+  await expect(representativeRole).toHaveCSS('white-space', 'normal');
+  const roleDimensions = await representativeRole.evaluate((cell) => ({
+    clientWidth: cell.clientWidth,
+    scrollWidth: cell.scrollWidth,
+  }));
+  expect(roleDimensions.scrollWidth).toBeLessThanOrEqual(roleDimensions.clientWidth);
+  await expect(sourceDevicesPanel.locator('.source-device-stat').first()).toHaveCSS('text-align', 'right');
+
   await expect(sourcePanel.getByText('Stopped · 0 captured')).toBeVisible();
   await expect(jsonViewButton).toHaveAttribute('aria-pressed', 'true');
   await expect(jsonViewButton).toHaveClass(/btn-primary/);
@@ -302,7 +500,7 @@ test('source and sink overviews provide controllable JSON and CAN stream inspect
   await expect(capturedMessages).toHaveCount(200);
   await expect(capturedMessages.first().locator('.stream-message-content')).toBeVisible();
   await expect(sourcePanel.locator('[data-stream-list]')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
-  await expect(capturedMessages.first().locator('.stream-message-content')).toHaveCSS('color', 'rgb(17, 24, 39)');
+  await expect(capturedMessages.first().locator('.stream-message-content')).toHaveCSS('color', 'rgb(15, 18, 25)');
   await expect(capturedMessages.nth(1)).toHaveCSS('border-top-style', 'none');
   const displayedLines = await capturedMessages.locator('.stream-message-content').allTextContents();
   expect(displayedLines).toHaveLength(200);
@@ -316,7 +514,8 @@ test('source and sink overviews provide controllable JSON and CAN stream inspect
   );
 
   await page.goto('/sinks/new');
-  await page.locator('#sink-id').fill(sinkID);
+  const sinkID = await page.locator('input[name="id"]').inputValue();
+  expect(sinkID).toMatch(/^[0-9a-f]{8}$/);
   await page.locator('#sink-name').fill('Stream sink');
   await page.locator('#sink-type').selectOption('tcp');
   await page.locator('#sink-address').fill('127.0.0.1:0');

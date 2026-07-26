@@ -1,40 +1,42 @@
-{{/* Data: internal/ui/forms.go's connectorFormViewData. Rendered by
-     canonical connector create/edit pages and re-rendered by POST
-     /connectors[/{id}] on a validation failure (see
-     writeConnector). Mirrors frag_source_form.html's id-immutable-on-edit
-     and Enabled-checkbox shape; see its comments for rationale not
-     repeated here. Unlike sources/sinks there is no type switch — source_id
+{{/* Data: internal/ui/forms.go's connectorFormViewData. Rendered inside
+     the connector creation modal, by direct-URL create/edit fallback pages,
+     and by POST /connectors[/{id}] after validation fails (see
+     writeConnector). Mirrors frag_source_form.html's immutable/generated-id
+     and Enabled-checkbox shape. Unlike sources/sinks there is no type switch — source_id
      and sink_id are plain <select>s populated from .Sources/.Sinks, not a
      type-driven fieldset. */}}
 {{define "connector-form"}}
-<form class="card bg-base-200 border border-base-300"
+<form class="card bg-base-200 border border-base-300 entity-form"
       hx-post="{{if .IsEdit}}/connectors/{{.ID}}{{else}}/connectors{{end}}"
       hx-target="#connector-form-container" hx-swap="innerHTML">
   <div class="card-body gap-3">
-    <h2 class="card-title">{{if .IsEdit}}Edit connector {{.ID}}{{else}}Add connector{{end}}</h2>
+    <div class="entity-form-heading">
+      <h2 class="card-title" {{if .InDialog}}id="{{if .IsEdit}}connector-edit-dialog-title{{else}}connector-create-dialog-title{{end}}"{{end}}>{{if .IsEdit}}Edit connector {{.ID}}{{else}}Add connector{{end}}</h2>
+      {{if .InDialog}}
+      <button type="button" class="btn btn-sm btn-ghost entity-dialog-close" data-size="sm" data-variant="ghost"
+              data-entity-create-dialog-close aria-label="Close {{if .IsEdit}}edit{{else}}add{{end}} connector dialog">&times;</button>
+      {{end}}
+    </div>
     {{if .Alert}}
-    <div class="alert alert-error" role="alert"><span>{{.Alert.Message}}</span></div>
+    <div class="alert alert-error" data-status="error" data-variant="destructive" role="alert"><span>{{.Alert.Message}}</span></div>
     {{end}}
+    {{if not .IsEdit}}<input type="hidden" name="id" value="{{.ID}}">{{end}}
+    {{if .InDialog}}<input type="hidden" name="dialog" value="1">{{end}}
+    <label class="field label cursor-pointer justify-start gap-2 entity-enabled-field" data-orientation="horizontal">
+      <input type="checkbox" name="enabled" value="1" class="checkbox" {{if .Enabled}}checked{{end}} {{if .InDialog}}autofocus{{end}}>
+      Enabled
+    </label>
     {{if .IsEdit}}
     <input type="hidden" name="id" value="{{.ID}}">
     <fieldset class="fieldset">
       <legend class="fieldset-legend">ID</legend>
       <input type="text" id="conn-id" value="{{.ID}}" class="input w-full" disabled>
     </fieldset>
-    {{else}}
-    <fieldset class="fieldset">
-      <legend class="fieldset-legend">ID</legend>
-      <input type="text" id="conn-id" name="id" value="{{.ID}}" class="input w-full" required>
-    </fieldset>
     {{end}}
     <fieldset class="fieldset">
       <legend class="fieldset-legend">Name</legend>
       <input type="text" id="conn-name" name="name" value="{{.Name}}" class="input w-full" required>
     </fieldset>
-    <label class="label cursor-pointer justify-start gap-2">
-      <input type="checkbox" name="enabled" value="1" class="checkbox" {{if .Enabled}}checked{{end}}>
-      Enabled
-    </label>
     <fieldset class="fieldset">
       <legend class="fieldset-legend">Source</legend>
       <select id="conn-source" name="source_id" class="select w-full" required>
@@ -64,7 +66,7 @@
       </select>
       <p class="field-help">Transparent mode blocks N2K management traffic by default and cannot target the source interface.</p>
     </fieldset>
-    <label class="label cursor-pointer justify-start gap-2">
+    <label class="field label cursor-pointer justify-start gap-2" data-orientation="horizontal">
       <input type="checkbox" name="forward_management" value="1" class="checkbox" {{if .ForwardManagement}}checked{{end}}>
       Forward N2K management PGNs in transparent mode
     </label>
@@ -101,9 +103,22 @@
       <input type="number" id="conn-max-bytes" name="max_bytes" value="{{.MaxBytes}}" class="input w-full" min="0">
     </fieldset>
     <div class="card-actions justify-end">
-      <a class="btn" href="/connectors">Cancel</a>
-      <button type="submit" class="btn btn-primary">Save</button>
+      {{if .InDialog}}
+      <button type="button" class="btn" data-variant="outline" data-entity-create-dialog-close>Cancel</button>
+      {{else}}
+      <a class="btn" data-variant="outline" href="/connectors">Cancel</a>
+      {{end}}
+      <button type="submit" class="btn btn-primary" data-variant="primary">Save</button>
     </div>
   </div>
 </form>
+{{end}}
+
+{{define "connector-create-dialog"}}
+<dialog class="entity-create-dialog entity-create-dialog-wide dialog" data-entity-create-dialog
+        aria-labelledby="{{if .IsEdit}}connector-edit-dialog-title{{else}}connector-create-dialog-title{{end}}">
+  <div id="connector-form-container" class="entity-create-dialog-form">
+    {{template "connector-form" .}}
+  </div>
+</dialog>
 {{end}}

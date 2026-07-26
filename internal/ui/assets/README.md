@@ -38,14 +38,22 @@ JSON/CAN view switching, clipboard copy, and export.
 
 ## app.css
 
-`app.css` is hand-authored source, not a compiled Tailwind/daisyUI artifact.
-It implements the lightweight Open Ships product theme used by Beacon's
-server-rendered templates: white surface, gray copy, black navigation, blue
-accent, 8px radii, forms, tables, badges, docs typography, and the home DAG.
+`app.css` is the compiled, minified Tailwind CSS v4 and Basecoat v1 stylesheet
+embedded in release binaries. Its source is `internal/ui/styles/app.css`,
+which imports Basecoat's Vega component bundle and applies Beacon's Open Ships
+tokens, operational topology, dense data surfaces, docs typography, and
+responsive behavior.
 
-The stylesheet intentionally avoids OpenBridge, web components, remote fonts,
-and inline CSS so embedded products carry the same basic visual language as
-`openships.ai` without adding a heavy first-load payload.
+Rebuild it after changing templates or UI styles:
+
+```
+npm run build:css
+```
+
+Use `npm run dev:css` (or `just css-watch`) while iterating. The compiled file
+is committed so Go and Docker builds remain self-contained and do not need
+Node at runtime. The UI still avoids web components, remote fonts, and runtime
+CDN dependencies.
 
 ## favicon.svg
 

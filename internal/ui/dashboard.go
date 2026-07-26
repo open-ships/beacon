@@ -51,6 +51,7 @@ type dashboardEndpointNode struct {
 	Enabled        bool
 	State          string // "up" | "degraded" | "error" | "restarting" | "disabled"
 	ConnectorCount int
+	Unused         bool
 }
 
 // componentState resolves one configured component's displayed state:
@@ -149,7 +150,9 @@ func fallbackEndpointNode(kind, id string) dashboardEndpointNode {
 
 // dashboardFlow is one source -> connector -> sink path in the DAG:
 // model.Connector plus its live stats.Snapshot, its live supervisor state,
-// and the resolved source/sink nodes used by the connector.
+// and the resolved source/sink nodes used by the connector. The endpoint
+// nodes are also collected separately for rendering: several flows may point
+// at the same source or sink, but the graph renders that endpoint only once.
 type dashboardFlow struct {
 	model.Connector
 	Snapshot        stats.Snapshot
@@ -185,13 +188,47 @@ func dashboardFlows(connectors []model.Connector, reg *stats.Registry, statuses 
 	return flows
 }
 
+// partitionGraphEndpointNodes splits configured endpoints into the main graph
+// and the secondary unused row. An endpoint is unused only when it is enabled
+// and no configured connector references it. Disabled endpoints stay in the
+// main graph, and disabled connectors still count as configured connections.
+// Fallback endpoints referenced by stale connectors also remain in the main
+// graph so the dashboard keeps its existing missing-endpoint tolerance.
+func partitionGraphEndpointNodes(configured []dashboardEndpointNode, flows []dashboardFlow, kind string) (graph, unused []dashboardEndpointNode) {
+	seen := make(map[string]bool, len(configured)+len(flows))
+	for _, node := range configured {
+		seen[node.ID] = true
+		if node.Enabled && node.ConnectorCount == 0 {
+			node.Unused = true
+			unused = append(unused, node)
+			continue
+		}
+		graph = append(graph, node)
+	}
+	for _, flow := range flows {
+		node := flow.Source
+		if kind == "sink" {
+			node = flow.Sink
+		}
+		if seen[node.ID] {
+			continue
+		}
+		seen[node.ID] = true
+		graph = append(graph, node)
+	}
+	return graph, unused
+}
+
 // dashboardData is frag_dashboard.html's "dashboard-content" data. The
-// Empty* fields are populated only when there are zero connector flows (see
-// dashboardEmptyState) — frag_dashboard.html renders the DAG when Flows is
-// non-empty and this setup prompt otherwise.
+// Empty* fields are populated only when no graph node of any kind exists.
+// Configured endpoints render in the DAG even when Flows is empty.
 type dashboardData struct {
 	Sources           []dashboardEndpointNode
 	Sinks             []dashboardEndpointNode
+	GraphSources      []dashboardEndpointNode
+	GraphSinks        []dashboardEndpointNode
+	UnusedSources     []dashboardEndpointNode
+	UnusedSinks       []dashboardEndpointNode
 	Flows             []dashboardFlow
 	Devices           []busDeviceRow
 	CANInterfaces     []sysinfo.CANInterface
@@ -259,19 +296,8 @@ func inventoryDeviceRows(records []inventory.Record) []busDeviceRow {
 	return rows
 }
 
-// dashboardEmptyState picks the empty-state hero's copy and CTA target for
-// a dashboard with zero connectors configured: source first, sink second,
-// connector last. That keeps the DAG mental model visible even during
-// setup, instead of sending an operator straight to connectors before both
-// endpoint sides exist.
-func dashboardEmptyState(hasSources, hasSinks bool) (title, message, cta, href string) {
-	if !hasSources {
-		return "Add your first source", "Connect a source to start receiving data.", "Add a source", "/sources/new"
-	}
-	if !hasSinks {
-		return "Add your first sink", "Choose where beacon should deliver routed messages.", "Add a sink", "/sinks/new"
-	}
-	return "Add your first connector", "Wire a source to a sink with a connector to start routing data.", "Add a connector", "/connectors/new"
+func dashboardEmptyState() (title, message, cta, href string) {
+	return "Add your first source", "Connect a source to start receiving data.", "Add a source", "/sources/new"
 }
 
 // handleDashboardFrag serves GET /frag/dashboard: the dashboard page's
@@ -308,19 +334,26 @@ func handleDashboardFrag(svc *config.Service, reg *stats.Registry, statuses func
 		sourceConnectorCounts, sinkConnectorCounts := endpointConnectorCounts(connectors)
 		sourceNodes := sourceEndpointNodes(sources, live, sourceConnectorCounts)
 		sinkNodes := sinkEndpointNodes(sinks, live, sinkConnectorCounts)
+		flows := dashboardFlows(
+			connectors,
+			reg,
+			live,
+			endpointNodeMap(sourceNodes),
+			endpointNodeMap(sinkNodes),
+		)
+		graphSources, unusedSources := partitionGraphEndpointNodes(sourceNodes, flows, "source")
+		graphSinks, unusedSinks := partitionGraphEndpointNodes(sinkNodes, flows, "sink")
 		data := dashboardData{
-			Sources: sourceNodes,
-			Sinks:   sinkNodes,
-			Flows: dashboardFlows(
-				connectors,
-				reg,
-				live,
-				endpointNodeMap(sourceNodes),
-				endpointNodeMap(sinkNodes),
-			),
+			Sources:       sourceNodes,
+			Sinks:         sinkNodes,
+			GraphSources:  graphSources,
+			GraphSinks:    graphSinks,
+			UnusedSources: unusedSources,
+			UnusedSinks:   unusedSinks,
+			Flows:         flows,
 		}
-		if len(data.Flows) == 0 {
-			data.EmptyTitle, data.EmptyMessage, data.EmptyCTA, data.EmptyHref = dashboardEmptyState(len(sources) > 0, len(sinks) > 0)
+		if len(data.Sources) == 0 && len(data.Sinks) == 0 && len(data.Flows) == 0 {
+			data.EmptyTitle, data.EmptyMessage, data.EmptyCTA, data.EmptyHref = dashboardEmptyState()
 		}
 		if devices != nil {
 			data.Devices = busDeviceRows(devices())

@@ -37,12 +37,10 @@ func mustPage(files ...string) *template.Template {
 
 // pages maps a page's nav key to its pre-parsed, self-contained template.
 // Sources/sinks/connectors pages additionally parse their table and form
-// fragment templates so "content" can render the same source-/sink-/
-// connector-panel and *-form markup that POST handlers also re-render
-// standalone via fragTemplates below — keeping canonical page loads and
-// every htmx-driven update using identical markup. Dashboard and overview
-// pages need no such form fragments. Their empty polling containers fetch
-// live fragments from fragTemplates immediately after page load.
+// fragment templates so direct /new fallbacks, edit pages, modal fragments,
+// and validation responses all use the same source-/sink-/connector-form
+// markup. Dashboard and overview pages need no such form fragments. Their
+// empty polling containers fetch live fragments immediately after page load.
 var pages = map[string]*template.Template{
 	"dashboard": mustPage("dashboard.html"),
 	"sources": mustPage(
