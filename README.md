@@ -11,7 +11,7 @@ and one REST API without requiring a cloud service.
 
 ## Start here
 
-![Beacon dashboard showing a live Yacht Devices gateway feeding an SSE stream and voyage recorder](docs/images/beacon-dashboard.png)
+![Beacon dashboard showing a live Yacht Devices gateway feeding an SSE stream and voyage recorder](docs/images/beacon-dashboard-v1.2.0.png)
 
 _A real Beacon instance routing live NMEA 2000 traffic. Sources, connector
 routes, sinks, state, throughput, and pending delivery stay visible in one
@@ -161,7 +161,7 @@ msg.priority <= 3
 has(msg.device_name) && msg.device_name == 123456789
 ```
 
-![Beacon connector editor with a validated live CEL navigation filter](docs/images/beacon-connector-editor.png)
+![Beacon connector editor with a validated live CEL navigation filter](docs/images/beacon-connector-editor-v1.2.0.png)
 
 The connector editor validates filters as you type and provides completions for
 envelope fields, PGNs, decoded payload fields, and CEL helpers. The API exposes
@@ -331,7 +331,7 @@ HTTP endpoints instead. Full examples and caveats are in
 
 ## API and operational surfaces
 
-![Beacon's embedded OpenAPI 3.1 reference running locally](docs/images/beacon-api-reference.png)
+![Beacon's embedded OpenAPI 3.1 reference running locally](docs/images/beacon-api-reference-v1.2.0.png)
 
 Beacon runs separate admin and data servers so a sink configuration cannot
 take away the control surface used to repair it.
