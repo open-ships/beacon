@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -110,6 +111,53 @@ func postForm(t *testing.T, srv *httptest.Server, path string, values url.Values
 	return resp
 }
 
+var (
+	generatedFormIDPattern  = regexp.MustCompile(`type="hidden" name="id" value="([0-9a-f]{8})"`)
+	generatedIDValuePattern = regexp.MustCompile(`^[0-9a-f]{8}$`)
+)
+
+func generatedFormID(t *testing.T, body string) string {
+	t.Helper()
+	match := generatedFormIDPattern.FindStringSubmatch(body)
+	if len(match) != 2 {
+		t.Fatalf("form does not contain a generated eight-character hexadecimal id:\n%s", body)
+	}
+	return match[1]
+}
+
+func getHTMX(t *testing.T, srv *httptest.Server, path string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("HX-Request", "true")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func postFormHTMX(t *testing.T, srv *httptest.Server, path string, values url.Values) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(
+		http.MethodPost,
+		srv.URL+path,
+		strings.NewReader(values.Encode()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
 // --- Table rendering ---
 
 func TestSourcesPageRendersConfiguredEntities(t *testing.T) {
@@ -124,7 +172,7 @@ func TestSourcesPageRendersConfiguredEntities(t *testing.T) {
 	}
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
-	for _, want := range []string{"Engine CAN", "<code>can0</code>", "socketcan", "Detail", "badge-success", "component-status-row state-restarting", `href="/sources/new"`, `href="/sources/can0/"`, `href="/sources/can0/edit"`} {
+	for _, want := range []string{"Engine CAN", "<code>can0</code>", "socketcan", "Detail", "badge-success", "component-status-row state-restarting", `href="/sources/new"`, `hx-get="/sources/new"`, `hx-target="#entity-create-dialog-container"`, `href="/sources/can0/"`, `href="/sources/can0/edit"`, `hx-get="/sources/can0/edit"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sources page missing %q:\n%s", want, body)
 		}
@@ -141,17 +189,41 @@ func TestSourceNewPageOpensCreateForm(t *testing.T) {
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
 	for _, want := range []string{
-		"Add source", `hx-post="/sources"`, `name="id"`, `name="interface"`,
+		"Add source", `hx-post="/sources"`, `type="hidden" name="id"`, `name="interface"`,
+		`name="enabled" value="1" class="checkbox" checked`,
 		`aria-label="Breadcrumb"`, `href="/sources"`, `aria-current="page">Add source</span>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("source new page missing %q:\n%s", want, body)
 		}
 	}
-	for _, notWant := range []string{`href="/sources/new"`, `id="source-panel"`} {
+	generatedFormID(t, body)
+	if enabled, name := strings.Index(body, `name="enabled"`), strings.Index(body, `id="src-name"`); enabled < 0 || name < 0 || enabled > name {
+		t.Fatalf("source create form must render Enabled before Name:\n%s", body)
+	}
+	for _, notWant := range []string{`id="src-id"`, `href="/sources/new"`, `id="source-panel"`} {
 		if strings.Contains(body, notWant) {
 			t.Fatalf("source new page should not include %q:\n%s", notWant, body)
 		}
+	}
+
+	modalResp := getHTMX(t, srv, "/sources/new")
+	mustStatus(t, modalResp, http.StatusOK)
+	modal := mustBody(t, modalResp)
+	for _, want := range []string{
+		`<dialog class="entity-create-dialog dialog" data-entity-create-dialog`,
+		`aria-labelledby="source-create-dialog-title"`,
+		`id="source-form-container"`,
+		`type="hidden" name="dialog" value="1"`,
+		`data-entity-create-dialog-close`,
+	} {
+		if !strings.Contains(modal, want) {
+			t.Fatalf("source modal fragment missing %q:\n%s", want, modal)
+		}
+	}
+	generatedFormID(t, modal)
+	if strings.Contains(modal, "<!doctype html>") {
+		t.Fatalf("source modal request returned a full page:\n%s", modal)
 	}
 }
 
@@ -187,6 +259,25 @@ func TestSourceEditPageOpensEditForm(t *testing.T) {
 		}
 	}
 
+	modalResp := getHTMX(t, srv, "/sources/can0/edit")
+	mustStatus(t, modalResp, http.StatusOK)
+	modal := mustBody(t, modalResp)
+	for _, want := range []string{
+		`<dialog class="entity-create-dialog dialog" data-entity-create-dialog`,
+		`aria-labelledby="source-edit-dialog-title"`,
+		`id="source-form-container"`,
+		`type="hidden" name="dialog" value="1"`,
+		`value="Engine CAN"`,
+		`data-entity-create-dialog-close`,
+	} {
+		if !strings.Contains(modal, want) {
+			t.Fatalf("source edit modal fragment missing %q:\n%s", want, modal)
+		}
+	}
+	if strings.Contains(modal, "<!doctype html>") {
+		t.Fatalf("source edit modal request returned a full page:\n%s", modal)
+	}
+
 	resp2, err := http.Get(srv.URL + "/sources/missing/edit")
 	if err != nil {
 		t.Fatal(err)
@@ -210,7 +301,8 @@ func TestSourceOverviewPageRendersConfigAndLiveFragment(t *testing.T) {
 	for _, want := range []string{
 		"source overview", "MQTT input", "<code>mqtt</code>",
 		"<code>mqtt://broker.local:1883</code>", "<code>vessels/main/#</code>",
-		`href="/sources/mqtt-in/edit"`,
+		`data-overview-summary-row`, `data-overview-configuration`, "Edit source", `href="/sources/mqtt-in/edit"`, `hx-get="/sources/mqtt-in/edit"`,
+		`hx-post="/sources/mqtt-in/delete?context=overview"`, `hx-target="#overview-delete-feedback"`, "Delete",
 		`aria-label="Breadcrumb"`, `href="/sources"`, `aria-current="page">MQTT input</span>`,
 		`hx-get="/frag/sources/mqtt-in/overview"`, `hx-trigger="load, every 500ms"`,
 		`data-stream-url="/ui/streams/sources/mqtt-in"`, "Stream contents",
@@ -222,6 +314,28 @@ func TestSourceOverviewPageRendersConfigAndLiveFragment(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("source overview page missing %q:\n%s", want, body)
 		}
+	}
+	assertOverviewGroupOrder(t, body, "source-overview-live", true)
+	stream := strings.Index(body, `data-stream-panel`)
+	devices := strings.Index(body, `id="source-devices-panel"`)
+	if stream < 0 || devices < 0 || devices >= stream {
+		t.Fatalf("source devices must render before the stream viewer:\n%s", body)
+	}
+}
+
+func assertOverviewGroupOrder(t *testing.T, body, liveID string, hasStream bool) {
+	t.Helper()
+	configuration := strings.Index(body, `data-overview-configuration`)
+	status := strings.Index(body, `id="`+liveID+`"`)
+	if configuration < 0 || status < 0 || configuration >= status {
+		t.Fatalf("overview groups must render configuration before status:\n%s", body)
+	}
+	if !hasStream {
+		return
+	}
+	stream := strings.Index(body, `data-stream-panel`)
+	if stream < 0 || status >= stream {
+		t.Fatalf("overview groups must render status before the stream viewer:\n%s", body)
 	}
 }
 
@@ -237,7 +351,7 @@ func TestSinksPageRendersConfiguredEntities(t *testing.T) {
 	}
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
-	for _, want := range []string{"NMEA Out", "<code>out1</code>", "tcp", "<code>0.0.0.0:2000</code>", "badge-success", "component-status-row state-restarting", `href="/sinks/new"`, `href="/sinks/out1/"`, `href="/sinks/out1/edit"`} {
+	for _, want := range []string{"NMEA Out", "<code>out1</code>", "tcp", "<code>0.0.0.0:2000</code>", "badge-success", "component-status-row state-restarting", `href="/sinks/new"`, `hx-get="/sinks/new"`, `hx-target="#entity-create-dialog-container"`, `href="/sinks/out1/"`, `href="/sinks/out1/edit"`, `hx-get="/sinks/out1/edit"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sinks page missing %q:\n%s", want, body)
 		}
@@ -254,17 +368,41 @@ func TestSinkNewPageOpensCreateForm(t *testing.T) {
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
 	for _, want := range []string{
-		"Add sink", `hx-post="/sinks"`, `name="id"`, `name="interface"`,
+		"Add sink", `hx-post="/sinks"`, `type="hidden" name="id"`, `name="interface"`,
+		`name="enabled" value="1" class="checkbox" checked`,
 		`aria-label="Breadcrumb"`, `href="/sinks"`, `aria-current="page">Add sink</span>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sink new page missing %q:\n%s", want, body)
 		}
 	}
-	for _, notWant := range []string{`href="/sinks/new"`, `id="sink-panel"`} {
+	generatedFormID(t, body)
+	if enabled, name := strings.Index(body, `name="enabled"`), strings.Index(body, `id="sink-name"`); enabled < 0 || name < 0 || enabled > name {
+		t.Fatalf("sink create form must render Enabled before Name:\n%s", body)
+	}
+	for _, notWant := range []string{`id="sink-id"`, `href="/sinks/new"`, `id="sink-panel"`} {
 		if strings.Contains(body, notWant) {
 			t.Fatalf("sink new page should not include %q:\n%s", notWant, body)
 		}
+	}
+
+	modalResp := getHTMX(t, srv, "/sinks/new")
+	mustStatus(t, modalResp, http.StatusOK)
+	modal := mustBody(t, modalResp)
+	for _, want := range []string{
+		`<dialog class="entity-create-dialog dialog" data-entity-create-dialog`,
+		`aria-labelledby="sink-create-dialog-title"`,
+		`id="sink-form-container"`,
+		`type="hidden" name="dialog" value="1"`,
+		`data-entity-create-dialog-close`,
+	} {
+		if !strings.Contains(modal, want) {
+			t.Fatalf("sink modal fragment missing %q:\n%s", want, modal)
+		}
+	}
+	generatedFormID(t, modal)
+	if strings.Contains(modal, "<!doctype html>") {
+		t.Fatalf("sink modal request returned a full page:\n%s", modal)
 	}
 }
 
@@ -300,6 +438,25 @@ func TestSinkEditPageOpensEditForm(t *testing.T) {
 		}
 	}
 
+	modalResp := getHTMX(t, srv, "/sinks/out1/edit")
+	mustStatus(t, modalResp, http.StatusOK)
+	modal := mustBody(t, modalResp)
+	for _, want := range []string{
+		`<dialog class="entity-create-dialog dialog" data-entity-create-dialog`,
+		`aria-labelledby="sink-edit-dialog-title"`,
+		`id="sink-form-container"`,
+		`type="hidden" name="dialog" value="1"`,
+		`value="NMEA Out"`,
+		`data-entity-create-dialog-close`,
+	} {
+		if !strings.Contains(modal, want) {
+			t.Fatalf("sink edit modal fragment missing %q:\n%s", want, modal)
+		}
+	}
+	if strings.Contains(modal, "<!doctype html>") {
+		t.Fatalf("sink edit modal request returned a full page:\n%s", modal)
+	}
+
 	resp2, err := http.Get(srv.URL + "/sinks/missing/edit")
 	if err != nil {
 		t.Fatal(err)
@@ -323,7 +480,8 @@ func TestSinkOverviewPageRendersConfigAndLiveFragment(t *testing.T) {
 	for _, want := range []string{
 		"sink overview", "MQTT output", "<code>mqtt</code>",
 		"<code>mqtt://broker.local:1883</code>", "<code>vessels/main/json</code>",
-		`href="/sinks/mqtt-out/edit"`,
+		`data-overview-summary-row`, `data-overview-configuration`, "Edit sink", `href="/sinks/mqtt-out/edit"`, `hx-get="/sinks/mqtt-out/edit"`,
+		`hx-post="/sinks/mqtt-out/delete?context=overview"`, `hx-target="#overview-delete-feedback"`, "Delete",
 		`aria-label="Breadcrumb"`, `href="/sinks"`, `aria-current="page">MQTT output</span>`,
 		`hx-get="/frag/sinks/mqtt-out/overview"`, `hx-trigger="load, every 500ms"`,
 		`data-stream-url="/ui/streams/sinks/mqtt-out"`, "Stream contents",
@@ -336,6 +494,7 @@ func TestSinkOverviewPageRendersConfigAndLiveFragment(t *testing.T) {
 			t.Fatalf("sink overview page missing %q:\n%s", want, body)
 		}
 	}
+	assertOverviewGroupOrder(t, body, "sink-overview-live", true)
 }
 
 func TestComponentStreamSendsFutureCanonicalEnvelope(t *testing.T) {
@@ -668,6 +827,27 @@ func TestSourceCreateRoundTrip(t *testing.T) {
 	}
 	if body2 := mustBody(t, resp2); !strings.Contains(body2, "Engine CAN") {
 		t.Fatalf("GET /sources does not reflect created source:\n%s", body2)
+	}
+}
+
+func TestSourceCreateGeneratesIDWhenOmitted(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	resp := postForm(t, srv, "/sources", url.Values{
+		"name": {"Generated ID"}, "type": {"socketcan"}, "enabled": {"1"}, "interface": {"can0"},
+	})
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("HX-Redirect") != "/dashboard" {
+		t.Fatalf("create response = %d, HX-Redirect %q", resp.StatusCode, resp.Header.Get("HX-Redirect"))
+	}
+	sources, err := svc.ListSources(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) != 1 || !generatedIDValuePattern.MatchString(sources[0].ID) {
+		t.Fatalf("created sources = %+v, want one generated eight-character hexadecimal id", sources)
+	}
+	if !sources[0].Enabled {
+		t.Fatalf("generated-id source should retain the submitted enabled default: %+v", sources[0])
 	}
 }
 
@@ -1007,7 +1187,7 @@ func TestSourceCreateValidationErrorRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	// socketcan requires an interface; omit it.
 	resp := postForm(t, srv, "/sources", url.Values{
-		"id": {"bad"}, "name": {"Bad Source"}, "type": {"socketcan"},
+		"id": {"bad"}, "name": {"Bad Source"}, "type": {"socketcan"}, "dialog": {"1"},
 	})
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
@@ -1016,6 +1196,11 @@ func TestSourceCreateValidationErrorRendersFormNot500(t *testing.T) {
 	}
 	if !strings.Contains(body, `value="Bad Source"`) {
 		t.Fatalf("expected the submitted Name to be preserved:\n%s", body)
+	}
+	for _, want := range []string{`type="hidden" name="dialog" value="1"`, `data-entity-create-dialog-close`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected modal form state to survive validation, missing %q:\n%s", want, body)
+		}
 	}
 	if _, err := svc.GetSource(context.Background(), "bad"); err == nil {
 		t.Fatal("invalid source should not have been persisted")
@@ -1186,6 +1371,100 @@ func TestSourceDeleteUnknownID(t *testing.T) {
 	}
 }
 
+func TestOverviewDeleteActionsRedirectOnSuccess(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		redirect string
+		seed     func(*testing.T, *config.Service)
+		assert   func(*testing.T, *config.Service)
+	}{
+		{
+			name: "source", path: "/sources/src1/delete?context=overview", redirect: "/sources",
+			seed: func(t *testing.T, svc *config.Service) {
+				must(t, svc.PutSource(context.Background(), model.Source{
+					ID: "src1", Name: "Source One", Type: model.SourceSocketCAN, Interface: "can0",
+				}, true))
+			},
+			assert: func(t *testing.T, svc *config.Service) {
+				if _, err := svc.GetSource(context.Background(), "src1"); !errors.Is(err, config.ErrNotFound) {
+					t.Fatalf("GetSource after overview delete: err = %v, want ErrNotFound", err)
+				}
+			},
+		},
+		{
+			name: "sink", path: "/sinks/sink1/delete?context=overview", redirect: "/sinks",
+			seed: func(t *testing.T, svc *config.Service) {
+				must(t, svc.PutSink(context.Background(), model.Sink{
+					ID: "sink1", Name: "Sink One", Type: model.SinkTCP, Address: "127.0.0.1:9000",
+				}, true))
+			},
+			assert: func(t *testing.T, svc *config.Service) {
+				if _, err := svc.GetSink(context.Background(), "sink1"); !errors.Is(err, config.ErrNotFound) {
+					t.Fatalf("GetSink after overview delete: err = %v, want ErrNotFound", err)
+				}
+			},
+		},
+		{
+			name: "connector", path: "/connectors/conn1/delete?context=overview", redirect: "/connectors",
+			seed: func(t *testing.T, svc *config.Service) {
+				seedSourceSink(t, svc)
+				must(t, svc.PutConnector(context.Background(), model.Connector{
+					ID: "conn1", Name: "Connector One", SourceID: "src1", SinkID: "sink1",
+				}, true))
+			},
+			assert: func(t *testing.T, svc *config.Service) {
+				if _, err := svc.GetConnector(context.Background(), "conn1"); !errors.Is(err, config.ErrNotFound) {
+					t.Fatalf("GetConnector after overview delete: err = %v, want ErrNotFound", err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, svc := newUIServerWithService(t)
+			tc.seed(t, svc)
+			resp := postFormHTMX(t, srv, tc.path, nil)
+			mustStatus(t, resp, http.StatusNoContent)
+			if got := resp.Header.Get("HX-Redirect"); got != tc.redirect {
+				t.Fatalf("HX-Redirect = %q, want %q", got, tc.redirect)
+			}
+			_ = resp.Body.Close()
+			tc.assert(t, svc)
+		})
+	}
+}
+
+func TestOverviewDeleteInUseStaysOnPageWithRecoveryMessage(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	ctx := context.Background()
+	must(t, svc.PutSource(ctx, model.Source{
+		ID: "src1", Name: "Source One", Type: model.SourceSocketCAN, Interface: "can0",
+	}, true))
+	must(t, svc.PutSink(ctx, model.Sink{
+		ID: "sink1", Name: "Sink One", Type: model.SinkTCP, Address: "127.0.0.1:9000",
+	}, true))
+	must(t, svc.PutConnector(ctx, model.Connector{
+		ID: "conn1", Name: "Connector One", SourceID: "src1", SinkID: "sink1",
+	}, true))
+
+	resp := postFormHTMX(t, srv, "/sources/src1/delete?context=overview", nil)
+	mustStatus(t, resp, http.StatusOK)
+	if got := resp.Header.Get("HX-Redirect"); got != "" {
+		t.Fatalf("failed overview delete should not redirect, got %q", got)
+	}
+	body := mustBody(t, resp)
+	for _, want := range []string{"alert-error", "conn1", "delete or repoint them first"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("failed overview delete missing %q:\n%s", want, body)
+		}
+	}
+	if _, err := svc.GetSource(ctx, "src1"); err != nil {
+		t.Fatalf("source should remain after failed overview delete: %v", err)
+	}
+}
+
 // --- Connectors ---
 
 func TestConnectorsPageRendersConfiguredEntities(t *testing.T) {
@@ -1206,7 +1485,8 @@ func TestConnectorsPageRendersConfiguredEntities(t *testing.T) {
 	// One" — seedSourceSink's names), not their raw ids: see
 	// TestConnectorsPageNameFallsBackToIDWhenEmpty for the fallback case.
 	for _, want := range []string{
-		`href="/connectors/new"`, `href="/connectors/conn1/"`, `href="/connectors/conn1/edit"`, "NMEA Bridge",
+		`href="/connectors/new"`, `hx-get="/connectors/new"`, `hx-target="#entity-create-dialog-container"`,
+		`href="/connectors/conn1/"`, `href="/connectors/conn1/edit"`, `hx-get="/connectors/conn1/edit"`, "NMEA Bridge",
 		"Source One", "Sink One",
 		"badge-success", "component-status-row state-restarting", ">restarting<",
 	} {
@@ -1258,7 +1538,8 @@ func TestConnectorNewPageOpensCreateForm(t *testing.T) {
 	for _, want := range []string{
 		"Add connector",
 		`hx-post="/connectors"`,
-		`name="id"`,
+		`type="hidden" name="id"`,
+		`name="enabled" value="1" class="checkbox" checked`,
 		`value="src1"`,
 		`value="sink1"`,
 		`data-cel-autocomplete`,
@@ -1273,6 +1554,32 @@ func TestConnectorNewPageOpensCreateForm(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("connector new page missing %q:\n%s", want, body)
 		}
+	}
+	generatedFormID(t, body)
+	if enabled, name := strings.Index(body, `name="enabled"`), strings.Index(body, `id="conn-name"`); enabled < 0 || name < 0 || enabled > name {
+		t.Fatalf("connector create form must render Enabled before Name:\n%s", body)
+	}
+	if strings.Contains(body, `id="conn-id"`) {
+		t.Fatalf("connector create form should not expose an editable ID:\n%s", body)
+	}
+
+	modalResp := getHTMX(t, srv, "/connectors/new")
+	mustStatus(t, modalResp, http.StatusOK)
+	modal := mustBody(t, modalResp)
+	for _, want := range []string{
+		`<dialog class="entity-create-dialog entity-create-dialog-wide dialog" data-entity-create-dialog`,
+		`aria-labelledby="connector-create-dialog-title"`,
+		`id="connector-form-container"`,
+		`type="hidden" name="dialog" value="1"`,
+		`data-entity-create-dialog-close`,
+	} {
+		if !strings.Contains(modal, want) {
+			t.Fatalf("connector modal fragment missing %q:\n%s", want, modal)
+		}
+	}
+	generatedFormID(t, modal)
+	if strings.Contains(modal, "<!doctype html>") {
+		t.Fatalf("connector modal request returned a full page:\n%s", modal)
 	}
 }
 
@@ -1332,6 +1639,27 @@ func TestConnectorEditPageOpensEditForm(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("connector edit page missing %q:\n%s", want, body)
 		}
+	}
+
+	modalResp := getHTMX(t, srv, "/connectors/conn1/edit")
+	mustStatus(t, modalResp, http.StatusOK)
+	modal := mustBody(t, modalResp)
+	for _, want := range []string{
+		`<dialog class="entity-create-dialog entity-create-dialog-wide dialog" data-entity-create-dialog`,
+		`aria-labelledby="connector-edit-dialog-title"`,
+		`id="connector-form-container"`,
+		`type="hidden" name="dialog" value="1"`,
+		`value="NMEA Bridge"`,
+		`value="src1" selected`,
+		`value="sink1" selected`,
+		`data-entity-create-dialog-close`,
+	} {
+		if !strings.Contains(modal, want) {
+			t.Fatalf("connector edit modal fragment missing %q:\n%s", want, modal)
+		}
+	}
+	if strings.Contains(modal, "<!doctype html>") {
+		t.Fatalf("connector edit modal request returned a full page:\n%s", modal)
 	}
 
 	resp2, err := http.Get(srv.URL + "/connectors/doesnotexist/edit")
@@ -1486,6 +1814,85 @@ func TestConnectorUpdateRoundTrip(t *testing.T) {
 	}
 	if got.Name != "New Name" || time.Duration(got.Buffer.MaxAge) != 90*time.Second {
 		t.Fatalf("persisted connector = %+v", got)
+	}
+}
+
+func TestModalUpdatesRefreshCurrentPage(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	ctx := context.Background()
+	must(t, svc.PutSource(ctx, model.Source{
+		ID: "src1", Name: "Old source", Type: model.SourceSocketCAN, Interface: "can0",
+	}, true))
+	must(t, svc.PutSink(ctx, model.Sink{
+		ID: "sink1", Name: "Old sink", Type: model.SinkTCP, Address: "127.0.0.1:9000",
+	}, true))
+	must(t, svc.PutConnector(ctx, model.Connector{
+		ID: "conn1", Name: "Old connector", SourceID: "src1", SinkID: "sink1",
+	}, true))
+
+	tests := []struct {
+		name   string
+		path   string
+		values url.Values
+		assert func(*testing.T)
+	}{
+		{
+			name: "source",
+			path: "/sources/src1",
+			values: url.Values{
+				"id": {"src1"}, "dialog": {"1"}, "name": {"Updated source"},
+				"type": {"socketcan"}, "interface": {"can1"},
+			},
+			assert: func(t *testing.T) {
+				got, err := svc.GetSource(ctx, "src1")
+				must(t, err)
+				if got.Name != "Updated source" || got.Interface != "can1" {
+					t.Fatalf("persisted source = %+v", got)
+				}
+			},
+		},
+		{
+			name: "sink",
+			path: "/sinks/sink1",
+			values: url.Values{
+				"id": {"sink1"}, "dialog": {"1"}, "name": {"Updated sink"},
+				"type": {"tcp"}, "address": {"127.0.0.1:9100"},
+			},
+			assert: func(t *testing.T) {
+				got, err := svc.GetSink(ctx, "sink1")
+				must(t, err)
+				if got.Name != "Updated sink" || got.Address != "127.0.0.1:9100" {
+					t.Fatalf("persisted sink = %+v", got)
+				}
+			},
+		},
+		{
+			name: "connector",
+			path: "/connectors/conn1",
+			values: url.Values{
+				"id": {"conn1"}, "dialog": {"1"}, "name": {"Updated connector"},
+				"source_id": {"src1"}, "sink_id": {"sink1"}, "max_age": {"90s"},
+			},
+			assert: func(t *testing.T) {
+				got, err := svc.GetConnector(ctx, "conn1")
+				must(t, err)
+				if got.Name != "Updated connector" || time.Duration(got.Buffer.MaxAge) != 90*time.Second {
+					t.Fatalf("persisted connector = %+v", got)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := postFormHTMX(t, srv, tc.path, tc.values)
+			mustStatus(t, resp, http.StatusNoContent)
+			if got := resp.Header.Get("HX-Refresh"); got != "true" {
+				t.Fatalf("HX-Refresh = %q, want true", got)
+			}
+			_ = resp.Body.Close()
+			tc.assert(t)
+		})
 	}
 }
 
@@ -1809,8 +2216,11 @@ func TestOverviewFragmentsRenderConsistentLiveMetrics(t *testing.T) {
 				"source-overview-live", "Source devices",
 				"Msg/s", "Bytes/s", "Traffic share",
 				`id="source-overview-summary"`,
+				`id="source-devices-panel"`,
 				`hx-select="#source-overview-summary"`,
 				`id="source-device-table-frame"`, `id="source-device-rows"`,
+				`role="region" aria-label="Source devices table" aria-describedby="source-device-table-hint" tabindex="0"`,
+				"Scroll horizontally to see identity and live traffic details.",
 				`data-source-device-row-refresh`,
 				`hx-get="/frag/sources/src1/device-rows?dir=asc&amp;sort=address"`,
 				`hx-swap="none"`,
@@ -1937,6 +2347,7 @@ func TestSourceDeviceRowSnapshotFragmentContainsRowsOnly(t *testing.T) {
 		`data-device-address="12"`,
 		`hx-get="/frag/sources/src1/overview?device=12&amp;dir=desc&amp;pgn_dir=asc&amp;pgn_sort=pgn&amp;sort=bytes"`,
 		`class="source-device-stat"`,
+		`class="source-device-role"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("source device row snapshot missing %q:\n%s", want, body)
@@ -2076,7 +2487,8 @@ func TestConnectorOverviewPageRendersConfigSummary(t *testing.T) {
 	for _, want := range []string{
 		"connector overview", "NMEA Bridge", "<code>src1</code>", "<code>sink1</code>",
 		"msg.pgn == 127250", "500", "24h0m0s", "1048576",
-		`href="/connectors/conn1/edit"`,
+		`data-overview-summary-row`, `data-overview-configuration`, "Edit connector", `href="/connectors/conn1/edit"`, `hx-get="/connectors/conn1/edit"`,
+		`hx-post="/connectors/conn1/delete?context=overview"`, `hx-target="#overview-delete-feedback"`, "Delete",
 		`aria-label="Breadcrumb"`, `href="/connectors"`, `aria-current="page">NMEA Bridge</span>`,
 		`hx-get="/frag/connectors/conn1/overview"`, `hx-trigger="load, every 500ms"`,
 	} {
@@ -2084,6 +2496,7 @@ func TestConnectorOverviewPageRendersConfigSummary(t *testing.T) {
 			t.Fatalf("connector detail page missing %q:\n%s", want, body)
 		}
 	}
+	assertOverviewGroupOrder(t, body, "connector-overview-live", false)
 }
 
 func TestConnectorDetailPage404ForUnknownID(t *testing.T) {

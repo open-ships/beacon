@@ -3,15 +3,14 @@
   <div class="overview-grid" id="{{.Kind}}-overview-summary"
        hx-get="{{.RefreshHref}}" hx-trigger="every 500ms" hx-select="#{{.Kind}}-overview-summary"
        hx-sync="this:drop" hx-swap="outerHTML swap:0ms settle:0ms">
-    <section class="overview-card component-status-surface state-{{.State}}" aria-label="Status and metrics">
-      <div class="section-heading">
+    <section class="overview-card overview-summary-panel component-status-surface state-{{.State}}" aria-label="Status and metrics">
+      <div class="section-heading overview-summary-heading">
         <h3>Status</h3>
         <div class="status-line">
-          {{if eq .State "up"}}<span class="badge badge-success">up</span>
-          {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
-          {{else if eq .State "error"}}<span class="badge badge-error">error</span>
-          {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
-          <span><code>{{.ID}}</code></span>
+          {{if eq .State "up"}}<span data-status="success" data-variant="outline" class="badge badge-success">up</span>
+          {{else if eq .State "degraded"}}<span data-status="warning" data-variant="outline" class="badge badge-warning">degraded</span>
+          {{else if eq .State "error"}}<span data-status="error" data-variant="outline" class="badge badge-error">error</span>
+          {{else}}<span data-status="neutral" data-variant="outline" class="badge badge-ghost">{{.State}}</span>{{end}}
         </div>
       </div>
       <div class="log-list">
@@ -42,9 +41,10 @@
       </div>
     </section>
   </div>
+</div>
 
-  {{if eq .Kind "source"}}
-  <section class="overview-card" aria-label="Source devices">
+{{if eq .Kind "source"}}
+  <section id="source-devices-panel" class="overview-card" aria-label="Source devices">
     <div class="section-heading source-metrics-heading">
       <div>
         <h3>Source devices</h3>
@@ -52,7 +52,9 @@
       </div>
     </div>
     <div id="source-device-browser" class="source-device-browser">
-    <div id="source-device-table-frame" class="overflow-x-auto">
+    <p id="source-device-table-hint" class="source-device-table-hint">Scroll horizontally to see identity and live traffic details.</p>
+    <div id="source-device-table-frame" class="table-container source-device-table-frame overflow-x-auto"
+         role="region" aria-label="Source devices table" aria-describedby="source-device-table-hint" tabindex="0">
       <table class="table source-device-table">
         <colgroup>
           <col class="source-device-col-address">
@@ -135,7 +137,7 @@
           </h4>
           {{if .SourceDeviceDetail.Device.Role}}<p>{{.SourceDeviceDetail.Device.Role}}</p>{{end}}
         </div>
-        <button class="btn btn-sm" type="button" aria-label="Close device statistics"
+        <button class="btn btn-sm" data-size="sm" data-variant="outline" type="button" aria-label="Close device statistics"
                 data-source-device-dialog-close autofocus
                 hx-get="{{.SourceDeviceDetail.CloseHref}}" hx-target="#source-device-browser"
                 hx-select="#source-device-browser" hx-swap="outerHTML">Close</button>
@@ -156,7 +158,7 @@
           <h4>PGN statistics</h4>
           <p id="source-device-detail-description">Live rates use the recent traffic window; timing percentiles use the bounded interval sample.</p>
         </div>
-        <span class="badge badge-ghost">{{len .SourceDeviceDetail.PGNs}} PGNs</span>
+        <span data-status="neutral" data-variant="outline" class="badge badge-ghost">{{len .SourceDeviceDetail.PGNs}} PGNs</span>
       </div>
       <div class="source-device-pgn-viewport">
         <table id="source-device-pgn-table" class="table source-device-pgn-table">
@@ -245,8 +247,7 @@
     {{end}}
     </div>
   </section>
-  {{end}}
-</div>
+{{end}}
 {{end}}
 
 {{define "source-device-row"}}
@@ -264,13 +265,13 @@
 
 {{define "source-device-row-cells"}}
 <td class="source-device-address"><strong>{{.Address}}</strong></td>
-<td>{{if .DeviceName}}<code>{{.DeviceName}}</code><br><small>identity {{.IdentityNumber}}</small>{{else}}<span class="opacity-70">not claimed</span>{{end}}</td>
-<td>{{if .Manufacturer}}<strong>{{.Manufacturer}}</strong><br><small>code {{.ManufacturerCode}}{{if .ManufacturerInformation}} · {{.ManufacturerInformation}}{{end}}</small>{{else}}<span class="opacity-70">-</span>{{end}}</td>
-<td>{{if .Role}}{{.Role}}{{else}}<span class="opacity-70">-</span>{{end}}</td>
+<td class="source-device-identity">{{if .DeviceName}}<code>{{.DeviceName}}</code><br><small>identity {{.IdentityNumber}}</small>{{else}}<span class="opacity-70">not claimed</span>{{end}}</td>
+<td class="source-device-manufacturer">{{if .Manufacturer}}<strong>{{.Manufacturer}}</strong><br><small>code {{.ManufacturerCode}}{{if .ManufacturerInformation}} · {{.ManufacturerInformation}}{{end}}</small>{{else}}<span class="opacity-70">-</span>{{end}}</td>
+<td class="source-device-role">{{if .Role}}{{.Role}}{{else}}<span class="opacity-70">-</span>{{end}}</td>
 <td class="source-device-stat"><strong>{{.MessagesPerSecText}}</strong></td>
 <td class="source-device-stat"><strong>{{.BytesPerSecText}}</strong></td>
 <td class="source-device-stat"><strong>{{.TrafficShareText}}</strong><br><small>~{{.BusLoadText}} bus load</small></td>
-<td><time datetime="{{.LastSeenTitle}}" title="{{.LastSeenTitle}}">{{.LastSeenText}}</time></td>
+<td class="source-device-last-seen"><time datetime="{{.LastSeenTitle}}" title="{{.LastSeenTitle}}">{{.LastSeenText}}</time></td>
 {{end}}
 
 {{define "source-device-empty-row"}}

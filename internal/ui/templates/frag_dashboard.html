@@ -9,6 +9,21 @@
      "connector-stats" template stops at the ".stat" tiles (see its
      comment): the polling container already exists in dashboard.html, so
      re-rendering it here would double-wrap it after the first swap. */}}
+{{define "dashboard-endpoint-node"}}
+<a class="dag-node dag-node-{{.Kind}} component-status-surface state-{{.State}}{{if .Unused}} dag-node-unused dag-node-unused-{{.Kind}}{{end}}"
+   href="/{{.Kind}}s/{{.ID}}/" data-node-id="{{.ID}}" data-dag-node="{{.Kind}}:{{.ID}}">
+  <div class="dag-node-header">
+    <span class="dag-kind">{{.Kind}}</span>
+    {{if eq .State "up"}}<span data-status="success" data-variant="outline" class="badge badge-success">up</span>
+    {{else if eq .State "degraded"}}<span data-status="warning" data-variant="outline" class="badge badge-warning">degraded</span>
+    {{else if eq .State "error"}}<span data-status="error" data-variant="outline" class="badge badge-error">error</span>
+    {{else}}<span data-status="neutral" data-variant="outline" class="badge badge-ghost">{{.State}}</span>{{end}}
+  </div>
+  <div class="dag-node-title">{{.Name}}</div>
+  <div class="dag-node-meta"><code>{{.ID}}</code><span>{{.Type}}</span>{{if .Detail}}<span>{{.Detail}}</span>{{end}}</div>
+</a>
+{{end}}
+
 {{define "dashboard-content"}}
 <div class="home-flow">
   <section class="home-flow-header" aria-label="Data flow overview">
@@ -17,67 +32,100 @@
       <h2>Data flow</h2>
     </div>
     <div class="home-flow-actions">
-      <a class="btn" href="/sources/new">New source</a>
-      <a class="btn" href="/sinks/new">New sink</a>
-      <a class="btn btn-primary" href="/connectors/new">New connector</a>
+      <a class="btn" data-variant="outline" href="/sources/new"
+         hx-get="/sources/new" hx-target="#entity-create-dialog-container" hx-swap="innerHTML">New source</a>
+      <a class="btn" data-variant="outline" href="/sinks/new"
+         hx-get="/sinks/new" hx-target="#entity-create-dialog-container" hx-swap="innerHTML">New sink</a>
+      <a class="btn btn-primary" data-variant="primary" href="/connectors/new"
+         hx-get="/connectors/new" hx-target="#entity-create-dialog-container" hx-swap="innerHTML">New connector</a>
     </div>
   </section>
 
-  {{if .Flows}}
+  {{if or .Sources .Sinks .Flows}}
   <section class="dag-board" aria-label="Configured source connector sink graph">
-    <div class="dag-label dag-label-source">Sources</div>
-    <div class="dag-label dag-label-connector">Connectors</div>
-    <div class="dag-label dag-label-sink">Sinks</div>
-    {{range .Flows}}
-    <div class="dag-row">
-      <a class="dag-node dag-node-source component-status-surface state-{{.Source.State}}" href="/sources/{{.Source.ID}}/" data-node-id="{{.Source.ID}}">
-        <div class="dag-node-header">
-          <span class="dag-kind">source</span>
-          {{if eq .Source.State "up"}}<span class="badge badge-success">up</span>
-          {{else if eq .Source.State "degraded"}}<span class="badge badge-warning">degraded</span>
-          {{else if eq .Source.State "error"}}<span class="badge badge-error">error</span>
-          {{else}}<span class="badge badge-ghost">{{.Source.State}}</span>{{end}}
-        </div>
-        <div class="dag-node-title">{{.Source.Name}}</div>
-        <div class="dag-node-meta"><code>{{.Source.ID}}</code><span>{{.Source.Type}}</span>{{if .Source.Detail}}<span>{{.Source.Detail}}</span>{{end}}</div>
-      </a>
+    {{if or .GraphSources .GraphSinks .Flows}}
+    <div class="dag-flow-grid" data-dag-board>
+      <div class="dag-label dag-label-source">Sources</div>
+      <div class="dag-label dag-label-connector">Connectors</div>
+      <div class="dag-label dag-label-sink">Sinks</div>
 
-      <div class="dag-link state-{{.State}}" aria-hidden="true"></div>
+      <div class="dag-column dag-column-source">
+        {{range .GraphSources}}{{template "dashboard-endpoint-node" .}}{{end}}
+      </div>
 
-      <a class="dag-node dag-node-connector component-status-surface state-{{.State}}" href="/connectors/{{.ID}}/" data-connector-id="{{.ID}}">
-        <div class="dag-node-header">
-          <span class="dag-kind">connector</span>
-          <span class="badge {{if .Enabled}}badge-success{{else}}badge-ghost{{end}}">{{if .Enabled}}enabled{{else}}disabled{{end}}</span>
-          {{if .Enabled}}
-          {{if eq .State "up"}}<span class="badge badge-success">up</span>
-          {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
-          {{else if eq .State "error"}}<span class="badge badge-error">error</span>
-          {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
-          {{end}}
-        </div>
-        <div class="dag-node-title">{{.Name}}</div>
-        <div class="dag-node-meta"><code>{{.ID}}</code><span>{{.EffectiveMode}}</span><span>{{len .Filters}} filters</span></div>
-        <div class="dag-metrics">
-          <span><strong>{{printf "%.2f" .Snapshot.MsgPerSec}}</strong> msg/s</span>
-          <span><strong>{{.BytesPerSecText}}</strong></span>
-          <span><strong>{{.Snapshot.QueueDepth}}</strong> queued</span>
-        </div>
-      </a>
+      <div class="dag-column dag-column-connector">
+        {{range .Flows}}
+        <a class="dag-node dag-node-connector component-status-surface state-{{.State}}" href="/connectors/{{.ID}}/" data-connector-id="{{.ID}}" data-dag-node="connector:{{.ID}}">
+          <div class="dag-node-header">
+            <span class="dag-kind">connector</span>
+            <span data-status="{{if .Enabled}}success{{else}}neutral{{end}}" data-variant="outline" class="badge {{if .Enabled}}badge-success{{else}}badge-ghost{{end}}">{{if .Enabled}}enabled{{else}}disabled{{end}}</span>
+            {{if .Enabled}}
+            {{if eq .State "up"}}<span data-status="success" data-variant="outline" class="badge badge-success">up</span>
+            {{else if eq .State "degraded"}}<span data-status="warning" data-variant="outline" class="badge badge-warning">degraded</span>
+            {{else if eq .State "error"}}<span data-status="error" data-variant="outline" class="badge badge-error">error</span>
+            {{else}}<span data-status="neutral" data-variant="outline" class="badge badge-ghost">{{.State}}</span>{{end}}
+            {{end}}
+          </div>
+          <div class="dag-node-title">{{.Name}}</div>
+          <div class="dag-node-route">
+            <span>{{.Source.Name}}</span><span aria-hidden="true">&rarr;</span><span>{{.Sink.Name}}</span>
+          </div>
+          <div class="dag-node-meta"><code>{{.ID}}</code><span>{{.EffectiveMode}}</span><span>{{len .Filters}} filters</span></div>
+          <div class="dag-metrics">
+            <span><strong>{{printf "%.2f" .Snapshot.MsgPerSec}}</strong> msg/s</span>
+            <span><strong>{{.BytesPerSecText}}</strong></span>
+            <span><strong>{{.Snapshot.QueueDepth}}</strong> queued</span>
+          </div>
+        </a>
+        {{end}}
+      </div>
 
-      <div class="dag-link state-{{.State}}" aria-hidden="true"></div>
+      <div class="dag-column dag-column-sink">
+        {{range .GraphSinks}}{{template "dashboard-endpoint-node" .}}{{end}}
+      </div>
 
-      <a class="dag-node dag-node-sink component-status-surface state-{{.Sink.State}}" href="/sinks/{{.Sink.ID}}/" data-node-id="{{.Sink.ID}}">
-        <div class="dag-node-header">
-          <span class="dag-kind">sink</span>
-          {{if eq .Sink.State "up"}}<span class="badge badge-success">up</span>
-          {{else if eq .Sink.State "degraded"}}<span class="badge badge-warning">degraded</span>
-          {{else if eq .Sink.State "error"}}<span class="badge badge-error">error</span>
-          {{else}}<span class="badge badge-ghost">{{.Sink.State}}</span>{{end}}
-        </div>
-        <div class="dag-node-title">{{.Sink.Name}}</div>
-        <div class="dag-node-meta"><code>{{.Sink.ID}}</code><span>{{.Sink.Type}}</span>{{if .Sink.Detail}}<span>{{.Sink.Detail}}</span>{{end}}</div>
-      </a>
+      <svg class="dag-edges" aria-hidden="true">
+        {{range .Flows}}
+        <path class="dag-edge state-{{.State}}" data-dag-from="source:{{.Source.ID}}" data-dag-to="connector:{{.ID}}"></path>
+        <path class="dag-edge state-{{.State}}" data-dag-from="connector:{{.ID}}" data-dag-to="sink:{{.Sink.ID}}"></path>
+        {{end}}
+      </svg>
     </div>
+    {{end}}
+
+    {{if or .UnusedSources .UnusedSinks}}
+    <section class="dag-unused" aria-labelledby="unused-endpoints-title">
+      <div class="dag-unused-heading">
+        <div>
+          <h3 id="unused-endpoints-title">Unused endpoints</h3>
+          <p>Enabled sources and sinks without a configured connector.</p>
+        </div>
+      </div>
+      <div class="dag-unused-grid">
+        {{if .UnusedSources}}
+        <div class="dag-unused-group dag-unused-group-source">
+          <div class="dag-unused-group-heading">
+            <span>Sources</span>
+            <span>{{len .UnusedSources}} unused</span>
+          </div>
+          <div class="dag-unused-list">
+            {{range .UnusedSources}}{{template "dashboard-endpoint-node" .}}{{end}}
+          </div>
+        </div>
+        {{end}}
+        {{if .UnusedSinks}}
+        <div class="dag-unused-group dag-unused-group-sink">
+          <div class="dag-unused-group-heading">
+            <span>Sinks</span>
+            <span>{{len .UnusedSinks}} unused</span>
+          </div>
+          <div class="dag-unused-list">
+            {{range .UnusedSinks}}{{template "dashboard-endpoint-node" .}}{{end}}
+          </div>
+        </div>
+        {{end}}
+      </div>
+    </section>
     {{end}}
   </section>
   {{else}}
@@ -85,7 +133,8 @@
     <p class="eyebrow">Setup</p>
     <h2>{{.EmptyTitle}}</h2>
     <p>{{.EmptyMessage}}</p>
-    <a class="btn btn-primary" href="{{.EmptyHref}}">{{.EmptyCTA}}</a>
+    <a class="btn btn-primary" data-variant="primary" href="{{.EmptyHref}}"
+       hx-get="{{.EmptyHref}}" hx-target="#entity-create-dialog-container" hx-swap="innerHTML">{{.EmptyCTA}}</a>
   </section>
   {{end}}
 
@@ -94,7 +143,7 @@
       <div class="section-heading">
         <h3>Sources</h3>
       </div>
-      <div class="overflow-x-auto">
+      <div class="table-container overflow-x-auto">
         <table class="table metadata-table">
           <thead>
             <tr>
@@ -114,10 +163,10 @@
               <td>{{.Type}}</td>
               <td>{{if .Detail}}<code>{{.Detail}}</code>{{else}}<span class="opacity-70">-</span>{{end}}</td>
               <td>
-                {{if eq .State "up"}}<span class="badge badge-success">up</span>
-                {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
-                {{else if eq .State "error"}}<span class="badge badge-error">error</span>
-                {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
+                {{if eq .State "up"}}<span data-status="success" data-variant="outline" class="badge badge-success">up</span>
+                {{else if eq .State "degraded"}}<span data-status="warning" data-variant="outline" class="badge badge-warning">degraded</span>
+                {{else if eq .State "error"}}<span data-status="error" data-variant="outline" class="badge badge-error">error</span>
+                {{else}}<span data-status="neutral" data-variant="outline" class="badge badge-ghost">{{.State}}</span>{{end}}
               </td>
               <td>
                 <span class="usage-cell">
@@ -138,7 +187,7 @@
       <div class="section-heading">
         <h3>Sinks</h3>
       </div>
-      <div class="overflow-x-auto">
+      <div class="table-container overflow-x-auto">
         <table class="table metadata-table">
           <thead>
             <tr>
@@ -158,10 +207,10 @@
               <td>{{.Type}}</td>
               <td>{{if .Detail}}<code>{{.Detail}}</code>{{else}}<span class="opacity-70">-</span>{{end}}</td>
               <td>
-                {{if eq .State "up"}}<span class="badge badge-success">up</span>
-                {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
-                {{else if eq .State "error"}}<span class="badge badge-error">error</span>
-                {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
+                {{if eq .State "up"}}<span data-status="success" data-variant="outline" class="badge badge-success">up</span>
+                {{else if eq .State "degraded"}}<span data-status="warning" data-variant="outline" class="badge badge-warning">degraded</span>
+                {{else if eq .State "error"}}<span data-status="error" data-variant="outline" class="badge badge-error">error</span>
+                {{else}}<span data-status="neutral" data-variant="outline" class="badge badge-ghost">{{.State}}</span>{{end}}
               </td>
               <td>
                 <span class="usage-cell">
@@ -182,7 +231,7 @@
       <div class="section-heading">
         <h3>Connectors</h3>
       </div>
-      <div class="overflow-x-auto">
+      <div class="table-container overflow-x-auto">
         <table class="table metadata-table">
           <thead>
             <tr>
@@ -207,14 +256,14 @@
                 <a class="link" href="/sinks/{{.Sink.ID}}/">{{.Sink.Name}}</a>
               </td>
               <td>
-                {{if .Enabled}}<span class="badge badge-success">enabled</span>
-                {{else}}<span class="badge badge-ghost">disabled</span>{{end}}
+                {{if .Enabled}}<span data-status="success" data-variant="outline" class="badge badge-success">enabled</span>
+                {{else}}<span data-status="neutral" data-variant="outline" class="badge badge-ghost">disabled</span>{{end}}
               </td>
               <td>
-                {{if eq .State "up"}}<span class="badge badge-success">up</span>
-                {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
-                {{else if eq .State "error"}}<span class="badge badge-error">error</span>
-                {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
+                {{if eq .State "up"}}<span data-status="success" data-variant="outline" class="badge badge-success">up</span>
+                {{else if eq .State "degraded"}}<span data-status="warning" data-variant="outline" class="badge badge-warning">degraded</span>
+                {{else if eq .State "error"}}<span data-status="error" data-variant="outline" class="badge badge-error">error</span>
+                {{else}}<span data-status="neutral" data-variant="outline" class="badge badge-ghost">{{.State}}</span>{{end}}
               </td>
               <td>{{len .Filters}}</td>
               <td>{{printf "%.2f" .Snapshot.MsgPerSec}}</td>
@@ -232,9 +281,9 @@
     <section class="metadata-section" aria-label="SocketCAN diagnostics">
       <div class="section-heading">
         <h3>SocketCAN diagnostics</h3>
-        <a class="btn btn-sm" href="/api/v1/n2k/commissioning-report">Commissioning report</a>
+        <a class="btn btn-sm" data-size="sm" data-variant="outline" href="/api/v1/n2k/commissioning-report">Commissioning report</a>
       </div>
-      <div class="overflow-x-auto">
+      <div class="table-container overflow-x-auto">
         <table class="table metadata-table">
           <thead><tr><th>Interface</th><th>Link</th><th>CAN state</th><th>Bitrate</th><th>Bus load</th><th>RX / TX</th><th>Errors</th><th>Dropped</th></tr></thead>
           <tbody>{{range .CANInterfaces}}<tr>
@@ -255,11 +304,11 @@
       <div class="section-heading">
         <h3>Bus devices</h3>
         <div class="home-flow-actions">
-          <a class="btn btn-sm" href="/api/v1/n2k/commissioning-report">Download report</a>
-          {{if .CanCommitBaseline}}<button class="btn btn-sm btn-primary" hx-post="/n2k/inventory/baseline" hx-confirm="Accept every currently online device as the commissioning baseline?">Commit baseline</button>{{end}}
+          <a class="btn btn-sm" data-size="sm" data-variant="outline" href="/api/v1/n2k/commissioning-report">Download report</a>
+          {{if .CanCommitBaseline}}<button class="btn btn-sm btn-primary" data-size="sm" data-variant="primary" hx-post="/n2k/inventory/baseline" hx-confirm="Accept every currently online device as the commissioning baseline?">Commit baseline</button>{{end}}
         </div>
       </div>
-      <div class="overflow-x-auto">
+      <div class="table-container overflow-x-auto">
         <table class="table metadata-table">
           <thead>
             <tr>
@@ -283,8 +332,8 @@
             {{range .Devices}}
             <tr>
               <td><code>{{.Endpoint}}</code></td>
-              <td>{{if eq .Status "online"}}<span class="badge badge-success">online</span>{{else if eq .Status "new"}}<span class="badge badge-warning">new</span>{{else if eq .Status "changed"}}<span class="badge badge-error">changed</span>{{else if eq .Status "missing"}}<span class="badge badge-error">missing</span>{{else}}<span class="badge badge-ghost">{{if .Status}}{{.Status}}{{else}}live{{end}}</span>{{end}}</td>
-              <td><form class="flex gap-1" hx-post="/n2k/inventory/{{.NameKey}}/label"><input type="hidden" name="endpoint" value="{{.Endpoint}}"><input class="input input-sm" name="label" value="{{.Label}}" aria-label="Device label"><button class="btn btn-sm" type="submit">Set</button></form></td>
+              <td>{{if eq .Status "online"}}<span data-status="success" data-variant="outline" class="badge badge-success">online</span>{{else if eq .Status "new"}}<span data-status="warning" data-variant="outline" class="badge badge-warning">new</span>{{else if eq .Status "changed"}}<span data-status="error" data-variant="outline" class="badge badge-error">changed</span>{{else if eq .Status "missing"}}<span data-status="error" data-variant="outline" class="badge badge-error">missing</span>{{else}}<span data-status="neutral" data-variant="outline" class="badge badge-ghost">{{if .Status}}{{.Status}}{{else}}live{{end}}</span>{{end}}</td>
+              <td><form class="flex gap-1" hx-post="/n2k/inventory/{{.NameKey}}/label"><input type="hidden" name="endpoint" value="{{.Endpoint}}"><input class="input input-sm" name="label" value="{{.Label}}" aria-label="Device label"><button class="btn btn-sm" data-size="sm" data-variant="outline" type="submit">Set</button></form></td>
               <td>{{.Address}}</td>
               <td><code>{{.Name}}</code></td>
               <td>{{if .Manufacturer}}{{.Manufacturer}}{{else}}<span class="opacity-70">-</span>{{end}}</td>

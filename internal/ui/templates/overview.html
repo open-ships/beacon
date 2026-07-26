@@ -6,20 +6,61 @@
       <h1>{{.Heading}}</h1>
       <p>{{.Description}}</p>
     </div>
-    <a class="btn" href="{{.EditHref}}">Edit</a>
   </div>
 
-  <section class="overview-card" aria-label="Configuration">
-    <div class="section-heading">
-      <h3>Configuration</h3>
+  <div class="overview-summary-row" data-overview-summary-row>
+    <section class="overview-card overview-summary-panel overview-config-panel" data-overview-configuration
+             aria-labelledby="{{.Kind}}-configuration-title">
+      <div class="section-heading overview-summary-heading overview-config-heading">
+        <h3 id="{{.Kind}}-configuration-title">Configuration</h3>
+        <div class="overview-config-actions">
+          <a class="btn btn-sm" data-size="sm" data-variant="outline" href="{{.EditHref}}"
+             hx-get="{{.EditHref}}" hx-target="#entity-create-dialog-container"
+             hx-swap="innerHTML">Edit {{.Kind}}</a>
+          <button type="button" class="btn btn-sm btn-error" data-size="sm" data-variant="destructive"
+                  hx-post="{{.DeleteHref}}" hx-target="#overview-delete-feedback" hx-swap="innerHTML"
+                  hx-confirm="Delete {{.Kind}} &quot;{{.Heading}}&quot;? This cannot be undone.">
+            Delete
+          </button>
+        </div>
+      </div>
+      <div id="overview-delete-feedback" aria-live="assertive"></div>
+      <dl class="config-list">
+        {{range .ConfigRows}}
+        <div class="config-item{{if gt (len .Value) 32}} config-item-wide{{end}}">
+          <dt>{{.Label}}</dt>
+          <dd>{{if .Code}}<code>{{.Value}}</code>{{else}}{{.Value}}{{end}}</dd>
+        </div>
+        {{end}}
+      </dl>
+    </section>
+
+    <div id="{{.LiveDOMID}}" class="overview-live overview-live-loading"
+         hx-get="{{.LiveHref}}" hx-trigger="load, every 500ms"
+         hx-select="#{{.LiveDOMID}}" hx-swap="outerHTML"
+         aria-live="polite" aria-busy="true">
+      <section class="overview-card overview-summary-panel overview-status-loading" aria-label="Status">
+        <div class="section-heading overview-summary-heading">
+          <h3>Status</h3>
+          <span data-status="neutral" data-variant="outline" class="badge badge-ghost">loading</span>
+        </div>
+        <p>Loading runtime health…</p>
+      </section>
     </div>
-    <dl class="config-list">
-      {{range .ConfigRows}}
-      <dt>{{.Label}}</dt>
-      <dd>{{if .Code}}<code>{{.Value}}</code>{{else}}{{.Value}}{{end}}</dd>
-      {{end}}
-    </dl>
+  </div>
+
+  {{if eq .Kind "source"}}
+  <section id="source-devices-panel" class="overview-card overview-devices-loading"
+           aria-label="Source devices" aria-busy="true"
+           hx-get="{{.LiveHref}}" hx-trigger="load"
+           hx-select="#source-devices-panel" hx-swap="outerHTML">
+    <div class="section-heading">
+      <h3>Source devices</h3>
+      <span data-status="neutral" data-variant="outline" class="badge badge-ghost">loading</span>
+    </div>
+    <p>Loading observed devices…</p>
   </section>
+  {{end}}
 
   {{if .StreamHref}}
   <section class="overview-card stream-panel"
@@ -46,22 +87,22 @@
                  placeholder="CEL filter, e.g. msg.pgn == 129026">
           <span class="stream-filter-feedback" data-stream-filter-feedback role="alert" hidden></span>
         </label>
-        <button type="button" class="btn btn-sm btn-primary" data-stream-start>Start</button>
-        <button type="button" class="btn btn-sm" data-stream-stop hidden>Stop</button>
-        <button type="button" class="btn btn-sm btn-ghost" data-stream-clear disabled>Clear</button>
+        <button type="button" class="btn btn-sm btn-primary" data-size="sm" data-variant="primary" data-stream-start>Start</button>
+        <button type="button" class="btn btn-sm" data-size="sm" data-variant="outline" data-stream-stop hidden>Stop</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-size="sm" data-variant="ghost" data-stream-clear disabled>Clear</button>
       </div>
     </div>
 
     <div class="stream-toolbar">
       <div class="stream-view-switch" role="group" aria-label="Stream display format">
-        <button type="button" class="btn btn-sm btn-primary" data-stream-view="json" aria-pressed="true">JSONL</button>
-        <button type="button" class="btn btn-sm btn-ghost" data-stream-view="can" aria-pressed="false">CAN bytes</button>
+        <button type="button" class="btn btn-sm btn-primary" data-size="sm" data-variant="primary" data-stream-view="json" aria-pressed="true">JSONL</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-size="sm" data-variant="ghost" data-stream-view="can" aria-pressed="false">CAN bytes</button>
       </div>
       <div class="stream-export-controls" aria-label="Export captured stream">
-        <button type="button" class="btn btn-sm" data-stream-export="json" disabled>Export JSONL</button>
-        <button type="button" class="btn btn-sm" data-stream-export="can" disabled
+        <button type="button" class="btn btn-sm" data-size="sm" data-variant="outline" data-stream-export="json" disabled>Export JSONL</button>
+        <button type="button" class="btn btn-sm" data-size="sm" data-variant="outline" data-stream-export="can" disabled
                 title="One hexadecimal CAN payload per line">Export CAN</button>
-        <button type="button" class="btn btn-sm" data-stream-copy disabled
+        <button type="button" class="btn btn-sm" data-size="sm" data-variant="outline" data-stream-copy disabled
                 title="Copy all retained messages in arrival order">Copy stream</button>
         <span class="stream-copy-feedback" data-stream-copy-feedback aria-live="polite"></span>
       </div>
@@ -74,9 +115,9 @@
         <code class="stream-cel-expression" data-stream-cel-expression>has(msg.payload)</code>
       </div>
       <div class="stream-cel-inspector-actions">
-        <button type="button" class="btn btn-sm btn-primary" data-stream-cel-use>Use filter</button>
-        <button type="button" class="btn btn-sm" data-stream-cel-copy>Copy CEL</button>
-        <button type="button" class="btn btn-sm btn-ghost" data-stream-cel-close aria-label="Close CEL suggestion">Close</button>
+        <button type="button" class="btn btn-sm btn-primary" data-size="sm" data-variant="primary" data-stream-cel-use>Use filter</button>
+        <button type="button" class="btn btn-sm" data-size="sm" data-variant="outline" data-stream-cel-copy>Copy CEL</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-size="sm" data-variant="ghost" data-stream-cel-close aria-label="Close CEL suggestion">Close</button>
       </div>
     </aside>
 
@@ -87,8 +128,5 @@
     <div class="stream-list" data-stream-list hidden></div>
   </section>
   {{end}}
-
-  <div id="{{.LiveDOMID}}" class="overview-live"
-       hx-get="{{.LiveHref}}" hx-trigger="load, every 500ms" hx-swap="outerHTML"></div>
 </div>
 {{end}}

@@ -55,6 +55,14 @@ test-v:
 test-browser:
     npm test
 
+# compile Tailwind and Basecoat into the embedded stylesheet
+css:
+    npm run build:css
+
+# rebuild the embedded stylesheet while templates and styles change
+css-watch:
+    npm run dev:css
+
 # run browser end-to-end tests in Playwright's interactive UI
 test-browser-ui:
     npm run test:ui

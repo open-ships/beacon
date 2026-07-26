@@ -21,6 +21,8 @@ package ui
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -45,6 +47,39 @@ import (
 type alertData struct {
 	Kind    string
 	Message string
+}
+
+// generatedEntityID returns the short opaque id used by the source, sink,
+// and connector creation forms. Four random bytes render as eight lowercase
+// hexadecimal characters: compact enough to scan in the UI while avoiding
+// user-authored naming and keeping collisions negligible at Beacon's scale.
+func generatedEntityID() (string, error) {
+	var raw [4]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate entity id: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+func isHTMXRequest(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("HX-Request"), "true")
+}
+
+// writeOverviewDeleteResult handles delete actions originating on an entity
+// overview. Successful deletes leave the now-invalid detail URL; failed
+// deletes keep the operator in context and render the recovery message beside
+// the action. List-page deletes retain their existing table-fragment response.
+func writeOverviewDeleteResult(w http.ResponseWriter, r *http.Request, log *slog.Logger, listHref string, alert *alertData) bool {
+	if r.URL.Query().Get("context") != "overview" {
+		return false
+	}
+	if alert.Kind == "success" {
+		w.Header().Set("HX-Redirect", listHref)
+		w.WriteHeader(http.StatusNoContent)
+		return true
+	}
+	renderFragment(w, log, "overview-delete-alert", alert)
+	return true
 }
 
 // referencingConnectorNames returns the ids of every connector referencing
@@ -267,14 +302,14 @@ type sourceTypeFieldsData struct {
 }
 
 // sourceFormViewData is frag_source_form.html's data. IsEdit controls
-// whether the id field renders disabled+hidden (edit) or editable
-// (create), per the behavior contract. It doubles as the intermediate
-// representation built from either a model.Source (opening the edit form)
-// or a raw *http.Request (redisplaying a submission that failed
-// validation — see writeSource), which is why fields are plain strings
-// rather than typed model.SourceType etc.
+// whether the immutable id is shown disabled (edit) or carried only as a
+// generated hidden value (create). InDialog switches the shared modal form's
+// cancel/close behavior without duplicating its fields. The type doubles as
+// the intermediate representation built from either a model.Source or a raw
+// *http.Request after validation fails.
 type sourceFormViewData struct {
 	IsEdit     bool
+	InDialog   bool
 	ID         string
 	Name       string
 	Enabled    bool
@@ -307,15 +342,13 @@ func sourceFormViewFromModel(v model.Source, can, serial []string) sourceFormVie
 	}
 }
 
-// blankSourceFormView builds a source-form view for the canonical create
-// page: every field empty, Type defaulted to "socketcan" so the initial
-// render already shows its matching field (interface) instead of no
-// type-specific field at all — the type select's first <option> is
-// socketcan too (see frag_source_form.html), so this keeps the dropdown and
-// the fields it controls in sync before any hx-get-driven change event ever
-// fires.
+// blankSourceFormView builds a source create view with Enabled on and Type
+// defaulted to "socketcan", keeping the initial select and type-specific
+// fields in sync before any hx-get-driven change event fires. The handler
+// supplies its generated ID because random generation can fail.
 func blankSourceFormView(can, serial []string) sourceFormViewData {
 	return sourceFormViewData{
+		Enabled: true,
 		TypeFields: sourceTypeFieldsData{
 			Type:          string(model.SourceSocketCAN),
 			CANInterfaces: can,
@@ -330,10 +363,11 @@ func blankSourceFormView(can, serial []string) sourceFormViewData {
 // the operator typed rather than falling back to blank/stored values.
 func sourceFormViewFromRequest(r *http.Request, isEdit bool, can, serial []string) sourceFormViewData {
 	return sourceFormViewData{
-		IsEdit:  isEdit,
-		ID:      r.PostFormValue("id"),
-		Name:    r.PostFormValue("name"),
-		Enabled: r.PostFormValue("enabled") != "",
+		IsEdit:   isEdit,
+		InDialog: r.PostFormValue("dialog") != "",
+		ID:       r.PostFormValue("id"),
+		Name:     r.PostFormValue("name"),
+		Enabled:  r.PostFormValue("enabled") != "",
 		TypeFields: sourceTypeFieldsData{
 			Type:          r.PostFormValue("type"),
 			Interface:     r.PostFormValue("interface"),
@@ -411,16 +445,30 @@ func handleSourcesPage(svc *config.Service, statuses func() []supervisor.Status,
 	}
 }
 
-// handleSourceNewPage serves GET /sources/new: the canonical create page.
+// handleSourceNewPage serves GET /sources/new as a modal fragment for htmx
+// callers and as a full-page progressive-enhancement fallback otherwise.
 func handleSourceNewPage(svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		can, serial := discoverHardware()
 		form := blankSourceFormView(can, serial)
+		id, err := generatedEntityID()
+		if err != nil {
+			log.Error("ui: generate source id failed", "err", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		form.ID = id
+		if isHTMXRequest(r) {
+			form.InDialog = true
+			renderFragment(w, log, "source-create-dialog", form)
+			return
+		}
 		renderSourcesPage(w, r, svc, statuses, version, log, &form)
 	}
 }
 
-// handleSourceEditPage serves GET /sources/{id}/edit: the canonical edit page.
+// handleSourceEditPage serves GET /sources/{id}/edit as a modal fragment for
+// htmx callers and as a full-page progressive-enhancement fallback otherwise.
 func handleSourceEditPage(svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		can, serial := discoverHardware()
@@ -435,6 +483,11 @@ func handleSourceEditPage(svc *config.Service, statuses func() []supervisor.Stat
 			return
 		}
 		form := sourceFormViewFromModel(v, can, serial)
+		if isHTMXRequest(r) {
+			form.InDialog = true
+			renderFragment(w, log, "source-create-dialog", form)
+			return
+		}
 		renderSourcesPage(w, r, svc, statuses, version, log, &form)
 	}
 }
@@ -503,6 +556,14 @@ func writeSource(w http.ResponseWriter, r *http.Request, svc *config.Service, lo
 	view := sourceFormViewFromRequest(r, !isCreate, can, serial)
 	if !isCreate {
 		view.ID = pathID
+	} else if view.ID == "" {
+		id, err := generatedEntityID()
+		if err != nil {
+			log.Error("ui: generate source id failed", "err", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		view.ID = id
 	}
 	v, err := view.toModel()
 	if err != nil {
@@ -522,6 +583,11 @@ func writeSource(w http.ResponseWriter, r *http.Request, svc *config.Service, lo
 	}
 	if isCreate {
 		flashRedirect(w, fmt.Sprintf("Source %q created", v.ID), "/dashboard")
+		return
+	}
+	if view.InDialog {
+		w.Header().Set("HX-Refresh", "true")
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	sources, err := svc.ListSources(r.Context())
@@ -589,6 +655,9 @@ func handleSourceDelete(svc *config.Service, log *slog.Logger) http.HandlerFunc 
 		default:
 			log.Error("ui: delete source failed", "err", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if writeOverviewDeleteResult(w, r, log, "/sources", alert) {
 			return
 		}
 		sources, err := svc.ListSources(r.Context())
@@ -721,6 +790,7 @@ func fileSinkDefaults() (maxFileBytes, maxFiles string) {
 // sinkFormViewData is frag_sink_form.html's data.
 type sinkFormViewData struct {
 	IsEdit     bool
+	InDialog   bool
 	ID         string
 	Name       string
 	Enabled    bool
@@ -758,6 +828,7 @@ func sinkFormViewFromModel(v model.Sink, can, serial []string) sinkFormViewData 
 func blankSinkFormView(can, serial []string) sinkFormViewData {
 	defMaxFileBytes, defMaxFiles := fileSinkDefaults()
 	return sinkFormViewData{
+		Enabled: true,
 		TypeFields: sinkTypeFieldsData{
 			Type:                string(model.SinkSocketCAN),
 			DefaultMaxFileBytes: defMaxFileBytes,
@@ -771,10 +842,11 @@ func blankSinkFormView(can, serial []string) sinkFormViewData {
 func sinkFormViewFromRequest(r *http.Request, isEdit bool, can, serial []string) sinkFormViewData {
 	defMaxFileBytes, defMaxFiles := fileSinkDefaults()
 	return sinkFormViewData{
-		IsEdit:  isEdit,
-		ID:      r.PostFormValue("id"),
-		Name:    r.PostFormValue("name"),
-		Enabled: r.PostFormValue("enabled") != "",
+		IsEdit:   isEdit,
+		InDialog: r.PostFormValue("dialog") != "",
+		ID:       r.PostFormValue("id"),
+		Name:     r.PostFormValue("name"),
+		Enabled:  r.PostFormValue("enabled") != "",
 		TypeFields: sinkTypeFieldsData{
 			Type:                r.PostFormValue("type"),
 			Interface:           r.PostFormValue("interface"),
@@ -864,16 +936,30 @@ func handleSinksPage(svc *config.Service, statuses func() []supervisor.Status, v
 	}
 }
 
-// handleSinkNewPage serves GET /sinks/new: the canonical create page.
+// handleSinkNewPage serves GET /sinks/new as a modal fragment for htmx
+// callers and as a full-page progressive-enhancement fallback otherwise.
 func handleSinkNewPage(svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		can, serial := discoverHardware()
 		form := blankSinkFormView(can, serial)
+		id, err := generatedEntityID()
+		if err != nil {
+			log.Error("ui: generate sink id failed", "err", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		form.ID = id
+		if isHTMXRequest(r) {
+			form.InDialog = true
+			renderFragment(w, log, "sink-create-dialog", form)
+			return
+		}
 		renderSinksPage(w, r, svc, statuses, version, log, &form)
 	}
 }
 
-// handleSinkEditPage serves GET /sinks/{id}/edit: the canonical edit page.
+// handleSinkEditPage serves GET /sinks/{id}/edit as a modal fragment for
+// htmx callers and as a full-page progressive-enhancement fallback otherwise.
 func handleSinkEditPage(svc *config.Service, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		can, serial := discoverHardware()
@@ -888,6 +974,11 @@ func handleSinkEditPage(svc *config.Service, statuses func() []supervisor.Status
 			return
 		}
 		form := sinkFormViewFromModel(v, can, serial)
+		if isHTMXRequest(r) {
+			form.InDialog = true
+			renderFragment(w, log, "sink-create-dialog", form)
+			return
+		}
 		renderSinksPage(w, r, svc, statuses, version, log, &form)
 	}
 }
@@ -948,6 +1039,14 @@ func writeSink(w http.ResponseWriter, r *http.Request, svc *config.Service, log 
 	view := sinkFormViewFromRequest(r, !isCreate, can, serial)
 	if !isCreate {
 		view.ID = pathID
+	} else if view.ID == "" {
+		id, err := generatedEntityID()
+		if err != nil {
+			log.Error("ui: generate sink id failed", "err", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		view.ID = id
 	}
 	v, err := view.toModel()
 	if err != nil {
@@ -967,6 +1066,11 @@ func writeSink(w http.ResponseWriter, r *http.Request, svc *config.Service, log 
 	}
 	if isCreate {
 		flashRedirect(w, fmt.Sprintf("Sink %q created", v.ID), "/dashboard")
+		return
+	}
+	if view.InDialog {
+		w.Header().Set("HX-Refresh", "true")
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	sinks, err := svc.ListSinks(r.Context())
@@ -1005,6 +1109,9 @@ func handleSinkDelete(svc *config.Service, log *slog.Logger) http.HandlerFunc {
 		default:
 			log.Error("ui: delete sink failed", "err", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if writeOverviewDeleteResult(w, r, log, "/sinks", alert) {
 			return
 		}
 		sinks, err := svc.ListSinks(r.Context())
@@ -1096,6 +1203,7 @@ type connectorsPageData struct {
 // submission — see writeConnector).
 type connectorFormViewData struct {
 	IsEdit            bool
+	InDialog          bool
 	ID                string
 	Name              string
 	Enabled           bool
@@ -1231,11 +1339,15 @@ func connectorFormViewFromModel(v model.Connector, sources []model.Source, sinks
 	}
 }
 
-// blankConnectorFormView builds a connector-form view for the canonical
-// create page: every field empty except the source/sink lists the <select>s
-// need to populate their <option>s.
+// blankConnectorFormView builds an enabled connector create view with the
+// source/sink lists its selects need and semantic bridge mode selected.
 func blankConnectorFormView(sources []model.Source, sinks []model.Sink) connectorFormViewData {
-	return connectorFormViewData{Sources: sources, Sinks: sinks, Mode: string(model.BridgeSemantic)}
+	return connectorFormViewData{
+		Enabled: true,
+		Sources: sources,
+		Sinks:   sinks,
+		Mode:    string(model.BridgeSemantic),
+	}
 }
 
 // connectorFormViewFromRequest rebuilds a connector-form view from a
@@ -1246,6 +1358,7 @@ func blankConnectorFormView(sources []model.Source, sinks []model.Sink) connecto
 func connectorFormViewFromRequest(r *http.Request, isEdit bool, sources []model.Source, sinks []model.Sink) connectorFormViewData {
 	return connectorFormViewData{
 		IsEdit:            isEdit,
+		InDialog:          r.PostFormValue("dialog") != "",
 		ID:                r.PostFormValue("id"),
 		Name:              r.PostFormValue("name"),
 		Enabled:           r.PostFormValue("enabled") != "",
@@ -1352,7 +1465,8 @@ func handleConnectorsPage(svc *config.Service, reg *stats.Registry, statuses fun
 	}
 }
 
-// handleConnectorNewPage serves GET /connectors/new: the canonical create page.
+// handleConnectorNewPage serves GET /connectors/new as a modal fragment for
+// htmx callers and as a full-page progressive-enhancement fallback otherwise.
 func handleConnectorNewPage(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sources, sinks, err := listSourcesAndSinks(r.Context(), svc)
@@ -1362,11 +1476,25 @@ func handleConnectorNewPage(svc *config.Service, reg *stats.Registry, statuses f
 			return
 		}
 		form := blankConnectorFormView(sources, sinks)
+		id, err := generatedEntityID()
+		if err != nil {
+			log.Error("ui: generate connector id failed", "err", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		form.ID = id
+		if isHTMXRequest(r) {
+			form.InDialog = true
+			renderFragment(w, log, "connector-create-dialog", form)
+			return
+		}
 		renderConnectorsPage(w, r, svc, reg, statuses, version, log, &form)
 	}
 }
 
-// handleConnectorEditPage serves GET /connectors/{id}/edit: the canonical edit page.
+// handleConnectorEditPage serves GET /connectors/{id}/edit as a modal
+// fragment for htmx callers and as a full-page progressive-enhancement
+// fallback otherwise.
 func handleConnectorEditPage(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sources, sinks, err := listSourcesAndSinks(r.Context(), svc)
@@ -1386,6 +1514,11 @@ func handleConnectorEditPage(svc *config.Service, reg *stats.Registry, statuses 
 			return
 		}
 		form := connectorFormViewFromModel(v, sources, sinks)
+		if isHTMXRequest(r) {
+			form.InDialog = true
+			renderFragment(w, log, "connector-create-dialog", form)
+			return
+		}
 		renderConnectorsPage(w, r, svc, reg, statuses, version, log, &form)
 	}
 }
@@ -1461,6 +1594,14 @@ func writeConnector(w http.ResponseWriter, r *http.Request, svc *config.Service,
 	view := connectorFormViewFromRequest(r, !isCreate, sources, sinks)
 	if !isCreate {
 		view.ID = pathID
+	} else if view.ID == "" {
+		id, err := generatedEntityID()
+		if err != nil {
+			log.Error("ui: generate connector id failed", "err", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		view.ID = id
 	}
 	v, err := view.toModel()
 	if err != nil {
@@ -1480,6 +1621,11 @@ func writeConnector(w http.ResponseWriter, r *http.Request, svc *config.Service,
 	}
 	if isCreate {
 		flashRedirect(w, fmt.Sprintf("Connector %q created", v.ID), "/dashboard")
+		return
+	}
+	if view.InDialog {
+		w.Header().Set("HX-Refresh", "true")
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	connectors, err := svc.ListConnectors(r.Context())
@@ -1511,6 +1657,9 @@ func handleConnectorDelete(svc *config.Service, reg *stats.Registry, statuses fu
 		default:
 			log.Error("ui: delete connector failed", "err", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if writeOverviewDeleteResult(w, r, log, "/connectors", alert) {
 			return
 		}
 		connectors, err := svc.ListConnectors(r.Context())

@@ -6,7 +6,7 @@
       <h1>Model Context Protocol</h1>
       <p>Connect an AI agent to Beacon to configure routes and inspect health and delivery state. The server, schemas, reference, and runtime are embedded and operate without an internet connection.</p>
     </div>
-    <span class="badge badge-success">offline ready</span>
+    <span data-status="success" data-variant="outline" class="badge badge-success">offline ready</span>
   </div>
 
   <div class="stats" aria-label="MCP connection summary">
@@ -71,7 +71,7 @@
       </article>
     </div>
     <p class="mcp-install-note">If the agent runs on another device, replace <code>127.0.0.1</code> with Beacon's address on your trusted onboard network. Claude.ai and Claude Desktop custom connectors run through Anthropic's cloud and cannot reach this localhost endpoint; use Claude Code for the offline setup.</p>
-    <div class="alert alert-warning" role="note">
+    <div class="alert alert-warning" data-status="warning" role="note">
       <span>The MCP endpoint can change live configuration. Keep the admin listener on localhost or a trusted onboard network.</span>
     </div>
   </section>
@@ -83,7 +83,7 @@
         <p>Inputs and outputs are advertised as JSON Schema through <code>tools/list</code>.</p>
       </div>
     </div>
-    <div class="overflow-x-auto">
+    <div class="table-container overflow-x-auto">
       <table class="table metadata-table mcp-tool-table">
         <thead>
           <tr><th>Name</th><th>Access</th><th>Purpose</th></tr>
@@ -92,7 +92,7 @@
           {{range .Tools}}
           <tr>
             <td><code>{{.Name}}</code></td>
-            <td><span class="badge {{if eq .Access "read"}}badge-ghost{{else if eq .Access "write"}}badge-warning{{else}}badge-error{{end}}">{{.Access}}</span></td>
+            <td><span data-status="{{if eq .Access "read"}}neutral{{else if eq .Access "write"}}warning{{else}}error{{end}}" data-variant="outline" class="badge {{if eq .Access "read"}}badge-ghost{{else if eq .Access "write"}}badge-warning{{else}}badge-error{{end}}">{{.Access}}</span></td>
             <td>{{.Description}}</td>
           </tr>
           {{end}}

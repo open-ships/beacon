@@ -1,9 +1,9 @@
 // Package ui is beacon's offline, server-rendered web UI mounted at /.
 // Every asset it serves (htmx, the CEL autocomplete enhancement, and the
-// lightweight Open Ships stylesheet) is embedded in the binary via go:embed —
+// compiled Tailwind/Basecoat stylesheet) is embedded in the binary via go:embed —
 // beacon is an offline gateway appliance, so the UI must render with no
 // network access beyond the browser talking to beacon itself. See
-// assets/README.md for the asset inventory and internal/ui/assets/app.css for
+// assets/README.md for the asset inventory and internal/ui/styles/app.css for
 // the theme source.
 package ui
 

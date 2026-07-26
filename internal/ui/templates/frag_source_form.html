@@ -1,27 +1,34 @@
-{{/* Data: internal/ui/forms.go's sourceFormViewData. Rendered by canonical
-     source create/edit pages and re-rendered by POST /sources[/{id}] on
-     a validation failure (see writeSource).
+{{/* Data: internal/ui/forms.go's sourceFormViewData. Rendered inside the
+     source creation modal, by the direct-URL create/edit fallback pages,
+     and by POST /sources[/{id}] after validation fails (see writeSource).
      Field wrappers use plain fieldset/legend markup; app.css supplies the
      product theme. */}}
 {{define "source-form"}}
-<form class="card bg-base-200 border border-base-300"
+<form class="card bg-base-200 border border-base-300 entity-form"
       hx-post="{{if .IsEdit}}/sources/{{.ID}}{{else}}/sources{{end}}"
       hx-target="#source-form-container" hx-swap="innerHTML">
   <div class="card-body gap-3">
-    <h2 class="card-title">{{if .IsEdit}}Edit source {{.ID}}{{else}}Add source{{end}}</h2>
+    <div class="entity-form-heading">
+      <h2 class="card-title" {{if .InDialog}}id="{{if .IsEdit}}source-edit-dialog-title{{else}}source-create-dialog-title{{end}}"{{end}}>{{if .IsEdit}}Edit source {{.ID}}{{else}}Add source{{end}}</h2>
+      {{if .InDialog}}
+      <button type="button" class="btn btn-sm btn-ghost entity-dialog-close" data-size="sm" data-variant="ghost"
+              data-entity-create-dialog-close aria-label="Close {{if .IsEdit}}edit{{else}}add{{end}} source dialog">&times;</button>
+      {{end}}
+    </div>
     {{if .Alert}}
-    <div class="alert alert-error" role="alert"><span>{{.Alert.Message}}</span></div>
+    <div class="alert alert-error" data-status="error" data-variant="destructive" role="alert"><span>{{.Alert.Message}}</span></div>
     {{end}}
+    {{if not .IsEdit}}<input type="hidden" name="id" value="{{.ID}}">{{end}}
+    {{if .InDialog}}<input type="hidden" name="dialog" value="1">{{end}}
+    <label class="field label cursor-pointer justify-start gap-2 entity-enabled-field" data-orientation="horizontal">
+      <input type="checkbox" name="enabled" value="1" class="checkbox" {{if .Enabled}}checked{{end}} {{if .InDialog}}autofocus{{end}}>
+      Enabled
+    </label>
     {{if .IsEdit}}
     <input type="hidden" name="id" value="{{.ID}}">
     <fieldset class="fieldset">
       <legend class="fieldset-legend">ID</legend>
       <input type="text" id="src-id" value="{{.ID}}" class="input w-full" disabled>
-    </fieldset>
-    {{else}}
-    <fieldset class="fieldset">
-      <legend class="fieldset-legend">ID</legend>
-      <input type="text" id="src-id" name="id" value="{{.ID}}" class="input w-full" required>
     </fieldset>
     {{end}}
     <fieldset class="fieldset">
@@ -43,17 +50,26 @@
         <option value="file" {{if eq .TypeFields.Type "file"}}selected{{end}}>file</option>
       </select>
     </fieldset>
-    <label class="label cursor-pointer justify-start gap-2">
-      <input type="checkbox" name="enabled" value="1" class="checkbox" {{if .Enabled}}checked{{end}}>
-      Enabled
-    </label>
     <div id="source-type-fields" class="flex flex-col gap-3">
       {{template "source-type-fields" .TypeFields}}
     </div>
     <div class="card-actions justify-end">
-      <a class="btn" href="/sources">Cancel</a>
-      <button type="submit" class="btn btn-primary">Save</button>
+      {{if .InDialog}}
+      <button type="button" class="btn" data-variant="outline" data-entity-create-dialog-close>Cancel</button>
+      {{else}}
+      <a class="btn" data-variant="outline" href="/sources">Cancel</a>
+      {{end}}
+      <button type="submit" class="btn btn-primary" data-variant="primary">Save</button>
     </div>
   </div>
 </form>
+{{end}}
+
+{{define "source-create-dialog"}}
+<dialog class="entity-create-dialog dialog" data-entity-create-dialog
+        aria-labelledby="{{if .IsEdit}}source-edit-dialog-title{{else}}source-create-dialog-title{{end}}">
+  <div id="source-form-container" class="entity-create-dialog-form">
+    {{template "source-form" .}}
+  </div>
+</dialog>
 {{end}}

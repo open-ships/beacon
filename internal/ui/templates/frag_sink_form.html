@@ -1,24 +1,31 @@
 {{/* Data: internal/ui/forms.go's sinkFormViewData. Mirrors
      frag_source_form.html; see its comments for rationale. */}}
 {{define "sink-form"}}
-<form class="card bg-base-200 border border-base-300"
+<form class="card bg-base-200 border border-base-300 entity-form"
       hx-post="{{if .IsEdit}}/sinks/{{.ID}}{{else}}/sinks{{end}}"
       hx-target="#sink-form-container" hx-swap="innerHTML">
   <div class="card-body gap-3">
-    <h2 class="card-title">{{if .IsEdit}}Edit sink {{.ID}}{{else}}Add sink{{end}}</h2>
+    <div class="entity-form-heading">
+      <h2 class="card-title" {{if .InDialog}}id="{{if .IsEdit}}sink-edit-dialog-title{{else}}sink-create-dialog-title{{end}}"{{end}}>{{if .IsEdit}}Edit sink {{.ID}}{{else}}Add sink{{end}}</h2>
+      {{if .InDialog}}
+      <button type="button" class="btn btn-sm btn-ghost entity-dialog-close" data-size="sm" data-variant="ghost"
+              data-entity-create-dialog-close aria-label="Close {{if .IsEdit}}edit{{else}}add{{end}} sink dialog">&times;</button>
+      {{end}}
+    </div>
     {{if .Alert}}
-    <div class="alert alert-error" role="alert"><span>{{.Alert.Message}}</span></div>
+    <div class="alert alert-error" data-status="error" data-variant="destructive" role="alert"><span>{{.Alert.Message}}</span></div>
     {{end}}
+    {{if not .IsEdit}}<input type="hidden" name="id" value="{{.ID}}">{{end}}
+    {{if .InDialog}}<input type="hidden" name="dialog" value="1">{{end}}
+    <label class="field label cursor-pointer justify-start gap-2 entity-enabled-field" data-orientation="horizontal">
+      <input type="checkbox" name="enabled" value="1" class="checkbox" {{if .Enabled}}checked{{end}} {{if .InDialog}}autofocus{{end}}>
+      Enabled
+    </label>
     {{if .IsEdit}}
     <input type="hidden" name="id" value="{{.ID}}">
     <fieldset class="fieldset">
       <legend class="fieldset-legend">ID</legend>
       <input type="text" id="sink-id" value="{{.ID}}" class="input w-full" disabled>
-    </fieldset>
-    {{else}}
-    <fieldset class="fieldset">
-      <legend class="fieldset-legend">ID</legend>
-      <input type="text" id="sink-id" name="id" value="{{.ID}}" class="input w-full" required>
     </fieldset>
     {{end}}
     <fieldset class="fieldset">
@@ -40,17 +47,26 @@
         <option value="tcp_gateway" {{if eq .TypeFields.Type "tcp_gateway"}}selected{{end}}>tcp_gateway</option>
       </select>
     </fieldset>
-    <label class="label cursor-pointer justify-start gap-2">
-      <input type="checkbox" name="enabled" value="1" class="checkbox" {{if .Enabled}}checked{{end}}>
-      Enabled
-    </label>
     <div id="sink-type-fields" class="flex flex-col gap-3">
       {{template "sink-type-fields" .TypeFields}}
     </div>
     <div class="card-actions justify-end">
-      <a class="btn" href="/sinks">Cancel</a>
-      <button type="submit" class="btn btn-primary">Save</button>
+      {{if .InDialog}}
+      <button type="button" class="btn" data-variant="outline" data-entity-create-dialog-close>Cancel</button>
+      {{else}}
+      <a class="btn" data-variant="outline" href="/sinks">Cancel</a>
+      {{end}}
+      <button type="submit" class="btn btn-primary" data-variant="primary">Save</button>
     </div>
   </div>
 </form>
+{{end}}
+
+{{define "sink-create-dialog"}}
+<dialog class="entity-create-dialog dialog" data-entity-create-dialog
+        aria-labelledby="{{if .IsEdit}}sink-edit-dialog-title{{else}}sink-create-dialog-title{{end}}">
+  <div id="sink-form-container" class="entity-create-dialog-form">
+    {{template "sink-form" .}}
+  </div>
+</dialog>
 {{end}}

@@ -283,6 +283,8 @@
       clearFeedback();
       var alert = document.createElement("div");
       alert.className = "alert alert-error filter-validation-errors";
+      alert.dataset.status = "error";
+      alert.dataset.variant = "destructive";
       alert.setAttribute("role", "alert");
       var list = document.createElement("ul");
       diagnostics.forEach(function (diagnostic) {
@@ -298,6 +300,7 @@
       clearFeedback();
       var alert = document.createElement("div");
       alert.className = "alert alert-warning filter-validation-errors";
+      alert.dataset.status = "warning";
       alert.setAttribute("role", "status");
       alert.textContent = "Live filter validation is temporarily unavailable. Save will still validate the filters.";
       feedback.appendChild(alert);
@@ -942,6 +945,7 @@
           candidate.setAttribute("aria-pressed", selected ? "true" : "false");
           candidate.classList.toggle("btn-primary", selected);
           candidate.classList.toggle("btn-ghost", !selected);
+          candidate.dataset.variant = selected ? "primary" : "ghost";
         });
         if (displayFormat !== "json" && celInspector) celInspector.hidden = true;
         queueRender();
@@ -1300,6 +1304,44 @@
     window.setTimeout(function () { URL.revokeObjectURL(url); }, 0);
   }
 
+  var entityDialogReturnFocus = null;
+
+  function initEntityCreateDialogs(root) {
+    var scope = root && root.querySelectorAll ? root : document;
+    var dialogs = Array.prototype.slice.call(scope.querySelectorAll("[data-entity-create-dialog]"));
+    if (scope.matches && scope.matches("[data-entity-create-dialog]")) dialogs.unshift(scope);
+    dialogs.forEach(function (dialog) {
+      if (dialog.dataset.dialogReady === "true") return;
+      dialog.dataset.dialogReady = "true";
+
+      function requestClose(event) {
+        if (event) event.preventDefault();
+        var container = dialog.closest("#entity-create-dialog-container");
+        if (dialog.open && typeof dialog.close === "function") dialog.close();
+        if (container) container.replaceChildren();
+        else dialog.remove();
+        if (entityDialogReturnFocus && document.contains(entityDialogReturnFocus)) {
+          entityDialogReturnFocus.focus();
+        }
+        entityDialogReturnFocus = null;
+      }
+
+      dialog.querySelectorAll("[data-entity-create-dialog-close]").forEach(function (button) {
+        button.addEventListener("click", requestClose);
+      });
+      dialog.addEventListener("cancel", requestClose);
+      dialog.addEventListener("click", function (event) {
+        if (event.target === dialog) requestClose(event);
+      });
+
+      if (typeof dialog.showModal === "function") {
+        if (!dialog.open) dialog.showModal();
+      } else {
+        dialog.setAttribute("open", "");
+      }
+    });
+  }
+
   function initSourceDeviceDialog(root) {
     var scope = root && root.querySelector ? root : document;
     var dialog = scope.matches && scope.matches("[data-source-device-dialog]")
@@ -1325,6 +1367,139 @@
     } else {
       dialog.setAttribute("open", "");
     }
+  }
+
+  function initDAGs(root) {
+    var scope = root && root.querySelectorAll ? root : document;
+    var boards = Array.prototype.slice.call(scope.querySelectorAll("[data-dag-board]"));
+    if (scope.matches && scope.matches("[data-dag-board]")) boards.unshift(scope);
+    boards.forEach(initDAG);
+  }
+
+  function initDAG(board) {
+    if (board.dataset.dagReady === "true") return;
+    var svg = board.querySelector(".dag-edges");
+    if (!svg) return;
+    board.dataset.dagReady = "true";
+    svg.style.setProperty("--dag-edge-flash-delay", (-window.performance.now()) + "ms");
+
+    var frame = 0;
+
+    function scheduleDraw() {
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(draw);
+    }
+
+    function draw() {
+      frame = 0;
+      if (!board.isConnected) return;
+
+      var boardRect = board.getBoundingClientRect();
+      var nodes = new Map();
+      board.querySelectorAll("[data-dag-node]").forEach(function (node) {
+        var rect = node.getBoundingClientRect();
+        nodes.set(node.dataset.dagNode, {
+          element: node,
+          left: rect.left - boardRect.left + board.scrollLeft,
+          right: rect.right - boardRect.left + board.scrollLeft,
+          top: rect.top - boardRect.top + board.scrollTop,
+          height: rect.height,
+          centerY: rect.top - boardRect.top + board.scrollTop + rect.height / 2
+        });
+      });
+
+      var width = Math.max(board.clientWidth, board.scrollWidth);
+      var height = Math.max(board.clientHeight, board.scrollHeight);
+      svg.setAttribute("width", String(width));
+      svg.setAttribute("height", String(height));
+      svg.setAttribute("viewBox", "0 0 " + width + " " + height);
+      svg.style.width = width + "px";
+      svg.style.height = height + "px";
+
+      var edges = [];
+      svg.querySelectorAll("[data-dag-from][data-dag-to]").forEach(function (path) {
+        var from = nodes.get(path.dataset.dagFrom);
+        var to = nodes.get(path.dataset.dagTo);
+        if (!from || !to) {
+          path.removeAttribute("d");
+          return;
+        }
+        edges.push({ path: path, from: from, to: to });
+      });
+
+      var outgoing = new Map();
+      var incoming = new Map();
+      edges.forEach(function (edge) {
+        if (!outgoing.has(edge.from.element)) outgoing.set(edge.from.element, []);
+        if (!incoming.has(edge.to.element)) incoming.set(edge.to.element, []);
+        outgoing.get(edge.from.element).push(edge);
+        incoming.get(edge.to.element).push(edge);
+      });
+
+      outgoing.forEach(function (nodeEdges) {
+        nodeEdges.sort(function (left, right) {
+          return left.to.centerY - right.to.centerY;
+        });
+        distributeDAGPorts(nodeEdges, "startY", "from");
+      });
+      incoming.forEach(function (nodeEdges) {
+        nodeEdges.sort(function (left, right) {
+          return left.from.centerY - right.from.centerY;
+        });
+        distributeDAGPorts(nodeEdges, "endY", "to");
+      });
+
+      edges.forEach(function (edge) {
+        var startX = edge.from.right + 1;
+        var endX = edge.to.left - 3;
+        var control = Math.max(18, (endX - startX) * 0.45);
+        edge.path.setAttribute(
+          "d",
+          "M " + startX + " " + edge.startY +
+          " C " + (startX + control) + " " + edge.startY +
+          ", " + (endX - control) + " " + edge.endY +
+          ", " + endX + " " + edge.endY
+        );
+      });
+    }
+
+    var resizeObserver;
+    if (typeof ResizeObserver === "function") {
+      resizeObserver = new ResizeObserver(scheduleDraw);
+      resizeObserver.observe(board);
+    } else {
+      window.addEventListener("resize", scheduleDraw);
+    }
+
+    board.cleanupDAG = function () {
+      if (frame) window.cancelAnimationFrame(frame);
+      if (resizeObserver) resizeObserver.disconnect();
+      else window.removeEventListener("resize", scheduleDraw);
+    };
+    // Draw before the browser paints the freshly swapped htmx fragment. Waiting
+    // for the next animation frame makes every two-second poll briefly show an
+    // empty SVG, which reads as an edge flash.
+    draw();
+  }
+
+  function distributeDAGPorts(edges, property, nodeProperty) {
+    var node = edges[0] && edges[0][nodeProperty];
+    if (!node) return;
+    var padding = Math.min(24, node.height * 0.22);
+    var usable = Math.max(0, node.height - padding * 2);
+    edges.forEach(function (edge, index) {
+      var ratio = edges.length === 1 ? 0.5 : index / (edges.length - 1);
+      edge[property] = node.top + padding + usable * ratio;
+    });
+  }
+
+  function cleanupDAGs(root) {
+    if (!root || !root.querySelectorAll) return;
+    var boards = Array.prototype.slice.call(root.querySelectorAll("[data-dag-board]"));
+    if (root.matches && root.matches("[data-dag-board]")) boards.unshift(root);
+    boards.forEach(function (board) {
+      if (typeof board.cleanupDAG === "function") board.cleanupDAG();
+    });
   }
 
   document.addEventListener("pointerdown", function (event) {
@@ -1358,23 +1533,40 @@
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", function () {
       initCELAutocomplete(document);
+      initEntityCreateDialogs(document);
       initSourceDeviceDialog(document);
       initStreamPanels(document);
+      initDAGs(document);
     });
   } else {
     initCELAutocomplete(document);
+    initEntityCreateDialogs(document);
     initSourceDeviceDialog(document);
     initStreamPanels(document);
+    initDAGs(document);
   }
+  document.addEventListener("htmx:beforeRequest", function (event) {
+    var trigger = event.detail && event.detail.elt;
+    if (trigger && trigger.getAttribute("hx-target") === "#entity-create-dialog-container") {
+      entityDialogReturnFocus = trigger;
+    }
+  });
+  document.addEventListener("htmx:afterSwap", function (event) {
+    var root = event.detail && event.detail.target ? event.detail.target : event.target;
+    initDAGs(root);
+  });
   document.addEventListener("htmx:load", function (event) {
     var root = event.detail && event.detail.elt ? event.detail.elt : document;
     initCELAutocomplete(root);
+    initEntityCreateDialogs(root);
     initSourceDeviceDialog(root);
     initStreamPanels(root);
+    initDAGs(root);
   });
   document.addEventListener("htmx:beforeCleanupElement", function (event) {
     var root = event.detail && event.detail.elt;
     if (!root || !root.querySelectorAll) return;
+    cleanupDAGs(root);
     var panels = Array.prototype.slice.call(root.querySelectorAll("[data-stream-panel]"));
     if (root.matches && root.matches("[data-stream-panel]")) panels.unshift(root);
     panels.forEach(function (panel) {

@@ -3,7 +3,8 @@
   <div class="flex justify-between items-center">
     <h1 class="text-2xl font-semibold">Sinks</h1>
     {{if not .SinkForm}}
-    <a class="btn btn-primary" href="/sinks/new">Add sink</a>
+    <a class="btn btn-primary" data-variant="primary" href="/sinks/new"
+       hx-get="/sinks/new" hx-target="#entity-create-dialog-container" hx-swap="innerHTML">Add sink</a>
     {{end}}
   </div>
   <div id="sink-form-container">{{if .SinkForm}}{{template "sink-form" .SinkForm}}{{end}}</div>

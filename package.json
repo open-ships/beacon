@@ -2,10 +2,18 @@
   "name": "beacon-browser-tests",
   "private": true,
   "scripts": {
+    "build": "npm run build:css",
+    "build:css": "tailwindcss -i internal/ui/styles/app.css -o internal/ui/assets/app.css --minify",
+    "dev:css": "tailwindcss -i internal/ui/styles/app.css -o internal/ui/assets/app.css --watch",
     "test": "playwright test",
     "test:ui": "playwright test --ui"
   },
   "devDependencies": {
-    "@playwright/test": "^1.61.1"
+    "@playwright/test": "^1.61.1",
+    "@tailwindcss/cli": "4.1.18",
+    "tailwindcss": "4.1.18"
+  },
+  "dependencies": {
+    "basecoat-css": "1.0.2"
   }
 }

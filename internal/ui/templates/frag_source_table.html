@@ -10,18 +10,18 @@
 {{/* data-autodismiss marks this alert for the wrapper div's hx-on::load
      auto-dismiss timer (see the wrapper templates below). Error alerts
      don't carry it: they stay until manually dismissed. */}}
-<div class="alert alert-success" role="alert" data-autodismiss>
+<div class="alert alert-success" data-status="success" role="alert" data-autodismiss>
   <span>{{.Alert.Message}}</span>
-  <button type="button" class="btn btn-sm btn-ghost" onclick="this.closest('.alert').remove()">Dismiss</button>
+  <button type="button" class="btn btn-sm btn-ghost" data-size="sm" data-variant="ghost" onclick="this.closest('.alert').remove()">Dismiss</button>
 </div>
 {{else}}
-<div class="alert alert-error" role="alert">
+<div class="alert alert-error" data-status="error" data-variant="destructive" role="alert">
   <span>{{.Alert.Message}}</span>
-  <button type="button" class="btn btn-sm btn-ghost" onclick="this.closest('.alert').remove()">Dismiss</button>
+  <button type="button" class="btn btn-sm btn-ghost" data-size="sm" data-variant="ghost" onclick="this.closest('.alert').remove()">Dismiss</button>
 </div>
 {{end}}
 {{end}}
-<div class="overflow-x-auto">
+<div class="table-container overflow-x-auto">
   <table class="table">
     <thead>
       <tr>
@@ -42,18 +42,20 @@
         <td>{{.Type}}</td>
         <td>{{if .Detail}}<code>{{.Detail}}</code>{{else}}<span class="opacity-70">-</span>{{end}}</td>
         <td>
-          {{if .Enabled}}<span class="badge badge-success">enabled</span>
-          {{else}}<span class="badge badge-ghost">disabled</span>{{end}}
+          {{if .Enabled}}<span data-status="success" data-variant="outline" class="badge badge-success">enabled</span>
+          {{else}}<span data-status="neutral" data-variant="outline" class="badge badge-ghost">disabled</span>{{end}}
         </td>
         <td>
-          {{if eq .State "up"}}<span class="badge badge-success">up</span>
-          {{else if eq .State "degraded"}}<span class="badge badge-warning">degraded</span>
-          {{else if eq .State "error"}}<span class="badge badge-error">error</span>
-          {{else}}<span class="badge badge-ghost">{{.State}}</span>{{end}}
+          {{if eq .State "up"}}<span data-status="success" data-variant="outline" class="badge badge-success">up</span>
+          {{else if eq .State "degraded"}}<span data-status="warning" data-variant="outline" class="badge badge-warning">degraded</span>
+          {{else if eq .State "error"}}<span data-status="error" data-variant="outline" class="badge badge-error">error</span>
+          {{else}}<span data-status="neutral" data-variant="outline" class="badge badge-ghost">{{.State}}</span>{{end}}
         </td>
         <td class="flex gap-2 justify-end">
-          <a class="btn btn-sm" href="/sources/{{.ID}}/edit">Edit</a>
-          <button type="button" class="btn btn-sm btn-error"
+          <a class="btn btn-sm" data-size="sm" data-variant="outline" href="/sources/{{.ID}}/edit"
+             hx-get="/sources/{{.ID}}/edit" hx-target="#entity-create-dialog-container"
+             hx-swap="innerHTML">Edit</a>
+          <button type="button" class="btn btn-sm btn-error" data-size="sm" data-variant="destructive"
                   hx-post="/sources/{{.ID}}/delete" hx-target="#source-panel" hx-swap="outerHTML"
                   hx-confirm="Delete source &quot;{{.ID}}&quot;? Connectors using it must be removed or repointed first.">
             Delete

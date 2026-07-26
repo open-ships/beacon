@@ -4,6 +4,8 @@ description: Ship-board NMEA 2000 routing control for operators, developers, and
 colors:
   accent: "#2337ff"
   accent-dark: "#000d8a"
+  link: "#40577f"
+  metric: "#2f3d55"
   ink: "#0f1219"
   text: "#222939"
   muted-text: "#555555"
@@ -141,7 +143,7 @@ Beacon uses the Open Ships restrained product palette: white surfaces, cool gray
 - **Fault Red** (`error`) and **Fault Red Wash** (`error-bg`): Validation errors, failed components, and destructive actions.
 
 ### Named Rules
-**The One Accent Rule.** The blue accent is for action and selection, not decoration. If a screen looks blue at a glance, the accent has been overused.
+**The One Accent Rule.** The saturated blue accent is for primary action, focus, and selection, not routine data or decoration. Entity names and live metrics use ink; ordinary links use the muted blue-gray link color. If a screen looks blue at a glance, the accent has been overused.
 
 **The State Earns Color Rule.** Green, amber, and red appear only when they communicate live state, validation, or destructive consequence.
 
@@ -201,15 +203,18 @@ Beacon uses a hybrid of one-pixel borders, tonal layering, and a single soft amb
 - **Style:** White background, 1px strong border, 6px radius, `2.45rem` minimum height.
 - **Focus:** Blue border plus translucent blue outline (`3px solid rgba(35, 55, 255, 0.12)`).
 - **Error / Disabled:** Errors use the red alert vocabulary; disabled fields should stay readable and clearly non-editable.
+- **Creation:** Add source, sink, and connector flows open in modal dialogs. Their eight-character hexadecimal IDs are generated and hidden; Enabled is the first field and starts checked.
 
 ### Navigation
 - **Style:** Compact top header with Open Ships brand context and Beacon product label. Resting links are gray and bold; active links invert to dark fill and white text.
 - **Behavior:** Keep navigation stable and small. Do not turn product navigation into a marketing hero or oversized app chrome.
 
 ### DAG Board
-- **Style:** Five-column source -> connector -> sink graph with explicit arrow links, white endpoint nodes, and dark connector nodes.
-- **State:** Component status appears through badges and border tone. Keep the topology more important than individual card ornament.
-- **Caution:** Do not extend the existing colored side-stripe treatment. New graph/state work should use full borders, badges, icons, or background tints instead.
+- **Style:** Centered five-column source -> connector -> sink graph with compact cards, generous routing gutters, centered lane headings, and curved, round-dotted, arrowless links. The panel is bounded at `80rem` rather than filling the application shell.
+- **Topology:** Enabled sources and sinks without a configured connector move to the separated unused-endpoints row beneath their matching lane. Disabled endpoints stay in the main graph, and a disabled connector still counts as an existing connection.
+- **State:** Component status appears through badges and border tone, never a status-tinted card background. Unused sinks use a muted neutral surface while retaining their real health badge.
+- **Motion:** Graph edges make one synchronized brightness flash per second without changing geometry. `prefers-reduced-motion` renders the dotted lines steadily.
+- **Caution:** Do not extend the existing colored side-stripe treatment. New graph/state work should use full borders, badges, or icons instead.
 
 ### Tables
 - **Style:** Full-width bordered tables with muted header rows, compact uppercase headings, and generous enough cell padding for scanning.
