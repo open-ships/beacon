@@ -675,9 +675,9 @@ func handleSourceDelete(svc *config.Service, log *slog.Logger) http.HandlerFunc 
 //
 // Exactly parallel to the Sources section above; see its comments for
 // rationale not repeated here. The only structural differences: sinks have
-// tcp (Address), file (FilePath/Format/MaxFileBytes/MaxFiles), and mqtt
-// (URL/Topic) sink types; their http_sse/http_ws type carries a Path
-// rather than a URL+Headers pair.
+// tcp/tcp_gateway (Address), file (FilePath/Format/MaxFileBytes/MaxFiles),
+// mqtt (URL/Topic), and null (no endpoint fields) sink types; their
+// http_sse/http_ws type carries a Path rather than a URL+Headers pair.
 
 // sinkRow is one row of the sinks table (frag_sink_table.html):
 // model.Sink plus its live supervisor state and its type-specific Detail
@@ -700,8 +700,8 @@ func sinkRows(sinks []model.Sink, statuses []supervisor.Status) []sinkRow {
 // actually says WHERE a sink writes to (or reads a push from), matching
 // whichever field frag_sink_type_fields.html shows as that sink's primary
 // input for its type — Interface for socketcan, Port for usbcan, Path for
-// http_sse/http_ws, Address for tcp, FilePath for file, and broker/topic
-// for mqtt.
+// http_sse/http_ws, Address for tcp, FilePath for file, broker/topic for
+// mqtt, or its intentional-discard behavior for null.
 func sinkDetail(s model.Sink) string {
 	switch s.Type {
 	case model.SinkSocketCAN:
@@ -718,6 +718,8 @@ func sinkDetail(s model.Sink) string {
 		return mqttDetail(s.URL, s.Topic)
 	case model.SinkTCPGateway:
 		return s.Address
+	case model.SinkNull:
+		return "Accepts and discards events"
 	default:
 		return ""
 	}

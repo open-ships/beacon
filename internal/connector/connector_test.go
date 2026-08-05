@@ -213,6 +213,46 @@ func TestFilterThenBroadcast(t *testing.T) {
 	}
 }
 
+func TestNullSinkDiscardsWithConfirmedStatistics(t *testing.T) {
+	src := &fakeSource{}
+	snk, err := sink.New(context.Background(), model.Sink{
+		ID: "discard", Name: "Discard", Type: model.SinkNull, Enabled: true,
+	}, nil, nil, slog.Default(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snk.Stop()
+
+	chain, _ := filter.Compile(nil)
+	reg := stats.NewRegistry()
+	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "discard", Enabled: true,
+		Buffer: model.BufferLimits{MaxMessages: 1000}},
+		src, snk, testQueue(t), chain, slog.Default(), nil, reg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	defer c.Stop()
+
+	src.emit(env(127250))
+	waitFor(t, 3*time.Second, func() bool {
+		snap, _ := reg.Snapshot("conn1")
+		return snap.StageTotals["confirmed"] == 1
+	}, "null sink confirmed-delivery accounting")
+
+	connectorSnap, _ := reg.Snapshot("conn1")
+	if connectorSnap.DeliveryClass != string(sink.DeliveryConfirmed) || connectorSnap.TotalMessages != 1 {
+		t.Fatalf("connector stats = %+v, want one confirmed message", connectorSnap)
+	}
+	sinkSnap, ok := reg.SinkSnapshot("discard")
+	if !ok || sinkSnap.TotalMessages != 1 {
+		t.Fatalf("sink stats = %+v (present=%v), want one sent message", sinkSnap, ok)
+	}
+	events := reg.Recent("sink", "discard", 1)
+	if len(events) != 1 || events[0].Stage != "sent" || events[0].PGN != 127250 {
+		t.Fatalf("sink events = %+v, want sent PGN 127250", events)
+	}
+}
+
 func TestRejectedBroadcastIsReportedAsDropNotDelivery(t *testing.T) {
 	src := &fakeSource{}
 	snk := &bcastSink{reject: true, err: errors.New("no recipient accepted message")}

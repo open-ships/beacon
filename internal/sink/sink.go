@@ -1,6 +1,6 @@
-// Package sink runs configured sinks. CAN sinks push-confirm each message
-// onto the bus; HTTP/TCP sinks broadcast to connected clients, with
-// replay served straight from connector queues (SSE/WS only).
+// Package sink runs configured sinks. CAN/file/null sinks push-confirm each
+// message; HTTP/TCP sinks broadcast to connected clients, with replay served
+// straight from connector queues (SSE/WS only).
 package sink
 
 import (
@@ -104,6 +104,8 @@ func New(ctx context.Context, cfg model.Sink, mgr *bus.Manager, ds *DataServer, 
 		return newMQTTSink(ctx, cfg, log, met)
 	case model.SinkTCPGateway:
 		return newGatewaySink(ctx, cfg, mgr)
+	case model.SinkNull:
+		return newNullSink(cfg), nil
 	default:
 		return nil, fmt.Errorf("sink %q: unknown type %q", cfg.ID, cfg.Type)
 	}

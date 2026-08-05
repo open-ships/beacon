@@ -155,7 +155,7 @@ func (v sourceDefinition) model() model.Source {
 type sinkDefinition struct {
 	ID           string `json:"id" jsonschema:"Stable sink id; lowercase letters, digits, underscores, and hyphens."`
 	Name         string `json:"name" jsonschema:"Human-readable sink name."`
-	Type         string `json:"type" jsonschema:"Sink type: socketcan, usbcan, http_sse, http_ws, tcp, file, mqtt, or tcp_gateway."`
+	Type         string `json:"type" jsonschema:"Sink type: socketcan, usbcan, http_sse, http_ws, tcp, file, mqtt, tcp_gateway, or null."`
 	Enabled      bool   `json:"enabled" jsonschema:"Whether Beacon should run this sink."`
 	Interface    string `json:"interface,omitempty" jsonschema:"SocketCAN interface, required for socketcan."`
 	Port         string `json:"port,omitempty" jsonschema:"Serial device path, required for usbcan."`

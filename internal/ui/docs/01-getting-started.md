@@ -22,7 +22,7 @@ source --> [connector: CEL filters] --> sink
   (`http_sse` / `http_ws`, with replay for reconnecting clients), a plain
   `tcp` NDJSON feed (live-only, no replay), or an MQTT topic (`mqtt`,
   live-only), or a remote NMEA 2000 bus through a claiming TCP gateway client
-  (`tcp_gateway`).
+  (`tcp_gateway`), or intentionally nowhere (`null`, with normal statistics).
 - **Connectors** wire one source to one sink, with an optional list of CEL
   filter expressions (see the filters page) and a durable per-connector
   buffer (see the concepts page) that survives a restart and absorbs a slow

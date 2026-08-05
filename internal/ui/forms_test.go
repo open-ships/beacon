@@ -368,7 +368,7 @@ func TestSinkNewPageOpensCreateForm(t *testing.T) {
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
 	for _, want := range []string{
-		"Add sink", `hx-post="/sinks"`, `type="hidden" name="id"`, `name="interface"`,
+		"Add sink", `hx-post="/sinks"`, `type="hidden" name="id"`, `name="interface"`, `option value="null"`,
 		`name="enabled" value="1" class="checkbox" checked`,
 		`aria-label="Breadcrumb"`, `href="/sinks"`, `aria-current="page">Add sink</span>`,
 	} {
@@ -724,6 +724,7 @@ func TestSinkTypeFieldsFragmentPerType(t *testing.T) {
 		{"file", []string{`name="file_path"`, `name="format"`, `name="max_file_bytes"`, `name="max_files"`, "ndjson", "candump"}},
 		{"mqtt", []string{`name="url"`, `name="topic"`, `mqtt://broker.local:1883`}},
 		{"tcp_gateway", []string{`name="address"`, `name="format"`, "ydraw", "actisense"}},
+		{"null", []string{"No endpoint configuration", "accepted, counted, and discarded"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.typ, func(t *testing.T) {
@@ -944,6 +945,33 @@ func TestSinkCreateRoundTrip(t *testing.T) {
 	}
 	if got.Address != "0.0.0.0:2000" || !got.Enabled {
 		t.Fatalf("persisted sink = %+v", got)
+	}
+}
+
+func TestNullSinkCreateRoundTrip(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	resp := postForm(t, srv, "/sinks", url.Values{
+		"id": {"discard"}, "name": {"Discard"}, "type": {"null"}, "enabled": {"1"},
+	})
+	assertCreateRedirect(t, resp, `Sink "discard" created`)
+
+	got, err := svc.GetSink(context.Background(), "discard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != model.SinkNull || !got.Enabled {
+		t.Fatalf("persisted sink = %+v", got)
+	}
+
+	resp, err = http.Get(srv.URL + "/sinks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := mustBody(t, resp)
+	for _, want := range []string{"Discard", "null", "Accepts and discards events"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("sinks page missing %q:\n%s", want, body)
+		}
 	}
 }
 

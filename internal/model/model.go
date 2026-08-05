@@ -39,6 +39,7 @@ const (
 	SinkFile       SinkType = "file"
 	SinkMQTT       SinkType = "mqtt"
 	SinkTCPGateway SinkType = "tcp_gateway" // transmit onto an NMEA-2000 bus via a TCP gateway (YD / Actisense)
+	SinkNull       SinkType = "null"        // accept and discard messages without external delivery
 )
 
 // File sink formats (Sink.Format, sink type file only).

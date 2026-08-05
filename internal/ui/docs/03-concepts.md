@@ -167,7 +167,8 @@ holds, ask for everything after sequence zero: `?after=<connector>:0`.
 
 Delivery guarantees differ by sink kind:
 
-- **Confirmed** routes advance after a successful CAN/file/raw-wire write.
+- **Confirmed** routes advance after a successful CAN/file/raw-wire write or
+  acceptance by a `null` sink.
 - **Resumable** SSE/WS routes advance after the entry is available through
   their retained replay stream.
 - **Best-effort** TCP/MQTT routes advance after dispatch; downstream receipt
@@ -222,6 +223,10 @@ Delivery guarantees differ by sink kind:
   resend of that one message (for fast-packet lines the resend carries a
   fresh sequence number, so it isn't byte-identical) — both expected under
   this delivery model, not corruption.
+- **Null sinks** (`null`) accept every message at the confirmed boundary,
+  record the same connector and sink message, byte, rate, and stream-inspector
+  statistics as another confirmed sink, and then intentionally discard it.
+  They have no endpoint-specific configuration and no external side effects.
 
 ## Hot apply
 
