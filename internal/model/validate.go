@@ -117,6 +117,8 @@ func (s Sink) Validate() error {
 		if strings.ContainsAny(s.Topic, "+#") {
 			return fmt.Errorf("sink %q: mqtt publish topic must not contain wildcards", s.ID)
 		}
+	case SinkNull:
+		// Null sinks have no type-specific configuration.
 	default:
 		return fmt.Errorf("sink %q: unknown type %q", s.ID, s.Type)
 	}

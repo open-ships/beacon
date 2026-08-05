@@ -1,7 +1,6 @@
 {{/* Data: internal/ui/forms.go's sinkTypeFieldsData. Mirrors
-     frag_source_type_fields.html except http_sse/http_ws carries a Path
-     (not URL+Headers), there's a fifth type, tcp, carrying Address, and a
-     sixth, file, carrying FilePath/Format/MaxFileBytes/MaxFiles.
+     frag_source_type_fields.html except sink types carry their outbound
+     endpoint settings, while null carries only an explanatory state.
      MaxFileBytes/MaxFiles are plain number inputs left blank by default;
      DefaultMaxFileBytes/DefaultMaxFiles (model.DefaultMaxFileBytes/
      DefaultMaxFiles, formatted in Go — see fileSinkDefaults) show as
@@ -88,5 +87,7 @@
     <option value="actisense" {{if eq .Format "actisense"}}selected{{end}}>actisense</option>
   </select>
 </fieldset>
+{{else if eq .Type "null"}}
+<p class="text-sm opacity-70">No endpoint configuration. Every routed event is accepted, counted, and discarded.</p>
 {{end}}
 {{end}}

@@ -45,6 +45,7 @@
         <option value="file" {{if eq .TypeFields.Type "file"}}selected{{end}}>file</option>
         <option value="mqtt" {{if eq .TypeFields.Type "mqtt"}}selected{{end}}>mqtt</option>
         <option value="tcp_gateway" {{if eq .TypeFields.Type "tcp_gateway"}}selected{{end}}>tcp_gateway</option>
+        <option value="null" {{if eq .TypeFields.Type "null"}}selected{{end}}>null</option>
       </select>
     </fieldset>
     <div id="sink-type-fields" class="flex flex-col gap-3">

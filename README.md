@@ -136,6 +136,7 @@ routes, making fan-out and fan-in explicit rather than implicit.
 | Messaging | `mqtt` | `mqtt` | Topic-based ingestion and live publishing |
 | Files | `file` | `file` | Replay captures; write rotating `ndjson` or `candump` logs |
 | Plain TCP | — | `tcp` | Live NDJSON listener for backend consumers |
+| Utility | — | `null` | Accept, count, and intentionally discard routed events |
 
 ### Bridge modes
 
@@ -185,7 +186,7 @@ A slow or disconnected sink does not block another route using the same source.
 
 | Delivery class | Sinks / mode | Checkpoint advances when… |
 |---|---|---|
-| Confirmed | SocketCAN, USB-CAN, file, TCP gateway | The local or gateway write succeeds |
+| Confirmed | SocketCAN, USB-CAN, file, TCP gateway, null | The write succeeds or the null sink accepts the message |
 | Resumable | SSE, WebSocket | The message is available in the replayable stream |
 | Best effort | TCP, MQTT | Dispatch completes; downstream receipt is not claimed |
 | Observe only | `observe` bridge mode | Local inspection completes without a sink write |
@@ -203,7 +204,9 @@ live-only.
 Confirmed writes use retry with bounded exponential backoff and at-least-once
 semantics. An envelope that cannot be encoded for semantic CAN delivery is
 counted as skipped and checkpointed so an unknown PGN cannot wedge a route.
-Transparent SocketCAN delivery preserves that unknown PGN losslessly.
+Transparent SocketCAN delivery preserves that unknown PGN losslessly. A
+`null` sink accepts each message at this same confirmed boundary, records the
+normal connector and sink statistics, and then intentionally discards it.
 
 For the precise retention, pruning, replay, retry, and file-rotation contract,
 read [Concepts](internal/ui/docs/03-concepts.md) and
@@ -493,7 +496,7 @@ internal/
   model/          sources, sinks, connector routes, validation
   msg/            canonical NMEA 2000 envelope
   queue/          SQLite-backed per-route buffer and checkpoints
-  sink/           CAN, HTTP, TCP, MQTT, file, and gateway delivery
+  sink/           CAN, HTTP, TCP, MQTT, file, gateway, and null delivery
   source/         CAN, HTTP, MQTT, file, and gateway ingestion
   stats/          live route counters
   supervisor/     desired-state runtime reconciliation

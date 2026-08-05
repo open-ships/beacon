@@ -83,6 +83,16 @@ func TestValidateMQTTSourceAndSinkOK(t *testing.T) {
 	}
 }
 
+func TestValidateNullSinkOK(t *testing.T) {
+	cfg := validConfig()
+	cfg.Sinks = append(cfg.Sinks, Sink{
+		ID: "discard", Name: "Discard", Type: SinkNull, Enabled: true,
+	})
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid null sink rejected: %v", err)
+	}
+}
+
 func TestValidateFileAndGatewaySourcesOK(t *testing.T) {
 	cfg := validConfig()
 	cfg.Sources = append(cfg.Sources,
