@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-07-15T17:52:52Z",
+  "generatedAt": "2026-08-05T16:30:10Z",
   "title": "Design System: Beacon",
   "extensions": {
     "colorMeta": {
@@ -10,11 +10,47 @@
         "canonical": "#2337ff",
         "tonalRamp": ["oklch(18% 0.10 270)", "oklch(28% 0.16 270)", "oklch(40% 0.22 270)", "oklch(52% 0.28 270)", "oklch(62% 0.26 270)", "oklch(74% 0.18 270)", "oklch(86% 0.10 270)", "oklch(96% 0.035 270)"]
       },
+      "accent-dark": {
+        "role": "primary",
+        "displayName": "Deep Action Blue",
+        "canonical": "#000d8a",
+        "tonalRamp": ["oklch(15% 0.08 270)", "oklch(24% 0.13 270)", "oklch(34% 0.18 270)", "oklch(46% 0.22 270)", "oklch(58% 0.20 270)", "oklch(72% 0.14 270)", "oklch(86% 0.08 270)", "oklch(96% 0.025 270)"]
+      },
+      "link": {
+        "role": "neutral",
+        "displayName": "Muted Link Blue",
+        "canonical": "#40577f",
+        "tonalRamp": ["oklch(18% 0.035 255)", "oklch(28% 0.055 255)", "oklch(40% 0.075 255)", "oklch(52% 0.085 255)", "oklch(64% 0.070 255)", "oklch(76% 0.050 255)", "oklch(88% 0.025 255)", "oklch(96% 0.010 255)"]
+      },
+      "metric": {
+        "role": "neutral",
+        "displayName": "Metric Slate",
+        "canonical": "#2f3d55",
+        "tonalRamp": ["oklch(17% 0.025 255)", "oklch(27% 0.035 255)", "oklch(38% 0.045 255)", "oklch(50% 0.050 255)", "oklch(63% 0.040 255)", "oklch(76% 0.028 255)", "oklch(88% 0.014 255)", "oklch(96% 0.006 255)"]
+      },
       "ink": {
         "role": "neutral",
         "displayName": "Bridge Ink",
         "canonical": "#0f1219",
         "tonalRamp": ["#0f1219", "#222939", "#37435c", "#60739f", "#8795b8", "#c8d2e1", "#e5e9f0", "#f6f8fb"]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "Instrument Text",
+        "canonical": "#222939",
+        "tonalRamp": ["#0f1219", "#222939", "#37435c", "#60739f", "#8795b8", "#c8d2e1", "#e5e9f0", "#f6f8fb"]
+      },
+      "muted-text": {
+        "role": "neutral",
+        "displayName": "Operational Gray",
+        "canonical": "#555555",
+        "tonalRamp": ["#1a1a1a", "#303030", "#555555", "#737373", "#929292", "#b5b5b5", "#dedede", "#f5f5f5"]
+      },
+      "blue-gray": {
+        "role": "neutral",
+        "displayName": "Blue Gray Signal",
+        "canonical": "#60739f",
+        "tonalRamp": ["oklch(18% 0.025 255)", "oklch(29% 0.040 255)", "oklch(41% 0.055 255)", "oklch(54% 0.065 255)", "oklch(66% 0.055 255)", "oklch(78% 0.038 255)", "oklch(89% 0.020 255)", "oklch(96% 0.008 255)"]
       },
       "surface": {
         "role": "neutral",
@@ -22,10 +58,40 @@
         "canonical": "#ffffff",
         "tonalRamp": ["#0f1219", "#222939", "#60739f", "#c8d2e1", "#d9e0eb", "#e5e9f0", "#f6f8fb", "#ffffff"]
       },
+      "surface-muted": {
+        "role": "neutral",
+        "displayName": "Muted Surface",
+        "canonical": "#f6f8fb",
+        "tonalRamp": ["#0f1219", "#222939", "#60739f", "#aeb9cc", "#c8d2e1", "#d9e0eb", "#eef2f7", "#f6f8fb"]
+      },
+      "surface-strong": {
+        "role": "neutral",
+        "displayName": "Strong Surface",
+        "canonical": "#eef2f7",
+        "tonalRamp": ["#0f1219", "#222939", "#60739f", "#9cabc2", "#c8d2e1", "#d9e0eb", "#e5e9f0", "#eef2f7"]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Hairline Border",
+        "canonical": "#d9e0eb",
+        "tonalRamp": ["#0f1219", "#222939", "#60739f", "#8795b8", "#aeb9cc", "#c8d2e1", "#d9e0eb", "#f6f8fb"]
+      },
+      "border-strong": {
+        "role": "neutral",
+        "displayName": "Strong Border",
+        "canonical": "#c8d2e1",
+        "tonalRamp": ["#0f1219", "#222939", "#52658f", "#7688ad", "#9cabc2", "#b5c1d3", "#c8d2e1", "#eef2f7"]
+      },
       "success": {
         "role": "tertiary",
         "displayName": "Up Green",
         "canonical": "#0f7a4f",
+        "tonalRamp": ["oklch(18% 0.06 155)", "oklch(28% 0.09 155)", "oklch(38% 0.11 155)", "oklch(48% 0.12 155)", "oklch(60% 0.10 155)", "oklch(74% 0.07 155)", "oklch(88% 0.04 155)", "oklch(96% 0.02 155)"]
+      },
+      "success-bg": {
+        "role": "tertiary",
+        "displayName": "Up Green Wash",
+        "canonical": "#e8f7ef",
         "tonalRamp": ["oklch(18% 0.06 155)", "oklch(28% 0.09 155)", "oklch(38% 0.11 155)", "oklch(48% 0.12 155)", "oklch(60% 0.10 155)", "oklch(74% 0.07 155)", "oklch(88% 0.04 155)", "oklch(96% 0.02 155)"]
       },
       "warning": {
@@ -34,10 +100,22 @@
         "canonical": "#a65f00",
         "tonalRamp": ["oklch(20% 0.06 70)", "oklch(30% 0.09 70)", "oklch(42% 0.12 70)", "oklch(54% 0.14 70)", "oklch(66% 0.11 70)", "oklch(78% 0.08 70)", "oklch(90% 0.04 70)", "oklch(97% 0.02 70)"]
       },
+      "warning-bg": {
+        "role": "tertiary",
+        "displayName": "Caution Amber Wash",
+        "canonical": "#fff4df",
+        "tonalRamp": ["oklch(20% 0.06 70)", "oklch(30% 0.09 70)", "oklch(42% 0.12 70)", "oklch(54% 0.14 70)", "oklch(66% 0.11 70)", "oklch(78% 0.08 70)", "oklch(90% 0.04 70)", "oklch(97% 0.02 70)"]
+      },
       "error": {
         "role": "tertiary",
         "displayName": "Fault Red",
         "canonical": "#b42318",
+        "tonalRamp": ["oklch(18% 0.06 25)", "oklch(28% 0.10 25)", "oklch(40% 0.14 25)", "oklch(52% 0.16 25)", "oklch(64% 0.12 25)", "oklch(76% 0.08 25)", "oklch(88% 0.04 25)", "oklch(96% 0.02 25)"]
+      },
+      "error-bg": {
+        "role": "tertiary",
+        "displayName": "Fault Red Wash",
+        "canonical": "#fff0ef",
         "tonalRamp": ["oklch(18% 0.06 25)", "oklch(28% 0.10 25)", "oklch(40% 0.14 25)", "oklch(52% 0.16 25)", "oklch(64% 0.12 25)", "oklch(76% 0.08 25)", "oklch(88% 0.04 25)", "oklch(96% 0.02 25)"]
       }
     },
@@ -72,19 +150,32 @@
     ],
     "motion": [
       {
-        "name": "state-transition",
-        "value": "150ms-250ms ease-out",
-        "purpose": "Feedback for hover, focus, expansion, and state changes only."
+        "name": "dag-edge-flash",
+        "value": "1s cubic-bezier(0.16, 1, 0.3, 1) infinite",
+        "purpose": "One synchronized brightness flash per second on graph edges without changing geometry."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "none",
+        "purpose": "Render graph edges steadily when prefers-reduced-motion is active."
       }
     ],
     "breakpoints": [
+      {
+        "name": "narrow",
+        "value": "480px"
+      },
       {
         "name": "mobile",
         "value": "640px"
       },
       {
-        "name": "content-wide",
-        "value": "1440px"
+        "name": "compact",
+        "value": "900px"
+      },
+      {
+        "name": "dag-condensed",
+        "value": "1100px"
       }
     ]
   },
@@ -104,6 +195,14 @@
       "description": "Secondary action for navigation, cancel, edit, or non-primary commands.",
       "html": "<button class=\"ds-btn ds-btn-default\">Edit</button>",
       "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;min-height:2.35rem;border:1px solid var(--border-strong,#c8d2e1);border-radius:6px;font:750 1rem/1 Inter,ui-sans-serif,system-ui,sans-serif;padding:.55rem .86rem;white-space:nowrap}.ds-btn-default{background:var(--surface,#fff);color:var(--text,#222939)}.ds-btn-default:hover{border-color:var(--blue-gray,#60739f);background:var(--surface-muted,#f6f8fb);color:var(--ink,#0f1219)}.ds-btn-default:focus-visible{outline:3px solid rgba(35,55,255,.14);outline-offset:2px}"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Destructive action reserved for deleting configured entities.",
+      "html": "<button class=\"ds-btn ds-btn-danger\">Delete sink</button>",
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;min-height:2.35rem;border:1px solid transparent;border-radius:6px;font:750 1rem/1 Inter,ui-sans-serif,system-ui,sans-serif;padding:.55rem .86rem;white-space:nowrap}.ds-btn-danger{border-color:var(--error,#b42318);background:var(--error,#b42318);color:var(--surface,#fff)}.ds-btn-danger:hover{filter:brightness(.86)}.ds-btn-danger:active{filter:brightness(.76)}.ds-btn-danger:focus-visible{outline:3px solid rgba(180,35,24,.18);outline-offset:2px}"
     },
     {
       "name": "Input",
@@ -135,7 +234,15 @@
       "refersTo": "nav-link",
       "description": "Compact product navigation link with active dark inversion.",
       "html": "<nav class=\"ds-nav\"><a class=\"ds-nav-link\" href=\"#\">docs</a><a class=\"ds-nav-link ds-nav-link-active\" href=\"#\">dashboard</a></nav>",
-      "css": ".ds-nav{display:flex;align-items:center;flex-wrap:wrap;gap:.35rem;font-family:Inter,ui-sans-serif,system-ui,sans-serif}.ds-nav-link{display:block;border-radius:6px;color:var(--muted-text,#555);font-size:.95rem;font-weight:700;padding:.58rem .72rem;text-decoration:none}.ds-nav-link:hover{background:var(--surface-muted,#f6f8fb);color:var(--ink,#0f1219)}.ds-nav-link-active{background:var(--ink,#0f1219)!important;color:#fff!important}"
+      "css": ".ds-nav{display:flex;align-items:center;flex-wrap:wrap;gap:.35rem;font-family:Inter,ui-sans-serif,system-ui,sans-serif}.ds-nav-link{display:block;border-radius:6px;color:var(--muted-text,#555);font-size:.95rem;font-weight:700;padding:.58rem .72rem;text-decoration:none}.ds-nav-link:hover{background:var(--surface-muted,#f6f8fb);color:var(--ink,#0f1219)}.ds-nav-link:focus-visible{outline:3px solid rgba(35,55,255,.14);outline-offset:2px}.ds-nav-link-active{background:var(--ink,#0f1219)!important;color:#fff!important}"
+    },
+    {
+      "name": "Routing DAG Board",
+      "kind": "custom",
+      "refersTo": "card",
+      "description": "Signature source-to-connector-to-sink topology with explicit operational state and arrowless dotted links.",
+      "html": "<section class=\"ds-dag-board\"><div class=\"ds-dag-labels\"><span>source</span><span>connector</span><span>sink</span></div><div class=\"ds-dag-flow\"><article class=\"ds-dag-node\"><strong>Engine CAN</strong><small>socketcan</small></article><span class=\"ds-dag-link\" aria-hidden=\"true\"></span><article class=\"ds-dag-node ds-dag-node-route\"><strong>Navigation</strong><small>confirmed · 0 pending</small></article><span class=\"ds-dag-link ds-dag-link-up\" aria-hidden=\"true\"></span><article class=\"ds-dag-node\"><strong>Browser feed</strong><small>http_sse</small></article></div></section>",
+      "css": ".ds-dag-board{display:grid;gap:16px;max-width:80rem;border:1px solid var(--border,#d9e0eb);border-radius:8px;background:var(--surface,#fff);box-shadow:0 2px 6px rgba(96,115,159,.16),0 12px 32px rgba(96,115,159,.12);color:var(--text,#222939);font-family:Inter,ui-sans-serif,system-ui,sans-serif;padding:18px}.ds-dag-labels,.ds-dag-flow{display:grid;grid-template-columns:minmax(120px,1fr) 52px minmax(160px,1.15fr) 52px minmax(120px,1fr);align-items:center}.ds-dag-labels span{color:var(--muted-text,#555);font-size:.78rem;font-weight:800;text-align:center;text-transform:uppercase}.ds-dag-labels span:nth-child(2){grid-column:3}.ds-dag-labels span:nth-child(3){grid-column:5}.ds-dag-node{display:grid;gap:4px;min-width:0;border:1px solid var(--border-strong,#c8d2e1);border-radius:8px;background:var(--surface,#fff);padding:12px;text-align:center}.ds-dag-node-route{border-color:var(--ink,#0f1219);background:var(--ink,#0f1219);color:var(--surface,#fff)}.ds-dag-node strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.9rem}.ds-dag-node small{color:inherit;opacity:.72;font-size:.72rem}.ds-dag-link{height:2px;background:radial-gradient(circle,var(--border-strong,#c8d2e1) 1.5px,transparent 1.7px) 0 50%/8px 4px repeat-x}.ds-dag-link-up{background-image:radial-gradient(circle,var(--success,#0f7a4f) 1.5px,transparent 1.7px)}@media(max-width:640px){.ds-dag-labels{display:none}.ds-dag-flow{grid-template-columns:1fr;gap:12px}.ds-dag-link{width:2px;height:20px;justify-self:center;background:radial-gradient(circle,var(--border-strong,#c8d2e1) 1.5px,transparent 1.7px) 50% 0/4px 8px repeat-y}}"
     }
   ],
   "narrative": {
@@ -150,7 +257,7 @@
     "rules": [
       {
         "name": "The One Accent Rule",
-        "body": "The blue accent is for action and selection, not decoration. If a screen looks blue at a glance, the accent has been overused.",
+        "body": "The saturated blue accent is for primary action, focus, and selection, not routine data or decoration. Entity names and live metrics use ink; ordinary links use the muted blue-gray link color. If a screen looks blue at a glance, the accent has been overused.",
         "section": "colors"
       },
       {
@@ -165,7 +272,7 @@
       },
       {
         "name": "The Zero Tracking Rule",
-        "body": "Beacon uses uppercase labels with letter-spacing: 0; do not add wide-tracked eyebrows or marketing kickers.",
+        "body": "Beacon uses uppercase labels with `letter-spacing: 0`; do not add wide-tracked eyebrows or marketing kickers.",
         "section": "typography"
       },
       {
@@ -190,7 +297,7 @@
       "Don't drift away from the openships.ai visual system.",
       "Don't use generic SaaS dashboard styling, ornamental nautical styling, cloud-first positioning, or heavy marketing composition.",
       "Don't add wide-tracked section eyebrows, gradient text, glass cards, decorative motion, or full-saturation inactive states.",
-      "Don't add new border-left or border-right colored stripes greater than 1px; replace that pattern with full borders, badges, icons, or background tints when touching graph nodes.",
+      "Don't add new `border-left` or `border-right` colored stripes greater than 1px; replace that pattern with full borders, badges, icons, or background tints when touching graph nodes.",
       "Don't introduce display fonts, decorative icons, or invented controls where a standard product affordance already works."
     ]
   }
