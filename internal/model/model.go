@@ -121,6 +121,11 @@ type BufferLimits struct {
 	MaxBytes    int64    `json:"max_bytes,omitempty"`
 }
 
+// DefaultMaxMessages is the retention cap used when a connector does not
+// configure any buffer limit. Keep it exported so every configuration surface
+// can show the same effective default instead of presenting an empty field.
+const DefaultMaxMessages int64 = 10_000
+
 type BridgeMode string
 
 const (
@@ -129,11 +134,11 @@ const (
 	BridgeObserve     BridgeMode = "observe"
 )
 
-// ApplyDefaults returns l with the spec default (max_messages=100000)
+// ApplyDefaults returns l with the spec default (max_messages=10000)
 // applied when no limit at all is set.
 func (l BufferLimits) ApplyDefaults() BufferLimits {
 	if l.MaxMessages == 0 && l.MaxAge == 0 && l.MaxBytes == 0 {
-		l.MaxMessages = 100000
+		l.MaxMessages = DefaultMaxMessages
 	}
 	return l
 }

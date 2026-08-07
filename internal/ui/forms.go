@@ -1247,16 +1247,18 @@ func formatFilters(filters []string) string {
 	return strings.Join(filters, "\n")
 }
 
-// formatOptionalInt64 renders a buffer limit as its decimal string, or ""
-// for 0 — 0 means "unset" (model.BufferLimits.ApplyDefaults treats an
-// all-zero Buffer as no limit configured), so the number input starts empty
-// rather than showing a literal "0" for a connector that has never had a
-// limit set.
+// formatOptionalInt64 renders an optional limit as its decimal string, or ""
+// for 0. Connector max_messages uses formatMaxMessages instead so its effective
+// default is visible in the editor.
 func formatOptionalInt64(v int64) string {
 	if v == 0 {
 		return ""
 	}
 	return strconv.FormatInt(v, 10)
+}
+
+func formatMaxMessages(limits model.BufferLimits) string {
+	return strconv.FormatInt(limits.ApplyDefaults().MaxMessages, 10)
 }
 
 // parseOptionalInt64 is formatOptionalInt64's inverse: "" parses to 0
@@ -1333,7 +1335,7 @@ func connectorFormViewFromModel(v model.Connector, sources []model.Source, sinks
 		Mode:              string(v.EffectiveMode()),
 		ForwardManagement: v.ForwardManagement,
 		FiltersText:       formatFilters(v.Filters),
-		MaxMessages:       formatOptionalInt64(v.Buffer.MaxMessages),
+		MaxMessages:       formatMaxMessages(v.Buffer),
 		MaxAge:            formatMaxAge(v.Buffer.MaxAge),
 		MaxBytes:          formatOptionalInt64(v.Buffer.MaxBytes),
 		Sources:           sources,
@@ -1345,10 +1347,11 @@ func connectorFormViewFromModel(v model.Connector, sources []model.Source, sinks
 // source/sink lists its selects need and semantic bridge mode selected.
 func blankConnectorFormView(sources []model.Source, sinks []model.Sink) connectorFormViewData {
 	return connectorFormViewData{
-		Enabled: true,
-		Sources: sources,
-		Sinks:   sinks,
-		Mode:    string(model.BridgeSemantic),
+		Enabled:     true,
+		Sources:     sources,
+		Sinks:       sinks,
+		Mode:        string(model.BridgeSemantic),
+		MaxMessages: strconv.FormatInt(model.DefaultMaxMessages, 10),
 	}
 }
 

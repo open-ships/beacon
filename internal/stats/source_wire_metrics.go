@@ -296,14 +296,21 @@ func floatPercentile(values []float64, percentile float64) float64 {
 	}
 	copyValues := append([]float64(nil), values...)
 	sort.Float64s(copyValues)
-	index := int(math.Ceil(percentile*float64(len(copyValues)))) - 1
+	return floatPercentileSorted(copyValues, percentile)
+}
+
+func floatPercentileSorted(sorted []float64, percentile float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	index := int(math.Ceil(percentile*float64(len(sorted)))) - 1
 	if index < 0 {
 		index = 0
 	}
-	if index >= len(copyValues) {
-		index = len(copyValues) - 1
+	if index >= len(sorted) {
+		index = len(sorted) - 1
 	}
-	return copyValues[index]
+	return sorted[index]
 }
 
 type sourceRateBucket struct {

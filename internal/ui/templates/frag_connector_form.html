@@ -93,14 +93,17 @@
     <fieldset class="fieldset">
       <legend class="fieldset-legend">Max messages</legend>
       <input type="number" id="conn-max-messages" name="max_messages" value="{{.MaxMessages}}" class="input w-full" min="0">
+      <p class="field-help">10,000 is the default when no other limit is set. Set 0 only when also setting an age or byte limit.</p>
     </fieldset>
     <fieldset class="fieldset">
       <legend class="fieldset-legend">Max age</legend>
-      <input type="text" id="conn-max-age" name="max_age" value="{{.MaxAge}}" placeholder="e.g. 24h" class="input w-full">
+      <input type="text" id="conn-max-age" name="max_age" value="{{.MaxAge}}" placeholder="No age limit (for example, 24h)" class="input w-full">
+      <p class="field-help">Optional. Empty means messages do not expire by age.</p>
     </fieldset>
     <fieldset class="fieldset">
       <legend class="fieldset-legend">Max bytes</legend>
-      <input type="number" id="conn-max-bytes" name="max_bytes" value="{{.MaxBytes}}" class="input w-full" min="0">
+      <input type="number" id="conn-max-bytes" name="max_bytes" value="{{.MaxBytes}}" placeholder="No byte limit" class="input w-full" min="0">
+      <p class="field-help">Optional. Empty means retention is governed by message count and age.</p>
     </fieldset>
     <div class="card-actions justify-end">
       {{if .InDialog}}

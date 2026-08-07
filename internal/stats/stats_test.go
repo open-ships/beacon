@@ -108,6 +108,24 @@ func TestStreamSubscriptionsReceiveCanonicalFutureEnvelopesByBoundary(t *testing
 	}
 }
 
+func TestStreamSubscriptionsDiscardOldestPreviewWhenFull(t *testing.T) {
+	r := NewRegistry()
+	stream, stop := r.SubscribeStream("source", "in", 2)
+	defer stop()
+	for _, pgn := range []uint32{1, 2, 3} {
+		r.publishStream("source", "in", &msg.Envelope{PGN: pgn, Source: 1})
+	}
+	for _, want := range []uint32{2, 3} {
+		var got msg.Envelope
+		if err := json.Unmarshal(<-stream, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.PGN != want {
+			t.Fatalf("preview PGN = %d, want %d", got.PGN, want)
+		}
+	}
+}
+
 func TestTotalsAndRates(t *testing.T) {
 	r := NewRegistry()
 	for i := 0; i < 10; i++ {

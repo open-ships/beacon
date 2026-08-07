@@ -2,13 +2,13 @@
      beyond it — see ui.go's "GET /dashboard" handler). The dashboard's
      actual content ships empty and fetches "dashboard-content"
      (frag_dashboard.html, part of fragTemplates) client-side immediately
-     after load, then every 2s — exactly templates/connector_detail.html's
+     after load, then every 5s — exactly templates/connector_detail.html's
      #connector-stats pattern; see its comment and pages.go's "connector-
      detail" doc comment for why (avoids parsing frag_dashboard.html into
      this page's own template set just to duplicate what the poll already
      renders one round-trip later). */}}
 {{define "content"}}
 <div class="flex flex-col gap-4">
-  <div id="dashboard-panel" hx-get="/frag/dashboard" hx-trigger="load, every 2s" hx-swap="innerHTML"></div>
+  <div id="dashboard-panel" hx-get="/frag/dashboard" hx-trigger="load, every 5s" data-live-poll hx-swap="innerHTML"></div>
 </div>
 {{end}}

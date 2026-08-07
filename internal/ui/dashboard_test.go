@@ -497,7 +497,8 @@ func TestDashboardPageHostsPollingContainer(t *testing.T) {
 	for _, want := range []string{
 		`id="dashboard-panel"`,
 		`hx-get="/frag/dashboard"`,
-		`hx-trigger="load, every 2s"`,
+		`hx-trigger="load, every 5s"`,
+		`data-live-poll`,
 		`hx-swap="innerHTML"`,
 	} {
 		if !strings.Contains(body, want) {

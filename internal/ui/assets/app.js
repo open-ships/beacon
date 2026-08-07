@@ -234,11 +234,17 @@
     textarea.addEventListener("blur", function () {
       window.setTimeout(close, 100);
     });
-    document.addEventListener("pointerdown", function (event) {
+    function handleDocumentPointerDown(event) {
       if (!editor.contains(event.target)) close();
-    });
+    }
+    document.addEventListener("pointerdown", handleDocumentPointerDown);
 
-    attachLiveValidation(editor, textarea);
+    var cleanupValidation = attachLiveValidation(editor, textarea);
+    editor.cleanupCEL = function () {
+      document.removeEventListener("pointerdown", handleDocumentPointerDown);
+      if (cleanupValidation) cleanupValidation();
+      editor.cleanupCEL = null;
+    };
     loadCatalog();
   }
 
@@ -246,7 +252,7 @@
     var highlight = editor.querySelector("[data-cel-highlight]");
     var fieldset = editor.closest("fieldset");
     var feedback = fieldset && fieldset.querySelector("[data-cel-validation-feedback]");
-    if (!highlight || !feedback) return;
+    if (!highlight || !feedback) return function () {};
 
     var validationTimer;
     var validationRequest;
@@ -391,6 +397,12 @@
     textarea.addEventListener("scroll", syncHighlightScroll);
     renderHighlight(textarea.value, []);
     if (textarea.value.trim() !== "") queueValidation();
+    return function () {
+      window.clearTimeout(validationTimer);
+      validationSequence += 1;
+      if (validationRequest) validationRequest.abort();
+      validationRequest = null;
+    };
   }
 
   function diagnosticRanges(text, diagnostics) {
@@ -646,7 +658,10 @@
     var starting = false;
     var appliedFilter = "";
     var displayFormat = "json";
-    var renderPending = false;
+    var renderTimer = null;
+    var renderFrame = null;
+    var pendingEntryCount = 0;
+    var fullRenderPending = false;
     var filterTimer = null;
     var validationSequence = 0;
     var copyFeedbackTimer = null;
@@ -712,21 +727,37 @@
       }
     }
 
-    function queueRender() {
-      if (renderPending) return;
-      renderPending = true;
-      window.requestAnimationFrame(function () {
-        renderPending = false;
-        renderEntries();
-      });
+    function queueRender(full) {
+      if (full) fullRenderPending = true;
+      if (renderTimer !== null) return;
+      renderTimer = window.setTimeout(function () {
+        renderTimer = null;
+        renderFrame = window.requestAnimationFrame(function () {
+          renderFrame = null;
+          renderEntries();
+        });
+      }, 100);
     }
 
     function renderEntries() {
-      var fragment = document.createDocumentFragment();
-      entries.forEach(function (entry) {
-        fragment.appendChild(streamMessageElement(entry, displayFormat));
-      });
-      list.replaceChildren(fragment);
+      if (fullRenderPending || pendingEntryCount > streamCaptureLimit) {
+        var fullFragment = document.createDocumentFragment();
+        entries.forEach(function (entry) {
+          fullFragment.appendChild(streamMessageElement(entry, displayFormat));
+        });
+        list.replaceChildren(fullFragment);
+      } else if (pendingEntryCount > 0) {
+        var nextFragment = document.createDocumentFragment();
+        entries.slice(0, pendingEntryCount).forEach(function (entry) {
+          nextFragment.appendChild(streamMessageElement(entry, displayFormat));
+        });
+        list.prepend(nextFragment);
+        while (list.children.length > entries.length) {
+          list.lastElementChild.remove();
+        }
+      }
+      pendingEntryCount = 0;
+      fullRenderPending = false;
       updateEmpty();
       updateControls();
       setStatus(isStreaming() ? "Streaming" : "Stopped");
@@ -792,7 +823,8 @@
         totalCaptured += 1;
         entries.unshift(envelope);
         if (entries.length > streamCaptureLimit) entries.length = streamCaptureLimit;
-        queueRender();
+        pendingEntryCount += 1;
+        queueRender(false);
       };
       nextStream.onerror = function () {
         if (stream === nextStream) setStatus("Reconnecting");
@@ -877,6 +909,12 @@
     }
 
     function clear() {
+      if (renderTimer !== null) window.clearTimeout(renderTimer);
+      if (renderFrame !== null) window.cancelAnimationFrame(renderFrame);
+      renderTimer = null;
+      renderFrame = null;
+      pendingEntryCount = 0;
+      fullRenderPending = false;
       entries = [];
       totalCaptured = 0;
       list.replaceChildren();
@@ -948,7 +986,7 @@
           candidate.dataset.variant = selected ? "primary" : "ghost";
         });
         if (displayFormat !== "json" && celInspector) celInspector.hidden = true;
-        queueRender();
+        queueRender(true);
       });
     });
 
@@ -1547,6 +1585,10 @@
   }
   document.addEventListener("htmx:beforeRequest", function (event) {
     var trigger = event.detail && event.detail.elt;
+    if (trigger && trigger.matches("[data-live-poll]") && document.hidden) {
+      event.preventDefault();
+      return;
+    }
     if (trigger && trigger.getAttribute("hx-target") === "#entity-create-dialog-container") {
       entityDialogReturnFocus = trigger;
     }
@@ -1567,6 +1609,11 @@
     var root = event.detail && event.detail.elt;
     if (!root || !root.querySelectorAll) return;
     cleanupDAGs(root);
+    var editors = Array.prototype.slice.call(root.querySelectorAll("[data-cel-autocomplete]"));
+    if (root.matches && root.matches("[data-cel-autocomplete]")) editors.unshift(root);
+    editors.forEach(function (editor) {
+      if (typeof editor.cleanupCEL === "function") editor.cleanupCEL();
+    });
     var panels = Array.prototype.slice.call(root.querySelectorAll("[data-stream-panel]"));
     if (root.matches && root.matches("[data-stream-panel]")) panels.unshift(root);
     panels.forEach(function (panel) {

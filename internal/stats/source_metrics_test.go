@@ -181,6 +181,88 @@ func TestRemoveSourceDropsPGNMetrics(t *testing.T) {
 	}
 }
 
+func TestSourceDiagnosticsAreSampledWhileTrafficCountersRemainExact(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	reg := newRegistryAt(func() time.Time { return now })
+	for i := 0; i < 100; i++ {
+		reg.RecordSource("can0", &msg.Envelope{
+			PGN: 130999, Source: 9, Dest: 255, Priority: 3,
+			Raw: []byte{byte(i)}, Payload: json.RawMessage(`{"mode":"fast"}`),
+			Decode: msg.DecodeInfo{Status: "decoded", Complete: true},
+		})
+	}
+	stream := reg.SourcePGNMetrics("can0")[0]
+	if stream.Messages != 100 || stream.DecodeComplete != 100 ||
+		stream.DestinationCounts["255"] != 100 || stream.PriorityCounts["3"] != 100 {
+		t.Fatalf("exact traffic counters = %+v", stream)
+	}
+	if stream.DiagnosticSamples != 1 || stream.Raw == nil || stream.Raw.LengthCounts["1"] != 1 {
+		t.Fatalf("sampled diagnostics = %+v", stream)
+	}
+	mode := findField(t, stream.Fields, "mode")
+	if mode.Samples != 1 || mode.PresentMessages != 1 || mode.AvailabilityPercent != 100 {
+		t.Fatalf("sampled field distribution = %+v", mode)
+	}
+
+	now = now.Add(time.Second)
+	reg.RecordSource("can0", &msg.Envelope{
+		PGN: 130999, Source: 9, Dest: 255, Priority: 3,
+		Raw: []byte{101}, Payload: json.RawMessage(`{"mode":"slow"}`),
+		Decode: msg.DecodeInfo{Status: "decoded", Complete: true},
+	})
+	stream = reg.SourcePGNMetrics("can0")[0]
+	if stream.Messages != 101 || stream.DiagnosticSamples != 2 || stream.Raw.LengthCounts["1"] != 2 {
+		t.Fatalf("counters after next diagnostic interval = %+v", stream)
+	}
+}
+
+func TestSourceSummariesSkipRichDiagnosticsAndRichAddressReadIsScoped(t *testing.T) {
+	reg := NewRegistry()
+	for _, address := range []uint8{9, 10} {
+		reg.RecordSource("can0", &msg.Envelope{
+			PGN: 130999, Source: address, Raw: []byte{1, 2},
+			Payload: json.RawMessage(`{"mode":"fast"}`),
+		})
+	}
+	summaries := reg.SourcePGNSummaries("can0")
+	if len(summaries) != 2 {
+		t.Fatalf("summaries = %d, want two streams", len(summaries))
+	}
+	for _, summary := range summaries {
+		if summary.Messages != 1 || summary.PayloadBytesMean != 2 {
+			t.Fatalf("compact counters = %+v", summary)
+		}
+		if summary.Raw != nil || len(summary.Fields) != 0 || len(summary.DecodeStatuses) != 0 {
+			t.Fatalf("summary included rich diagnostics: %+v", summary)
+		}
+	}
+	rich := reg.SourcePGNMetricsForAddress("can0", 9)
+	if len(rich) != 1 || rich[0].SourceAddress != 9 {
+		t.Fatalf("address-scoped metrics = %+v", rich)
+	}
+	if rich[0].Raw == nil || len(rich[0].Fields) == 0 {
+		t.Fatalf("address-scoped metrics omitted diagnostics: %+v", rich[0])
+	}
+}
+
+func TestSourceStreamCardinalityIsBoundedPerSource(t *testing.T) {
+	reg := NewRegistry()
+	for i := 0; i < maxSourceStreamsPerSource+50; i++ {
+		reg.getSourceStream("can0", &msg.Envelope{PGN: uint32(i + 1), Source: uint8(i % 255)})
+	}
+	reg.mu.Lock()
+	count := 0
+	for key := range reg.sourceStreams {
+		if key.source == "can0" {
+			count++
+		}
+	}
+	reg.mu.Unlock()
+	if count != maxSourceStreamsPerSource {
+		t.Fatalf("source streams = %d, want bounded at %d", count, maxSourceStreamsPerSource)
+	}
+}
+
 func findField(t *testing.T, fields []FieldDistribution, name string) FieldDistribution {
 	t.Helper()
 	for _, field := range fields {

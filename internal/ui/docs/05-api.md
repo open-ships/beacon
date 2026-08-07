@@ -30,6 +30,10 @@ include learned timing/jitter, rates and estimated bus load, addressing,
 decode quality, payload-size and raw-byte distributions, last-seen age,
 gaps/bursts, decoded-field quantiles and availability, and recent lifecycle
 events. Input and output JSON Schemas are returned by MCP `tools/list`.
+Core traffic counters include every message. Decoded-field and raw-byte
+distributions expose `diagnostic_samples` and are sampled at most once per
+second per source/PGN/address stream.
+
 Configuration writes persist to SQLite and reconcile immediately through the
 supervisor.
 

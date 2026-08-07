@@ -188,7 +188,7 @@ func (v sinkDefinition) model() model.Sink {
 }
 
 type bufferDefinition struct {
-	MaxMessages int64  `json:"max_messages,omitempty" jsonschema:"Maximum retained messages; all-zero limits default to 100000 messages."`
+	MaxMessages int64  `json:"max_messages,omitempty" jsonschema:"Maximum retained messages; all-zero limits default to 10000 messages."`
 	MaxAge      string `json:"max_age,omitempty" jsonschema:"Maximum retained age as a Go duration such as 24h or 90s."`
 	MaxBytes    int64  `json:"max_bytes,omitempty" jsonschema:"Maximum retained bytes."`
 }

@@ -1,0 +1,39 @@
+{{define "overview-summary-live"}}
+<div id="{{.DOMID}}" class="overview-live">
+  <div class="overview-grid" id="{{.Kind}}-overview-summary"
+       hx-get="{{.RefreshHref}}" hx-trigger="every 2s" hx-select="#{{.Kind}}-overview-summary"
+       data-live-poll hx-sync="this:drop" hx-swap="outerHTML swap:0ms settle:0ms">
+    <section class="overview-card overview-summary-panel component-status-surface state-{{.State}}" aria-label="Status and metrics">
+      <div class="section-heading overview-summary-heading">
+        <h3>Status</h3>
+        <div class="status-line">
+          {{if eq .State "up"}}<span data-status="success" data-variant="outline" class="badge badge-success">up</span>
+          {{else if eq .State "degraded"}}<span data-status="warning" data-variant="outline" class="badge badge-warning">degraded</span>
+          {{else if eq .State "error"}}<span data-status="error" data-variant="outline" class="badge badge-error">error</span>
+          {{else}}<span data-status="neutral" data-variant="outline" class="badge badge-ghost">{{.State}}</span>{{end}}
+        </div>
+      </div>
+      <div class="log-list">
+        {{range .Logs}}
+        <div class="log-line log-line-{{.Level}}"><span>{{.Level}}</span><p>{{.Message}}</p></div>
+        {{else}}
+        <p class="opacity-70">No recent runtime errors.</p>
+        {{end}}
+      </div>
+      <div class="overview-stats">
+        <div><span>Msg/s</span><strong>{{printf "%.2f" .Snapshot.MsgPerSec}}</strong></div>
+        <div><span>Bytes/s</span><strong>{{.BytesPerSecText}}</strong></div>
+        {{if .Snapshot.Drops}}<div><span>Intake drops</span><strong>{{.Snapshot.Drops}}</strong></div>{{end}}
+        {{if eq .Kind "connector"}}
+        <div><span>Pending delivery</span><strong>{{.Snapshot.QueueDepth}}</strong></div>
+        <div><span>Pending bytes</span><strong>{{.QueueBytesText}}</strong></div>
+        <div><span>Retained history</span><strong>{{.Snapshot.RetainedDepth}}</strong></div>
+        <div><span>Retained bytes</span><strong>{{.RetainedBytesText}}</strong></div>
+        {{end}}
+        {{if .Snapshot.DeliveryClass}}<div><span>Delivery class</span><strong>{{.Snapshot.DeliveryClass}}</strong></div>{{end}}
+        {{if .Snapshot.QueueTail}}<div><span>Checkpoint / tail</span><strong>{{.Snapshot.QueueCursor}} / {{.Snapshot.QueueTail}}</strong></div>{{end}}
+      </div>
+    </section>
+  </div>
+</div>
+{{end}}

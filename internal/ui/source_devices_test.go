@@ -237,7 +237,7 @@ func TestSourceDeviceDetailBuildsMetadataAndPGNStatistics(t *testing.T) {
 	if detail.PGNs[1].PeriodP90 != "110ms" || detail.PGNs[1].PeriodP99 != "130ms" {
 		t.Fatalf("PGN percentiles = p90 %q / p99 %q", detail.PGNs[1].PeriodP90, detail.PGNs[1].PeriodP99)
 	}
-	if detail.RefreshHref != "/frag/sources/src1/overview?device=12&dir=desc&pgn_dir=asc&pgn_sort=pgn&sort=bytes" {
+	if detail.RefreshHref != "/frag/sources/src1/overview?detail=1&device=12&dir=desc&pgn_dir=asc&pgn_sort=pgn&sort=bytes" {
 		t.Fatalf("detail refresh href = %q", detail.RefreshHref)
 	}
 	if detail.CloseHref != "/frag/sources/src1/overview?dir=desc&sort=bytes" {

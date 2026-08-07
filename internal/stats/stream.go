@@ -9,7 +9,7 @@ import (
 
 // SubscribeStream subscribes to future source-received or sink-sent
 // envelopes. It is an observability tap: publishers never block and drop a
-// preview copy when a subscriber cannot keep up. Each message is the
+// older preview data when a subscriber cannot keep up. Each message is the
 // canonical three-key consumer envelope JSON.
 func (r *Registry) SubscribeStream(kind, id string, buffer int) (<-chan []byte, func()) {
 	if buffer < 1 {
@@ -72,11 +72,19 @@ func (r *Registry) publishStream(kind, id string, envelope *msg.Envelope) {
 
 	r.mu.Lock()
 	for _, subscriber := range r.streamSubscribers[key] {
-		copyOfDocument := append([]byte(nil), document...)
 		select {
-		case subscriber <- copyOfDocument:
+		case subscriber <- document:
 		default:
-			// A UI preview must never apply backpressure to vessel traffic.
+			// Preview streams are latest-biased: discard one stale document and
+			// offer the newest without ever applying backpressure to traffic.
+			select {
+			case <-subscriber:
+			default:
+			}
+			select {
+			case subscriber <- document:
+			default:
+			}
 		}
 	}
 	r.mu.Unlock()

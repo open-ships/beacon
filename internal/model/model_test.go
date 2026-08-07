@@ -197,8 +197,8 @@ func TestValidateRejects(t *testing.T) {
 
 func TestBufferDefaults(t *testing.T) {
 	l := BufferLimits{}.ApplyDefaults()
-	if l.MaxMessages != 100000 {
-		t.Fatalf("default MaxMessages = %d, want 100000", l.MaxMessages)
+	if l.MaxMessages != DefaultMaxMessages {
+		t.Fatalf("default MaxMessages = %d, want %d", l.MaxMessages, DefaultMaxMessages)
 	}
 	// explicit limit is preserved, no default injected
 	l = BufferLimits{MaxAge: Duration(time.Hour)}.ApplyDefaults()
