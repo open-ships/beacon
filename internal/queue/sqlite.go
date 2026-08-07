@@ -216,26 +216,46 @@ func (q *sqliteQueue) Prune(ctx context.Context) (PruneResult, error) {
 		return result, err
 	}
 
-	remove := func(predicate string, args ...any) error {
-		params := append([]any{
+	remove := func(byTimestamp bool, cutoff int64) error {
+		params := []any{
 			sql.Named("connector", q.connectorID),
 			sql.Named("cursor", cursor),
-		}, args...)
+			sql.Named("cutoff", cutoff),
+		}
 		var removedCount, removedBytes, removedPending, removedPendingBytes int64
-		if err := tx.QueryRowContext(ctx, `
-			SELECT COUNT(*), COALESCE(SUM(bytes), 0),
-			       COALESCE(SUM(CASE WHEN id > @cursor THEN 1 ELSE 0 END), 0),
-			       COALESCE(SUM(CASE WHEN id > @cursor THEN bytes ELSE 0 END), 0)
-			FROM queue WHERE connector_id = @connector AND (`+predicate+`)`, params...).Scan(
-			&removedCount, &removedBytes, &removedPending, &removedPendingBytes); err != nil {
+		var row *sql.Row
+		if byTimestamp {
+			row = tx.QueryRowContext(ctx, `
+				SELECT COUNT(*), COALESCE(SUM(bytes), 0),
+				       COALESCE(SUM(CASE WHEN id > @cursor THEN 1 ELSE 0 END), 0),
+				       COALESCE(SUM(CASE WHEN id > @cursor THEN bytes ELSE 0 END), 0)
+				FROM queue WHERE connector_id = @connector AND ts < @cutoff`, params...)
+		} else {
+			row = tx.QueryRowContext(ctx, `
+				SELECT COUNT(*), COALESCE(SUM(bytes), 0),
+				       COALESCE(SUM(CASE WHEN id > @cursor THEN 1 ELSE 0 END), 0),
+				       COALESCE(SUM(CASE WHEN id > @cursor THEN bytes ELSE 0 END), 0)
+				FROM queue WHERE connector_id = @connector AND id <= @cutoff`, params...)
+		}
+		if err := row.Scan(&removedCount, &removedBytes, &removedPending, &removedPendingBytes); err != nil {
 			return err
 		}
 		if removedCount == 0 {
 			return nil
 		}
-		deleteParams := append([]any{sql.Named("connector", q.connectorID)}, args...)
-		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM queue WHERE connector_id = @connector AND (`+predicate+`)`, deleteParams...); err != nil {
+		deleteParams := []any{
+			sql.Named("connector", q.connectorID),
+			sql.Named("cutoff", cutoff),
+		}
+		var err error
+		if byTimestamp {
+			_, err = tx.ExecContext(ctx,
+				`DELETE FROM queue WHERE connector_id = @connector AND ts < @cutoff`, deleteParams...)
+		} else {
+			_, err = tx.ExecContext(ctx,
+				`DELETE FROM queue WHERE connector_id = @connector AND id <= @cutoff`, deleteParams...)
+		}
+		if err != nil {
 			return err
 		}
 		retainedCount = max(int64(0), retainedCount-removedCount)
@@ -254,7 +274,7 @@ func (q *sqliteQueue) Prune(ctx context.Context) (PruneResult, error) {
 			q.connectorID, n).Scan(&cutoff); err != nil {
 			return result, err
 		}
-		if err := remove(`id <= @cutoff`, sql.Named("cutoff", cutoff)); err != nil {
+		if err := remove(false, cutoff); err != nil {
 			return result, err
 		}
 	}
@@ -267,7 +287,7 @@ func (q *sqliteQueue) Prune(ctx context.Context) (PruneResult, error) {
 			return result, err
 		}
 		if stale {
-			if err := remove(`ts < @cutoff`, sql.Named("cutoff", cutoff)); err != nil {
+			if err := remove(true, cutoff); err != nil {
 				return result, err
 			}
 		}
@@ -297,7 +317,7 @@ func (q *sqliteQueue) Prune(ctx context.Context) (PruneResult, error) {
 			return result, err
 		}
 		if cutoff > 0 {
-			if err := remove(`id <= @cutoff`, sql.Named("cutoff", cutoff)); err != nil {
+			if err := remove(false, cutoff); err != nil {
 				return result, err
 			}
 		}

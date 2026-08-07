@@ -290,10 +290,6 @@ func medianSortedInterval(sorted []time.Duration) time.Duration {
 	return sorted[mid-1]/2 + sorted[mid]/2
 }
 
-func durationPercentile(values []time.Duration, percentile float64) time.Duration {
-	return durationPercentileSorted(sortedIntervals(values), percentile)
-}
-
 func durationPercentileSorted(sorted []time.Duration, percentile float64) time.Duration {
 	if len(sorted) == 0 {
 		return 0
