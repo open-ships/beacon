@@ -154,6 +154,20 @@ func TestToolCatalogAndSchemas(t *testing.T) {
 			t.Fatalf("read tool %q has incorrect annotations: %+v", tool.Name, tool.Annotations)
 		}
 	}
+	putConnectorSchema, err := json.Marshal(byName["put_connector"].InputSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(putConnectorSchema), "effective_buffer") {
+		t.Fatalf("put_connector input schema should accept authored config only: %s", putConnectorSchema)
+	}
+	getConfigSchema, err := json.Marshal(byName["get_config"].OutputSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(getConfigSchema), "effective_buffer") {
+		t.Fatalf("get_config output schema is missing effective_buffer: %s", getConfigSchema)
+	}
 	if got := tm.client.InitializeResult().ServerInfo.Name; got != "beacon" {
 		t.Fatalf("server name = %q, want beacon", got)
 	}
@@ -241,20 +255,66 @@ func TestConfigureInspectAndDeleteThroughTools(t *testing.T) {
 	}
 }
 
+func TestConnectorOutputsExposeEffectiveDefaultWithoutChangingAuthoredConfig(t *testing.T) {
+	tm := newTestMCP(t)
+	for toolName, arguments := range map[string]any{
+		"put_source": map[string]any{"source": map[string]any{
+			"id": "can0", "name": "CAN", "type": "socketcan", "interface": "can0", "enabled": false,
+		}},
+		"put_sink": map[string]any{"sink": map[string]any{
+			"id": "discard", "name": "Discard", "type": "null", "enabled": false,
+		}},
+	} {
+		if result := callTool(t, tm.client, toolName, arguments); result.IsError {
+			t.Fatalf("%s: %s", toolName, toolErrorText(result))
+		}
+	}
+	result := callTool(t, tm.client, "put_connector", map[string]any{"connector": map[string]any{
+		"id": "default_buffer", "name": "Default buffer", "source_id": "can0", "sink_id": "discard",
+		"buffer": map[string]any{}, "enabled": false,
+	}})
+	if result.IsError {
+		t.Fatalf("put_connector: %s", toolErrorText(result))
+	}
+	put := decodeStructured[putConnectorOutput](t, result)
+	if put.Connector.Buffer.MaxMessages != 0 || put.Connector.EffectiveBuffer.MaxMessages != model.DefaultMaxMessages {
+		t.Fatalf("put connector buffers = authored %+v effective %+v", put.Connector.Buffer, put.Connector.EffectiveBuffer)
+	}
+
+	result = callTool(t, tm.client, "get_config", map[string]any{})
+	if result.IsError {
+		t.Fatalf("get_config: %s", toolErrorText(result))
+	}
+	cfg := decodeStructured[getConfigOutput](t, result)
+	if len(cfg.Connectors) != 1 || cfg.Connectors[0].Buffer.MaxMessages != 0 ||
+		cfg.Connectors[0].EffectiveBuffer.MaxMessages != model.DefaultMaxMessages {
+		t.Fatalf("get config connector = %+v", cfg.Connectors)
+	}
+	stored, err := tm.svc.GetConnector(context.Background(), "default_buffer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Buffer.MaxMessages != 0 {
+		t.Fatalf("stored authored max_messages = %d, want zero", stored.Buffer.MaxMessages)
+	}
+}
+
 func TestGetSourceMetricsReturnsAndFiltersSharedPGNStore(t *testing.T) {
 	tm := newTestMCP(t)
 	mustPutSource := model.Source{ID: "can0", Name: "CAN", Type: model.SourceSocketCAN, Interface: "can0"}
 	if err := tm.svc.PutSource(context.Background(), mustPutSource, true); err != nil {
 		t.Fatal(err)
 	}
+	deviceName := uint64(0x1122334455667788)
 	tm.stats.RecordSource("can0", &msg.Envelope{
 		PGN: 127250, PGNName: "Vessel Heading", Source: 12,
-		Raw: []byte{1, 2, 3, 4, 5, 6, 7, 8}, Payload: json.RawMessage(`{"heading":1.5}`),
+		DeviceName: &deviceName, Raw: []byte{1, 2, 3, 4, 5, 6, 7, 8}, Payload: json.RawMessage(`{"heading":1.5}`),
 	})
 	tm.stats.RecordSource("can0", &msg.Envelope{PGN: 128259, Source: 44, Raw: []byte{1, 2}})
 
 	result := callTool(t, tm.client, "get_source_metrics", map[string]any{
 		"source_id": "can0", "pgn": 127250, "source_address": 12,
+		"device_name_hex": "0x1122334455667788",
 	})
 	if result.IsError {
 		t.Fatalf("get_source_metrics: %s", toolErrorText(result))
@@ -265,7 +325,8 @@ func TestGetSourceMetricsReturnsAndFiltersSharedPGNStore(t *testing.T) {
 		t.Fatalf("source metrics = %+v", out)
 	}
 	stream := streams[0]
-	if stream.PGN != 127250 || stream.SourceAddress != 12 || stream.PayloadBytesLast != 8 || stream.Messages != 1 {
+	if stream.PGN != 127250 || stream.SourceAddress != 12 || stream.PayloadBytesLast != 8 ||
+		stream.Messages != 1 || stream.DiagnosticSamples != 1 {
 		t.Fatalf("filtered stream = %+v", stream)
 	}
 	if out.GeneratedAt.IsZero() {
@@ -275,6 +336,78 @@ func TestGetSourceMetricsReturnsAndFiltersSharedPGNStore(t *testing.T) {
 	result = callTool(t, tm.client, "get_source_metrics", map[string]any{"source_id": "missing"})
 	if !result.IsError || !strings.Contains(toolErrorText(result), config.ErrNotFound.Error()) {
 		t.Fatalf("unknown source result = isError %v, content %q", result.IsError, toolErrorText(result))
+	}
+}
+
+func TestGetLatestPayloadsReturnsEverySensorPGNAndSupportsScopedFilters(t *testing.T) {
+	tm := newTestMCP(t)
+	if err := tm.svc.PutSource(context.Background(), model.Source{
+		ID: "can0", Name: "CAN", Type: model.SourceSocketCAN, Interface: "can0",
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	deviceName := uint64(0x1122334455667788)
+	for _, payload := range []string{`{"heading":1.5}`, `{"heading":2.5}`} {
+		tm.stats.RecordSource("can0", &msg.Envelope{
+			PGN: 127250, PGNName: "Vessel Heading", Source: 12,
+			DeviceName: &deviceName, Payload: json.RawMessage(payload),
+		})
+	}
+	tm.stats.RecordSource("can0", &msg.Envelope{
+		PGN: 129025, PGNName: "Position, Rapid Update", Source: 12,
+		DeviceName: &deviceName, Payload: json.RawMessage(`{"latitude":42.1,"longitude":-71.2}`),
+	})
+	tm.stats.RecordSource("can0", &msg.Envelope{
+		PGN: 128259, PGNName: "Speed", Source: 44,
+		Payload: json.RawMessage(`{"speedWaterReferenced":3.2}`),
+	})
+
+	result := callTool(t, tm.client, "get_latest_payloads", map[string]any{"source_id": "can0"})
+	if result.IsError {
+		t.Fatalf("get_latest_payloads: %s", toolErrorText(result))
+	}
+	out := decodeStructured[latestPayloadsOutput](t, result)
+	if len(out.Payloads) != 3 {
+		t.Fatalf("latest payloads = %+v", out.Payloads)
+	}
+	if out.Payloads[0].SensorID != "1122334455667788" || out.Payloads[0].PGN != 127250 {
+		t.Fatalf("first sensor payload = %+v", out.Payloads[0])
+	}
+	heading, ok := out.Payloads[0].Payload.(map[string]any)
+	if !ok || heading["heading"] != 2.5 {
+		t.Fatalf("latest heading payload = %#v", out.Payloads[0].Payload)
+	}
+	if out.Payloads[2].SensorID != "address:44" || out.Payloads[2].PGN != 128259 {
+		t.Fatalf("fallback sensor id payload = %+v", out.Payloads[2])
+	}
+
+	result = callTool(t, tm.client, "get_latest_payloads", map[string]any{
+		"source_id": "can0", "sensor_id": "1122334455667788", "pgn": 129025,
+	})
+	if result.IsError {
+		t.Fatalf("filtered get_latest_payloads: %s", toolErrorText(result))
+	}
+	filtered := decodeStructured[latestPayloadsOutput](t, result)
+	if len(filtered.Payloads) != 1 || filtered.Payloads[0].PGN != 129025 || filtered.Payloads[0].SourceAddress != 12 {
+		t.Fatalf("device/PGN filtered payloads = %+v", filtered.Payloads)
+	}
+
+	result = callTool(t, tm.client, "get_latest_payloads", map[string]any{
+		"source_id": "can0", "sensor_id": "address:44",
+	})
+	if result.IsError {
+		t.Fatalf("address-filtered get_latest_payloads: %s", toolErrorText(result))
+	}
+	filtered = decodeStructured[latestPayloadsOutput](t, result)
+	if len(filtered.Payloads) != 1 || filtered.Payloads[0].SensorID != "address:44" {
+		t.Fatalf("address-filtered payloads = %+v", filtered.Payloads)
+	}
+
+	result = callTool(t, tm.client, "get_latest_payloads", map[string]any{
+		"source_id": "can0", "sensor_id": "address:44", "source_address": 12,
+	})
+	if !result.IsError || !strings.Contains(toolErrorText(result), "conflicts with source_address") {
+		t.Fatalf("conflicting sensor filter = isError %v content %q", result.IsError, toolErrorText(result))
 	}
 }
 

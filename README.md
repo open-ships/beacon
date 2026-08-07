@@ -369,8 +369,10 @@ An MCP client can connect without a cloud relay or companion process:
 
 The MCP server exposes tools to read the complete configuration, create or
 update sources, sinks, and connector routes, delete each entity type, and read
-health, delivery metrics, or per-source PGN traffic metrics. It uses the same
-validation, SQLite persistence, and hot reconciliation as the UI and REST API.
+health, delivery metrics, per-source PGN traffic metrics, or the exact latest
+decoded payload for every sensor/PGN stream. Connector responses expose both
+authored and effective retention limits. It uses the same validation, SQLite
+persistence, and hot reconciliation as the UI and REST API.
 The server, tool schemas, and reference page are all embedded in the Beacon
 binary; no internet connection, remote schema, CDN, or hosted MCP service is
 required.
@@ -386,7 +388,9 @@ is exported as `beacon_source_pgn_*` at `/metrics`; raw payloads and fingerprint
 identifiers stay in the UI/MCP response to avoid unbounded Prometheus labels.
 Traffic, decode, addressing, and timing counters are exact for every message;
 decoded-field and raw-byte distributions are diagnostic samples taken at most
-once per second per source/PGN/address stream.
+once per second per source/PGN/address stream. MCP latest-payload reads are not
+sampled: Beacon retains exactly one current payload per bounded stream and
+overwrites it on every message.
 
 Every source and sink overview also has a stopped-by-default stream inspector.
 Start captures future source-received or sink-sent messages without consuming

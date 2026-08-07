@@ -291,6 +291,7 @@ func TestMCPReferencePageIsCompleteAndSelfContained(t *testing.T) {
 		"claude mcp add --transport http beacon http://127.0.0.1:2112/mcp",
 		"gemini mcp add beacon http://127.0.0.1:2112/mcp --transport http",
 		`.vscode/mcp.json`, "get_health",
+		`"name": "get_latest_payloads"`, `"sensor_id": "address:12"`,
 		`"url": "http://127.0.0.1:2112/mcp"`, `href="/mcp/info" class="nav-link menu-active"`,
 	} {
 		if !strings.Contains(html, want) {

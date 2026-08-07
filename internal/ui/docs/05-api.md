@@ -24,8 +24,9 @@ session headers:
 
 The tools are `get_config`, `put_source`, `put_sink`, `put_connector`,
 `delete_source`, `delete_sink`, `delete_connector`, `get_health`,
-`get_delivery_metrics`, and `get_source_metrics`. Source metrics can be
-filtered by configured source id, PGN, and NMEA 2000 source address. They
+`get_delivery_metrics`, `get_source_metrics`, and `get_latest_payloads`.
+Source metrics can be filtered by configured source id, PGN, NMEA 2000 source
+address, and stable Device NAME. They
 include learned timing/jitter, rates and estimated bus load, addressing,
 decode quality, payload-size and raw-byte distributions, last-seen age,
 gaps/bursts, decoded-field quantiles and availability, and recent lifecycle
@@ -33,6 +34,15 @@ events. Input and output JSON Schemas are returned by MCP `tools/list`.
 Core traffic counters include every message. Decoded-field and raw-byte
 distributions expose `diagnostic_samples` and are sampled at most once per
 second per source/PGN/address stream.
+
+`get_latest_payloads` returns one exact latest decoded payload for each
+configured-source/sensor/PGN stream. Its `sensor_id` is the stable hexadecimal
+Device NAME when known, or `address:<source_address>` otherwise; the same value
+can be passed back as a filter. Beacon overwrites that one payload on every
+message and does not build a payload history. These process-local values reset
+on restart. `get_config` and `put_connector` return the authored `buffer` plus
+an `effective_buffer`, making the 10,000-message fallback explicit without
+changing the stored configuration.
 
 Configuration writes persist to SQLite and reconcile immediately through the
 supervisor.

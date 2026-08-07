@@ -245,6 +245,44 @@ func TestSourceSummariesSkipRichDiagnosticsAndRichAddressReadIsScoped(t *testing
 	}
 }
 
+func TestSourceLastPayloadIsExactBoundedAndFilterablePerSensorPGN(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	reg := newRegistryAt(func() time.Time { return now })
+	deviceName := uint64(0x1122334455667788)
+	for _, payload := range []string{`{"value":1}`, `{"value":2}`} {
+		reg.RecordSource("can0", &msg.Envelope{
+			PGN: 130999, Source: 9, DeviceName: &deviceName,
+			Payload: json.RawMessage(payload),
+		})
+	}
+	reg.RecordSource("can0", &msg.Envelope{
+		PGN: 127250, Source: 9, DeviceName: &deviceName,
+		Payload: json.RawMessage(`{"heading":1.5}`),
+	})
+	reg.RecordSource("can0", &msg.Envelope{
+		PGN: 128259, Source: 44, Payload: json.RawMessage(`{"speed":3.2}`),
+	})
+
+	address := uint8(9)
+	pgn := uint32(130999)
+	payloads := reg.SourcePGNLastPayloadsFiltered("can0", SourcePGNMetricFilter{
+		PGN: &pgn, SourceAddress: &address, DeviceNameHex: "0x1122334455667788",
+	})
+	if len(payloads) != 1 {
+		t.Fatalf("filtered payloads = %+v", payloads)
+	}
+	if got := string(payloads[0].Payload); got != `{"value":2}` {
+		t.Fatalf("latest payload = %s, want latest message only", got)
+	}
+	all := reg.SourcePGNLastPayloadsFiltered("can0", SourcePGNMetricFilter{})
+	if len(all) != 3 {
+		t.Fatalf("all sensor/PGN payloads = %+v", all)
+	}
+	if all[0].SourceAddress != 9 || all[0].PGN != 127250 || all[1].PGN != 130999 || all[2].SourceAddress != 44 {
+		t.Fatalf("payload ordering/identity = %+v", all)
+	}
+}
+
 func TestSourceStreamCardinalityIsBoundedPerSource(t *testing.T) {
 	reg := NewRegistry()
 	for i := 0; i < maxSourceStreamsPerSource+50; i++ {

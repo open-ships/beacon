@@ -1,11 +1,13 @@
 package stats
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -211,6 +213,7 @@ type sourceStream struct {
 	lastSeen               time.Time
 	diagnosticSamples      int64
 	lastDiagnostic         time.Time
+	lastPayload            json.RawMessage
 	intervals              [sourceIntervalSamples]time.Duration
 	intHead                int
 	intLen                 int
@@ -393,6 +396,13 @@ func (s *sourceStream) record(now time.Time, e *msg.Envelope) (sourceEventState,
 	}
 	payloadSize := sourcePayloadSize(e)
 	s.payload.add(float64(payloadSize))
+	if len(e.Payload) > 0 {
+		// Published envelopes are immutable. Retain the current payload slice
+		// and copy only when an explicit latest-payload read snapshots it.
+		s.lastPayload = e.Payload
+	} else {
+		s.lastPayload = nil
+	}
 	s.rate.record(now, payloadSize, e.Transport == "Fast" || e.Transport == "fast")
 	if s.destinations == nil {
 		s.destinations = make(map[uint8]int64)
@@ -838,20 +848,75 @@ func formatMetricNumber(value float64) string {
 	return strconv.FormatFloat(value, 'g', 6, 64)
 }
 
-// SourcePGNMetrics returns every observed PGN/sender stream for one source.
-// Results are sorted with active problems first, then by PGN and address.
-func (r *Registry) SourcePGNMetrics(source string) []SourcePGNMetric {
+// SourcePGNMetricFilter limits rich metric snapshots before their field and raw
+// diagnostics are copied and sorted. DeviceNameHex is the stable NMEA 2000
+// Device NAME without regard to an optional 0x prefix or hex letter case.
+type SourcePGNMetricFilter struct {
+	PGN           *uint32
+	SourceAddress *uint8
+	DeviceNameHex string
+}
+
+func (s *sourceStream) matchesFilter(filter SourcePGNMetricFilter) bool {
+	if filter.PGN != nil && s.key.pgn != *filter.PGN {
+		return false
+	}
+	if filter.SourceAddress != nil && s.key.address != *filter.SourceAddress {
+		return false
+	}
+	if filter.DeviceNameHex == "" {
+		return true
+	}
+	rawName := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(filter.DeviceNameHex)), "0x")
+	name, err := strconv.ParseUint(rawName, 16, 64)
+	if err != nil {
+		return false
+	}
+	want := fmt.Sprintf("%016x", name)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deviceName != nil && fmt.Sprintf("%016x", *s.deviceName) == want
+}
+
+func (r *Registry) sourceStreamsFiltered(source string, filter SourcePGNMetricFilter) []*sourceStream {
 	if r == nil {
 		return nil
 	}
 	r.mu.Lock()
 	streams := make([]*sourceStream, 0)
 	for key, stream := range r.sourceStreams {
-		if key.source == source {
-			streams = append(streams, stream)
+		if key.source != source {
+			continue
 		}
+		if filter.PGN != nil && key.pgn != *filter.PGN {
+			continue
+		}
+		if filter.SourceAddress != nil && key.address != *filter.SourceAddress {
+			continue
+		}
+		streams = append(streams, stream)
 	}
 	r.mu.Unlock()
+	if filter.DeviceNameHex == "" {
+		return streams
+	}
+	matched := streams[:0]
+	for _, stream := range streams {
+		if stream.matchesFilter(filter) {
+			matched = append(matched, stream)
+		}
+	}
+	return matched
+}
+
+// SourcePGNMetricsFiltered returns rich metrics for matching PGN/sender
+// streams. Filtering occurs before snapshot generation so narrow MCP and UI
+// reads do not rebuild diagnostics for unrelated sensors.
+func (r *Registry) SourcePGNMetricsFiltered(source string, filter SourcePGNMetricFilter) []SourcePGNMetric {
+	if r == nil {
+		return nil
+	}
+	streams := r.sourceStreamsFiltered(source, filter)
 	now := r.now()
 	out := make([]SourcePGNMetric, 0, len(streams))
 	for _, stream := range streams {
@@ -860,6 +925,61 @@ func (r *Registry) SourcePGNMetrics(source string) []SourcePGNMetric {
 	applyTrafficShares(out)
 	sortSourcePGNMetrics(out)
 	return out
+}
+
+// SourcePGNLastPayload is the single most recently observed decoded payload
+// for one configured-source/PGN/sender stream. The registry stores only this
+// one payload per bounded stream; it never retains a growing message history.
+// Payload is intentionally excluded from generic JSON/schema reflection so an
+// MCP boundary can decode the raw JSON into its true object/array/scalar type.
+type SourcePGNLastPayload struct {
+	SourceID      string
+	PGN           uint32
+	PGNName       string
+	SourceAddress uint8
+	DeviceNameHex string
+	LastSeen      time.Time
+	Payload       json.RawMessage `json:"-"`
+}
+
+func (s *sourceStream) lastPayloadSnapshot() SourcePGNLastPayload {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := SourcePGNLastPayload{
+		SourceID: s.key.source, PGN: s.key.pgn, PGNName: s.pgnName,
+		SourceAddress: s.key.address, LastSeen: s.lastSeen,
+		Payload: bytes.Clone(s.lastPayload),
+	}
+	if s.deviceName != nil {
+		out.DeviceNameHex = fmt.Sprintf("%016x", *s.deviceName)
+	}
+	return out
+}
+
+// SourcePGNLastPayloadsFiltered returns one latest payload per matching
+// sensor/PGN stream, sorted by sender address and PGN for stable MCP output.
+func (r *Registry) SourcePGNLastPayloadsFiltered(source string, filter SourcePGNMetricFilter) []SourcePGNLastPayload {
+	streams := r.sourceStreamsFiltered(source, filter)
+	out := make([]SourcePGNLastPayload, 0, len(streams))
+	for _, stream := range streams {
+		payload := stream.lastPayloadSnapshot()
+		if len(payload.Payload) > 0 {
+			out = append(out, payload)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SourceAddress != out[j].SourceAddress {
+			return out[i].SourceAddress < out[j].SourceAddress
+		}
+		return out[i].PGN < out[j].PGN
+	})
+	return out
+}
+
+// SourcePGNMetrics returns every observed PGN/sender stream for one source.
+// Results are sorted with active problems first, then by PGN and address.
+func (r *Registry) SourcePGNMetrics(source string) []SourcePGNMetric {
+	return r.SourcePGNMetricsFiltered(source, SourcePGNMetricFilter{})
 }
 
 // SourcePGNSummaries returns compact per-stream state for high-frequency UI
@@ -890,25 +1010,7 @@ func (r *Registry) SourcePGNSummaries(source string) []SourcePGNMetric {
 // SourcePGNMetricsForAddress returns rich metrics for one opened device only,
 // avoiding full diagnostic snapshots for unrelated devices.
 func (r *Registry) SourcePGNMetricsForAddress(source string, address uint8) []SourcePGNMetric {
-	if r == nil {
-		return nil
-	}
-	r.mu.Lock()
-	streams := make([]*sourceStream, 0)
-	for key, stream := range r.sourceStreams {
-		if key.source == source && key.address == address {
-			streams = append(streams, stream)
-		}
-	}
-	r.mu.Unlock()
-	now := r.now()
-	out := make([]SourcePGNMetric, 0, len(streams))
-	for _, stream := range streams {
-		out = append(out, stream.snapshot(now))
-	}
-	applyTrafficShares(out)
-	sortSourcePGNMetrics(out)
-	return out
+	return r.SourcePGNMetricsFiltered(source, SourcePGNMetricFilter{SourceAddress: &address})
 }
 
 // AllSourcePGNMetrics returns source metrics keyed by configured source id.
