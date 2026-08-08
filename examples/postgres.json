@@ -1,0 +1,39 @@
+{
+  "sources": [
+    {
+      "id": "can0",
+      "name": "CAN bus",
+      "type": "socketcan",
+      "enabled": false,
+      "interface": "can0"
+    }
+  ],
+  "sinks": [
+    {
+      "id": "telemetry-db",
+      "name": "TimescaleDB telemetry",
+      "type": "postgres",
+      "enabled": false,
+      "url": "postgresql://beacon:replace-me@db.local:5432/vessel?sslmode=require",
+      "table": "public.beacon_envelopes",
+      "batch_size": 250,
+      "write_timeout": "15s",
+      "auto_create_table": false,
+      "timescaledb": true
+    }
+  ],
+  "connectors": [
+    {
+      "id": "telemetry",
+      "name": "CAN to TimescaleDB",
+      "source_id": "can0",
+      "sink_id": "telemetry-db",
+      "enabled": false,
+      "filters": [],
+      "buffer": {
+        "max_messages": 50000,
+        "max_age": "24h"
+      }
+    }
+  ]
+}

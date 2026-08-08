@@ -147,6 +147,61 @@ func TestHTTPPostDefaults(t *testing.T) {
 	}
 }
 
+func TestValidatePostgresSink(t *testing.T) {
+	for _, endpoint := range []string{
+		"postgres://beacon:secret@db.local:5432/vessel?sslmode=require",
+		"postgresql://beacon@db.local/vessel",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			s := Sink{
+				ID: "telemetry-db", Name: "Telemetry database", Type: SinkPostgres, Enabled: true,
+				URL: endpoint, Table: "telemetry.envelopes", BatchSize: 250,
+				WriteTimeout: Duration(15 * time.Second), AutoCreateTable: true, TimescaleDB: true,
+			}
+			if err := s.Validate(); err != nil {
+				t.Fatalf("valid PostgreSQL sink rejected: %v", err)
+			}
+		})
+	}
+
+	base := Sink{ID: "telemetry-db", Type: SinkPostgres, URL: "postgres://db.local/vessel"}
+	cases := []struct {
+		name   string
+		mutate func(*Sink)
+	}{
+		{"missing host", func(s *Sink) { s.URL = "postgres:///vessel" }},
+		{"unsupported scheme", func(s *Sink) { s.URL = "mysql://db.local/vessel" }},
+		{"fragment", func(s *Sink) { s.URL += "#ignored" }},
+		{"too many table components", func(s *Sink) { s.Table = "one.two.three" }},
+		{"unsafe table", func(s *Sink) { s.Table = "public.envelopes;drop" }},
+		{"negative batch", func(s *Sink) { s.BatchSize = -1 }},
+		{"oversize batch", func(s *Sink) { s.BatchSize = MaxPostgresBatchSize + 1 }},
+		{"negative timeout", func(s *Sink) { s.WriteTimeout = -1 }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := base
+			tc.mutate(&s)
+			if err := s.Validate(); err == nil {
+				t.Fatal("invalid PostgreSQL sink accepted")
+			}
+		})
+	}
+}
+
+func TestPostgresDefaults(t *testing.T) {
+	s := Sink{Type: SinkPostgres}
+	if got := s.EffectivePostgresTable(); got != DefaultPostgresTable {
+		t.Fatalf("effective table = %q, want %q", got, DefaultPostgresTable)
+	}
+	if got := s.EffectivePostgresBatchSize(); got != DefaultPostgresBatchSize {
+		t.Fatalf("effective batch size = %d, want %d", got, DefaultPostgresBatchSize)
+	}
+	if got := s.EffectivePostgresWriteTimeout(); got != time.Duration(DefaultPostgresWriteTimeout) {
+		t.Fatalf("effective write timeout = %v, want %v", got, time.Duration(DefaultPostgresWriteTimeout))
+	}
+}
+
 func TestValidateFileAndGatewaySourcesOK(t *testing.T) {
 	cfg := validConfig()
 	cfg.Sources = append(cfg.Sources,

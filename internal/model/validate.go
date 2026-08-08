@@ -12,6 +12,7 @@ import (
 
 var slugRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 var httpHeaderNameRE = regexp.MustCompile("^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$")
+var postgresIdentifierRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$]*$`)
 
 func validSlug(id string) error {
 	if !slugRE.MatchString(id) {
@@ -154,10 +155,43 @@ func (s Sink) Validate() error {
 		if strings.ContainsAny(s.Topic, "+#") {
 			return fmt.Errorf("sink %q: mqtt publish topic must not contain wildcards", s.ID)
 		}
+	case SinkPostgres:
+		u, err := url.Parse(s.URL)
+		if err != nil || u.Host == "" || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Fragment != "" {
+			return fmt.Errorf("sink %q: invalid PostgreSQL URL (expected postgres:// or postgresql:// with no fragment)", s.ID)
+		}
+		if err := validatePostgresTable(s.EffectivePostgresTable()); err != nil {
+			return fmt.Errorf("sink %q: invalid PostgreSQL table %q: %w", s.ID, s.EffectivePostgresTable(), err)
+		}
+		if s.BatchSize < 0 || s.BatchSize > MaxPostgresBatchSize {
+			return fmt.Errorf("sink %q: batch_size must be between 1 and %d, or 0 for the default", s.ID, MaxPostgresBatchSize)
+		}
+		if s.WriteTimeout < 0 {
+			return fmt.Errorf("sink %q: write_timeout must not be negative", s.ID)
+		}
 	case SinkNull:
 		// Null sinks have no type-specific configuration.
 	default:
 		return fmt.Errorf("sink %q: unknown type %q", s.ID, s.Type)
+	}
+	return nil
+}
+
+// validatePostgresTable accepts an ordinary table name or schema.table. The
+// deliberately conservative identifier grammar keeps generated DDL readable
+// and unambiguous while still allowing PostgreSQL's common identifier forms.
+func validatePostgresTable(table string) error {
+	parts := strings.Split(table, ".")
+	if len(parts) < 1 || len(parts) > 2 {
+		return fmt.Errorf("must be table or schema.table")
+	}
+	for _, part := range parts {
+		if !postgresIdentifierRE.MatchString(part) {
+			return fmt.Errorf("each component must start with a letter or underscore and contain only letters, digits, underscores, or $")
+		}
+		if len(part) > 63 {
+			return fmt.Errorf("each component must be at most 63 bytes")
+		}
 	}
 	return nil
 }

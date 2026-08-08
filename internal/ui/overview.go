@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -159,7 +160,11 @@ func sinkConfigRows(s model.Sink) []configRow {
 	add("Port", s.Port, true)
 	add("Path", s.Path, true)
 	add("Address", s.Address, true)
-	add("URL", s.URL, true)
+	if s.Type == model.SinkPostgres {
+		add("URL", redactPostgresURL(s.URL), true)
+	} else {
+		add("URL", s.URL, true)
+	}
 	add("Topic", s.Topic, true)
 	if len(s.Headers) > 0 {
 		rows = append(rows, configRow{"Headers", strconv.Itoa(len(s.Headers)), false})
@@ -175,6 +180,15 @@ func sinkConfigRows(s model.Sink) []configRow {
 			configRow{"Compression", compression, false},
 		)
 	}
+	if s.Type == model.SinkPostgres {
+		rows = append(rows,
+			configRow{"Table", s.EffectivePostgresTable(), true},
+			configRow{"Batch size", strconv.Itoa(s.EffectivePostgresBatchSize()), false},
+			configRow{"Write timeout", s.EffectivePostgresWriteTimeout().String(), false},
+			configRow{"Auto-create table", boolText(s.AutoCreateTable), false},
+			configRow{"TimescaleDB", boolText(s.TimescaleDB), false},
+		)
+	}
 	add("File path", s.FilePath, true)
 	add("Format", s.Format, true)
 	if s.MaxFileBytes != 0 {
@@ -184,6 +198,19 @@ func sinkConfigRows(s model.Sink) []configRow {
 		rows = append(rows, configRow{"Max files", strconv.Itoa(s.MaxFiles), false})
 	}
 	return rows
+}
+
+func redactPostgresURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "configured"
+	}
+	if u.User != nil {
+		if _, hasPassword := u.User.Password(); hasPassword {
+			u.User = url.UserPassword(u.User.Username(), "redacted")
+		}
+	}
+	return u.String()
 }
 
 func connectorConfigRows(c model.Connector) []configRow {

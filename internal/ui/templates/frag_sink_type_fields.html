@@ -82,6 +82,57 @@
   <input type="text" id="sink-topic" name="topic" value="{{.Topic}}"
          placeholder="vessels/main/engine/json" class="input w-full" required>
 </fieldset>
+{{else if eq .Type "postgres"}}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Connection URL</legend>
+  <input type="url" id="sink-url" name="url" value="{{.URL}}"
+         placeholder="postgresql://beacon:password@db.local:5432/vessel" class="input w-full"
+         autocomplete="off" spellcheck="false" required>
+  <p class="text-xs opacity-70">Use a <code>postgres://</code> or <code>postgresql://</code> URL. Credentials are stored in Beacon configuration and omitted from sink overview pages.</p>
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Destination table</legend>
+  <input type="text" id="sink-postgres-table" name="table" value="{{.Table}}"
+         placeholder="{{.DefaultPostgresTable}}" class="input w-full" spellcheck="false"
+         hx-get="/frag/sink-postgres-ddl" hx-trigger="input changed delay:250ms"
+         hx-include="closest form" hx-target="#sink-postgres-ddl" hx-swap="outerHTML">
+  <p class="text-xs opacity-70">A table name or <code>schema.table</code>. Blank = <code>{{.DefaultPostgresTable}}</code>; the schema must already exist.</p>
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Maximum envelopes per write</legend>
+  <input type="number" id="sink-postgres-batch-size" name="batch_size" value="{{.BatchSize}}"
+         placeholder="{{.DefaultPostgresBatchSize}}" class="input w-full" min="1" max="{{.MaxPostgresBatchSize}}">
+  <p class="text-xs opacity-70">Blank = {{.DefaultPostgresBatchSize}}. Each batch is one atomic, confirmed database write.</p>
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Write timeout</legend>
+  <input type="text" id="sink-postgres-write-timeout" name="write_timeout" value="{{.WriteTimeout}}"
+         placeholder="{{.DefaultPostgresTimeout}}" class="input w-full">
+  <p class="text-xs opacity-70">Go duration such as 5s or 1m. Blank = {{.DefaultPostgresTimeout}}.</p>
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Database engine</legend>
+  <label class="label cursor-pointer justify-start gap-2">
+    <input type="checkbox" id="sink-timescaledb" name="timescaledb" value="1" class="checkbox"
+           {{if .TimescaleDB}}checked{{end}}
+           hx-get="/frag/sink-postgres-ddl" hx-trigger="change"
+           hx-include="closest form" hx-target="#sink-postgres-ddl" hx-swap="outerHTML">
+    <span>Use a TimescaleDB hypertable</span>
+  </label>
+  <p class="text-xs opacity-70">Partitions on <code>observed_at</code>. The TimescaleDB extension must already be installed in this database.</p>
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Table management</legend>
+  <label class="label cursor-pointer justify-start gap-2">
+    <input type="checkbox" id="sink-auto-create-table" name="auto_create_table" value="1" class="checkbox"
+           {{if .AutoCreateTable}}checked{{end}}
+           hx-get="/frag/sink-postgres-ddl" hx-trigger="change"
+           hx-include="closest form" hx-target="#sink-postgres-ddl" hx-swap="outerHTML">
+    <span>Automatically create and verify the table</span>
+  </label>
+  <p class="text-xs opacity-70">When disabled, Beacon waits for the table and recovers automatically after an operator creates it.</p>
+</fieldset>
+{{template "sink-postgres-ddl" .}}
 {{else if eq .Type "file"}}
 <fieldset class="fieldset">
   <legend class="fieldset-legend">File path</legend>
@@ -124,4 +175,23 @@
 {{else if eq .Type "null"}}
 <p class="text-sm opacity-70">No endpoint configuration. Every routed event is accepted, counted, and discarded.</p>
 {{end}}
+{{end}}
+
+{{define "sink-postgres-ddl"}}
+<div id="sink-postgres-ddl" class="postgres-ddl" {{if .AutoCreateTable}}hidden{{end}}>
+  {{if not .AutoCreateTable}}
+  <div class="postgres-ddl-heading">
+    <div>
+      <strong>Operator-managed table DDL</strong>
+      <p>Run this in the destination database before enabling traffic to the sink.</p>
+    </div>
+    <div class="postgres-ddl-copy">
+      <button type="button" class="btn btn-sm" data-size="sm" data-variant="outline"
+              data-copy-target="#sink-postgres-ddl-code" data-copy-success="DDL copied.">Copy DDL</button>
+      <span class="postgres-ddl-feedback" data-copy-feedback role="status" aria-live="polite"></span>
+    </div>
+  </div>
+  <pre id="sink-postgres-ddl-code" class="postgres-ddl-code"><code>{{.PostgresDDL}}</code></pre>
+  {{end}}
+</div>
 {{end}}

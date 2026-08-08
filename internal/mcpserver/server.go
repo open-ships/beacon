@@ -156,24 +156,28 @@ func (v sourceDefinition) model() model.Source {
 }
 
 type sinkDefinition struct {
-	ID             string            `json:"id" jsonschema:"Stable sink id; lowercase letters, digits, underscores, and hyphens."`
-	Name           string            `json:"name" jsonschema:"Human-readable sink name."`
-	Type           string            `json:"type" jsonschema:"Sink type: socketcan, usbcan, http_sse, http_ws, http_post, tcp, file, mqtt, tcp_gateway, or null."`
-	Enabled        bool              `json:"enabled" jsonschema:"Whether Beacon should run this sink."`
-	Interface      string            `json:"interface,omitempty" jsonschema:"SocketCAN interface, required for socketcan."`
-	Port           string            `json:"port,omitempty" jsonschema:"Serial device path, required for usbcan."`
-	Path           string            `json:"path,omitempty" jsonschema:"Local data-server path for http_sse or http_ws."`
-	Address        string            `json:"address,omitempty" jsonschema:"Listen or gateway host:port for tcp sinks."`
-	URL            string            `json:"url,omitempty" jsonschema:"MQTT broker URL or HTTP(S) endpoint for http_post."`
-	Topic          string            `json:"topic,omitempty" jsonschema:"MQTT publish topic."`
-	Headers        map[string]string `json:"headers,omitempty" jsonschema:"Authentication and custom request headers for http_post."`
-	BatchSize      int               `json:"batch_size,omitempty" jsonschema:"Maximum envelopes per http_post request; zero uses Beacon's default."`
-	RequestTimeout string            `json:"request_timeout,omitempty" jsonschema:"HTTP POST timeout as a Go duration such as 10s; empty uses Beacon's default."`
-	Gzip           bool              `json:"gzip,omitempty" jsonschema:"Compress http_post request bodies with gzip."`
-	FilePath       string            `json:"file_path,omitempty" jsonschema:"Absolute output path for file sinks."`
-	Format         string            `json:"format,omitempty" jsonschema:"File format ndjson/candump or gateway format ydraw/actisense."`
-	MaxFileBytes   int64             `json:"max_file_bytes,omitempty" jsonschema:"File rotation threshold in bytes; zero uses Beacon's default."`
-	MaxFiles       int               `json:"max_files,omitempty" jsonschema:"Total active plus rotated files to retain; zero uses Beacon's default."`
+	ID              string            `json:"id" jsonschema:"Stable sink id; lowercase letters, digits, underscores, and hyphens."`
+	Name            string            `json:"name" jsonschema:"Human-readable sink name."`
+	Type            string            `json:"type" jsonschema:"Sink type: socketcan, usbcan, http_sse, http_ws, http_post, tcp, file, mqtt, postgres, tcp_gateway, or null."`
+	Enabled         bool              `json:"enabled" jsonschema:"Whether Beacon should run this sink."`
+	Interface       string            `json:"interface,omitempty" jsonschema:"SocketCAN interface, required for socketcan."`
+	Port            string            `json:"port,omitempty" jsonschema:"Serial device path, required for usbcan."`
+	Path            string            `json:"path,omitempty" jsonschema:"Local data-server path for http_sse or http_ws."`
+	Address         string            `json:"address,omitempty" jsonschema:"Listen or gateway host:port for tcp sinks."`
+	URL             string            `json:"url,omitempty" jsonschema:"MQTT broker URL, HTTP(S) endpoint for http_post, or postgres/postgresql connection URL."`
+	Topic           string            `json:"topic,omitempty" jsonschema:"MQTT publish topic."`
+	Headers         map[string]string `json:"headers,omitempty" jsonschema:"Authentication and custom request headers for http_post."`
+	BatchSize       int               `json:"batch_size,omitempty" jsonschema:"Maximum envelopes per http_post request or postgres write; zero uses Beacon's type-specific default."`
+	RequestTimeout  string            `json:"request_timeout,omitempty" jsonschema:"HTTP POST timeout as a Go duration such as 10s; empty uses Beacon's default."`
+	Gzip            bool              `json:"gzip,omitempty" jsonschema:"Compress http_post request bodies with gzip."`
+	FilePath        string            `json:"file_path,omitempty" jsonschema:"Absolute output path for file sinks."`
+	Format          string            `json:"format,omitempty" jsonschema:"File format ndjson/candump or gateway format ydraw/actisense."`
+	MaxFileBytes    int64             `json:"max_file_bytes,omitempty" jsonschema:"File rotation threshold in bytes; zero uses Beacon's default."`
+	MaxFiles        int               `json:"max_files,omitempty" jsonschema:"Total active plus rotated files to retain; zero uses Beacon's default."`
+	Table           string            `json:"table,omitempty" jsonschema:"PostgreSQL destination as table or schema.table; empty uses public.beacon_envelopes."`
+	AutoCreateTable bool              `json:"auto_create_table,omitempty" jsonschema:"Create the PostgreSQL table and indexes automatically."`
+	TimescaleDB     bool              `json:"timescaledb,omitempty" jsonschema:"Convert the PostgreSQL table to a TimescaleDB hypertable; the extension must already be installed."`
+	WriteTimeout    string            `json:"write_timeout,omitempty" jsonschema:"PostgreSQL schema and batch-write timeout as a Go duration such as 10s; empty uses Beacon's default."`
 }
 
 func sinkDefinitionFromModel(v model.Sink) sinkDefinition {
@@ -181,12 +185,18 @@ func sinkDefinitionFromModel(v model.Sink) sinkDefinition {
 	if v.RequestTimeout != 0 {
 		requestTimeout = time.Duration(v.RequestTimeout).String()
 	}
+	writeTimeout := ""
+	if v.WriteTimeout != 0 {
+		writeTimeout = time.Duration(v.WriteTimeout).String()
+	}
 	return sinkDefinition{
 		ID: v.ID, Name: v.Name, Type: string(v.Type), Enabled: v.Enabled,
 		Interface: v.Interface, Port: v.Port, Path: v.Path, Address: v.Address,
 		URL: v.URL, Topic: v.Topic, Headers: v.Headers, BatchSize: v.BatchSize, Gzip: v.Gzip,
 		RequestTimeout: requestTimeout, FilePath: v.FilePath, Format: v.Format,
 		MaxFileBytes: v.MaxFileBytes, MaxFiles: v.MaxFiles,
+		Table: v.Table, AutoCreateTable: v.AutoCreateTable, TimescaleDB: v.TimescaleDB,
+		WriteTimeout: writeTimeout,
 	}
 }
 
@@ -199,12 +209,22 @@ func (v sinkDefinition) model() (model.Sink, error) {
 		}
 		requestTimeout = parsed
 	}
+	var writeTimeout time.Duration
+	if v.WriteTimeout != "" {
+		parsed, err := time.ParseDuration(v.WriteTimeout)
+		if err != nil {
+			return model.Sink{}, fmt.Errorf("invalid sink.write_timeout %q: %w", v.WriteTimeout, err)
+		}
+		writeTimeout = parsed
+	}
 	return model.Sink{
 		ID: v.ID, Name: v.Name, Type: model.SinkType(v.Type), Enabled: v.Enabled,
 		Interface: v.Interface, Port: v.Port, Path: v.Path, Address: v.Address,
 		URL: v.URL, Topic: v.Topic, Headers: v.Headers, BatchSize: v.BatchSize, Gzip: v.Gzip,
 		RequestTimeout: model.Duration(requestTimeout), FilePath: v.FilePath, Format: v.Format,
 		MaxFileBytes: v.MaxFileBytes, MaxFiles: v.MaxFiles,
+		Table: v.Table, AutoCreateTable: v.AutoCreateTable, TimescaleDB: v.TimescaleDB,
+		WriteTimeout: model.Duration(writeTimeout),
 	}, nil
 }
 

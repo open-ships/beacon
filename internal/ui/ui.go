@@ -152,6 +152,7 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 	mux.HandleFunc("GET /frag/sinks/{id}/overview", handleSinkOverviewFrag(svc, reg, statuses, log))
 	mux.HandleFunc("GET /ui/streams/sinks/{id}", handleComponentStream(svc, reg, "sink", log))
 	mux.HandleFunc("GET /frag/sink-type-fields", handleSinkTypeFieldsFrag(log))
+	mux.HandleFunc("GET /frag/sink-postgres-ddl", handleSinkPostgresDDLFrag(log))
 	mux.HandleFunc("POST /sinks", handleSinkCreate(svc, log))
 	mux.HandleFunc("POST /sinks/{id}", handleSinkUpdate(svc, log))
 	mux.HandleFunc("POST /sinks/{id}/delete", handleSinkDelete(svc, log))

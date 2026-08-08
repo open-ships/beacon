@@ -22,9 +22,10 @@ source --> [connector: CEL filters] --> sink
   (`http_sse` / `http_ws`, with replay for reconnecting clients), a remote
   HTTP(S) API (`http_post`, confirmed JSON batches with optional gzip, custom
   authentication headers, and receiver-directed retry timing), a plain
-  `tcp` NDJSON feed (live-only, no replay), or an MQTT topic (`mqtt`,
-  live-only), or a remote NMEA 2000 bus through a claiming TCP gateway client
-  (`tcp_gateway`), or intentionally nowhere (`null`, with normal statistics).
+  `tcp` NDJSON feed (live-only, no replay), an MQTT topic (`mqtt`, live-only),
+  a PostgreSQL/TimescaleDB table (`postgres`, confirmed batches), a remote
+  NMEA 2000 bus through a claiming TCP gateway client (`tcp_gateway`), or
+  intentionally nowhere (`null`, with normal statistics).
 - **Connectors** wire one source to one sink, with an optional list of CEL
   filter expressions (see the filters page) and a durable per-connector
   buffer (see the concepts page) that survives a restart and absorbs a slow

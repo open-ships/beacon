@@ -333,6 +333,40 @@ func TestHTTPPostSinkFieldsRoundTripThroughMCP(t *testing.T) {
 	}
 }
 
+func TestPostgresSinkFieldsRoundTripThroughMCP(t *testing.T) {
+	tm := newTestMCP(t)
+	result := callTool(t, tm.client, "put_sink", map[string]any{"sink": map[string]any{
+		"id": "telemetry-db", "name": "Telemetry database", "type": "postgres", "enabled": false,
+		"url": "postgresql://beacon:secret@db.local/vessel", "table": "telemetry.envelopes",
+		"batch_size": 250, "write_timeout": "15s", "auto_create_table": true, "timescaledb": true,
+	}})
+	if result.IsError {
+		t.Fatalf("put_sink: %s", toolErrorText(result))
+	}
+	put := decodeStructured[putSinkOutput](t, result)
+	if put.Sink.Type != "postgres" || put.Sink.Table != "telemetry.envelopes" || put.Sink.BatchSize != 250 ||
+		put.Sink.WriteTimeout != "15s" || !put.Sink.AutoCreateTable || !put.Sink.TimescaleDB {
+		t.Fatalf("put sink output = %+v", put.Sink)
+	}
+	stored, err := tm.svc.GetSink(context.Background(), "telemetry-db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.URL != "postgresql://beacon:secret@db.local/vessel" || stored.Table != "telemetry.envelopes" ||
+		stored.BatchSize != 250 || time.Duration(stored.WriteTimeout) != 15*time.Second ||
+		!stored.AutoCreateTable || !stored.TimescaleDB {
+		t.Fatalf("stored sink = %+v", stored)
+	}
+
+	bad := callTool(t, tm.client, "put_sink", map[string]any{"sink": map[string]any{
+		"id": "bad-db", "name": "Bad", "type": "postgres", "url": "postgres://db.local/vessel",
+		"write_timeout": "soon",
+	}})
+	if !bad.IsError {
+		t.Fatal("put_sink accepted an invalid write_timeout")
+	}
+}
+
 func TestGetSourceMetricsReturnsAndFiltersSharedPGNStore(t *testing.T) {
 	tm := newTestMCP(t)
 	mustPutSource := model.Source{ID: "can0", Name: "CAN", Type: model.SourceSocketCAN, Interface: "can0"}

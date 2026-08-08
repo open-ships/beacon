@@ -5,7 +5,8 @@
 [![License](https://img.shields.io/github/license/open-ships/beacon)](LICENSE)
 
 An offline-first NMEA 2000 gateway for moving vessel data between CAN,
-USB-CAN, HTTP streams and POST APIs, WebSocket, TCP, MQTT, capture files, and marine gateways.
+USB-CAN, HTTP streams and POST APIs, WebSocket, TCP, MQTT, PostgreSQL/TimescaleDB,
+capture files, and marine gateways.
 Beacon adds CEL filtering, durable per-route buffering, replay, live diagnostics,
 and one REST API without requiring a cloud service.
 
@@ -134,6 +135,7 @@ routes, making fan-out and fan-in explicit rather than implicit.
 | HTTP | `http_sse`, `http_ws` | `http_sse`, `http_ws`, `http_post` | SSE/WS streaming and replay, or confirmed JSON-batch POST delivery over HTTP(S) |
 | Gateways | `tcp`, `udp` | `tcp_gateway` | Yacht Devices RAW or Actisense gateway streams |
 | Messaging | `mqtt` | `mqtt` | Topic-based ingestion and live publishing |
+| Databases | — | `postgres` | Confirmed batch inserts into PostgreSQL or TimescaleDB |
 | Files | `file` | `file` | Replay captures; write rotating `ndjson` or `candump` logs |
 | Plain TCP | — | `tcp` | Live NDJSON listener for backend consumers |
 | Utility | — | `null` | Accept, count, and intentionally discard routed events |
@@ -186,7 +188,7 @@ A slow or disconnected sink does not block another route using the same source.
 
 | Delivery class | Sinks / mode | Checkpoint advances when… |
 |---|---|---|
-| Confirmed | SocketCAN, USB-CAN, file, TCP gateway, HTTP POST, null | The write succeeds, an HTTP POST returns 2xx, or the null sink accepts the message |
+| Confirmed | SocketCAN, USB-CAN, file, TCP gateway, HTTP POST, PostgreSQL, null | The write or database batch succeeds, an HTTP POST returns 2xx, or the null sink accepts the message |
 | Resumable | SSE, WebSocket | The message is available in the replayable stream |
 | Best effort | TCP, MQTT | Dispatch completes; downstream receipt is not claimed |
 | Observe only | `observe` bridge mode | Local inspection completes without a sink write |
@@ -268,10 +270,46 @@ values are exported as `beacon_sink_http_*` histograms. Successful connector
 delivery counters remain separate, so an operator can distinguish receiver
 attempts from confirmed batches.
 
+### PostgreSQL and TimescaleDB sink
+
+A `postgres` sink writes query-friendly envelope columns plus the complete
+canonical envelope as `jsonb`. Each batch is one atomic statement; the route
+checkpoint advances only after PostgreSQL accepts it. Retries use
+`(observed_at, connector_id, sequence)` as an idempotency key, so an ambiguous
+reconnect does not duplicate an already committed row.
+
+```json
+{
+  "id": "telemetry-db",
+  "name": "Telemetry database",
+  "type": "postgres",
+  "enabled": true,
+  "url": "postgresql://beacon:replace-me@db.local:5432/vessel?sslmode=require",
+  "table": "telemetry.envelopes",
+  "batch_size": 250,
+  "write_timeout": "15s",
+  "auto_create_table": true,
+  "timescaledb": true
+}
+```
+
+`table` defaults to `public.beacon_envelopes`, `batch_size` to 100, and
+`write_timeout` to 10 seconds. Enable `timescaledb` to convert the table into
+a hypertable partitioned on `observed_at`; the TimescaleDB extension must
+already be installed in the target database.
+
+The sink editor includes an **Automatically create and verify the table**
+checkbox. Clear it for operator-managed migrations: the editor reveals the
+exact PostgreSQL or TimescaleDB DDL with a **Copy DDL** action. Beacon verifies
+that schema in the background and recovers without a restart after the DDL is
+applied. Connection URLs can contain credentials and are included in
+configuration/API exports, so protect the SQLite configuration database and
+exports as secrets; overview pages redact the password.
+
 ## The envelope
 
-MQTT, SSE, WebSocket, TCP, NDJSON, and each element in an HTTP POST batch
-receive exactly three top-level keys:
+MQTT, SSE, WebSocket, TCP, NDJSON, each element in an HTTP POST batch, and the
+PostgreSQL sink's `envelope` column receive exactly three top-level keys:
 
 ```json
 {
@@ -313,8 +351,8 @@ provenance, stable Device NAME, catalog/decode details, and physical values.
 `raw` is the assembled CAN payload as base64 bytes. It is top-level data, not
 metadata.
 
-Unknown PGNs still move through HTTP, TCP, MQTT, file, observe, and transparent
-routes. Their `payload` is the complete `pgn.UnknownPGN` JSON and their original
+Unknown PGNs still move through HTTP, TCP, MQTT, PostgreSQL, file, observe, and
+transparent routes. Their `payload` is the complete `pgn.UnknownPGN` JSON and their original
 bytes remain available at top-level `raw`. See
 [ADR 0004](docs/adr/0004-keep-wire-values-canonical.md) for the compatibility
 rationale and [Concepts](internal/ui/docs/03-concepts.md#the-envelope) for the
@@ -559,7 +597,7 @@ internal/
   model/          sources, sinks, connector routes, validation
   msg/            canonical NMEA 2000 envelope
   queue/          SQLite-backed per-route buffer and checkpoints
-  sink/           CAN, HTTP stream/POST, TCP, MQTT, file, gateway, and null delivery
+  sink/           CAN, HTTP, TCP, MQTT, PostgreSQL, file, gateway, and null delivery
   source/         CAN, HTTP, MQTT, file, and gateway ingestion
   stats/          live route counters
   supervisor/     desired-state runtime reconciliation
