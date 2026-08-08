@@ -49,6 +49,21 @@ each new stuck-entry retry sequence at `warn` (`push failed; retrying`,
 then drops to `debug` for that same entry's subsequent retries) — check
 its logs if `queue_depth` is climbing but nothing looks skipped.
 
+## HTTP POST delivery failures
+
+An `http_post` sink confirms a whole batch only after a 2xx response. A
+timeout, redirect, transport failure, or non-2xx response leaves the batch
+pending and marks the route degraded while Beacon retries. Check the sink URL,
+certificate trust, authentication headers, and the response status/body in the
+route error. If the receiver committed the batch but the response was lost,
+use Beacon's deterministic `Idempotency-Key` to deduplicate the retry.
+For rate limits and planned outages, the receiver can return `Retry-After` as
+delta-seconds or an HTTP date; Beacon waits for the larger of that value and
+its current connector backoff. Inspect `beacon_sink_http_requests_total` by
+`status`, plus the `beacon_sink_http_request_latency_seconds` and payload-size
+histograms, to separate receiver rejection, network slowness, and oversized
+batches. With gzip enabled, compare on-wire and uncompressed size histograms.
+
 ## File sink not writing
 
 1. **Is `file_path` absolute?** A file sink rejects a relative path at

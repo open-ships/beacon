@@ -176,8 +176,9 @@ holds, ask for everything after sequence zero: `?after=<connector>:0`.
 
 Delivery guarantees differ by sink kind:
 
-- **Confirmed** routes advance after a successful CAN/file/raw-wire write or
-  acceptance by a `null` sink.
+- **Confirmed** routes advance after a successful CAN/file/raw-wire write, a
+  complete `http_post` batch receives a 2xx response, or acceptance by a
+  `null` sink.
 - **Resumable** SSE/WS routes advance after the entry is available through
   their retained replay stream.
 - **Best-effort** TCP/MQTT routes advance after dispatch; downstream receipt
@@ -199,9 +200,23 @@ Delivery guarantees differ by sink kind:
   decoder) is the one exception: it's **skipped**, not retried — counted
   under the connector's `skipped` message stage, with the cursor advancing
   past it exactly like a successful delivery, so one unrecognized PGN
-  can't wedge the connector. HTTP/TCP/MQTT sinks still deliver these messages —
+  can't wedge the connector. HTTP POST/streaming, TCP, and MQTT sinks still deliver these messages —
   see the `raw` field note above.
-- **HTTP/TCP/MQTT sinks** (`http_sse`, `http_ws`, `tcp`, `mqtt`) broadcast to whichever
+- **HTTP POST sinks** (`http_post`) send JSON arrays of canonical envelopes to
+  an HTTP(S) endpoint. `batch_size` is a maximum count: a short batch is sent
+  immediately rather than waiting to fill. The entire batch remains pending
+  until the endpoint returns 2xx; timeouts, redirects, transport failures, and
+  every non-2xx response retry with the connector's bounded backoff. A valid
+  `Retry-After` delta-seconds or HTTP-date value becomes the minimum next
+  delay. Requests
+  carry a deterministic `Idempotency-Key` for receiver-side deduplication,
+  making the route at-least-once even when the response is lost after the
+  receiver commits the batch. `request_timeout` bounds each attempt, and
+  arbitrary headers support API keys, bearer tokens, and other static auth.
+  Optional `gzip` compression sets `Content-Encoding: gzip` without changing
+  the envelope-count meaning of `batch_size`.
+  HTTPS uses the host trust store and verifies certificates normally.
+- **HTTP/TCP/MQTT streaming sinks** (`http_sse`, `http_ws`, `tcp`, `mqtt`) broadcast to whichever
   clients happen to be connected at the moment, with no per-message
   confirmation. SSE/WS clients can recover anything they missed via replay
   (above), bounded by the connector's buffer limits; `tcp` and `mqtt`

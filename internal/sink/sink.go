@@ -1,6 +1,7 @@
 // Package sink runs configured sinks. CAN/file/null sinks push-confirm each
-// message; HTTP/TCP sinks broadcast to connected clients, with replay served
-// straight from connector queues (SSE/WS only).
+// message, HTTP POST sinks confirm batches, and serve-mode HTTP/TCP sinks
+// broadcast to connected clients, with replay served straight from connector
+// queues (SSE/WS only).
 package sink
 
 import (
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/brutella/can"
 
@@ -21,6 +23,26 @@ import (
 )
 
 var ErrSkip = errors.New("sink skipped message")
+
+type retryAfterError struct {
+	err   error
+	delay time.Duration
+}
+
+func (e *retryAfterError) Error() string             { return e.err.Error() }
+func (e *retryAfterError) Unwrap() error             { return e.err }
+func (e *retryAfterError) RetryAfter() time.Duration { return e.delay }
+
+// RetryAfter returns a server-requested minimum retry delay carried by err.
+// Sinks use this seam to communicate protocol-native backoff without coupling
+// connectors to HTTP response types.
+func RetryAfter(err error) (time.Duration, bool) {
+	var delayed interface{ RetryAfter() time.Duration }
+	if !errors.As(err, &delayed) {
+		return 0, false
+	}
+	return delayed.RetryAfter(), true
+}
 
 type DeliveryClass string
 
@@ -51,6 +73,9 @@ func DeliveryClassOf(r Runtime) DeliveryClass {
 	if _, ok := r.(Pusher); ok {
 		return DeliveryConfirmed
 	}
+	if _, ok := r.(BatchPusher); ok {
+		return DeliveryConfirmed
+	}
 	return DeliveryBestEffort
 }
 
@@ -58,6 +83,15 @@ func DeliveryClassOf(r Runtime) DeliveryClass {
 // this message, count it and move on" (e.g. envelope without raw bytes).
 type Pusher interface {
 	Push(ctx context.Context, e *msg.Envelope) error
+}
+
+// BatchPusher confirms an ordered group of queue entries as one sink write.
+// BatchSize is the maximum number of entries the connector should provide;
+// short batches are valid and are delivered without waiting for the batch to
+// fill. A nil error confirms every entry in the supplied batch.
+type BatchPusher interface {
+	BatchSize() int
+	PushBatch(ctx context.Context, entries []queue.Entry) error
 }
 
 // WirePusher preserves the envelope's original N2K source identity and raw
@@ -96,6 +130,8 @@ func New(ctx context.Context, cfg model.Sink, mgr *bus.Manager, ds *DataServer, 
 		return newServeSink(cfg, ds, log, met, serveSSE)
 	case model.SinkHTTPWS:
 		return newServeSink(cfg, ds, log, met, serveWS)
+	case model.SinkHTTPPost:
+		return newHTTPPostSink(cfg, met)
 	case model.SinkTCP:
 		return newTCPSink(cfg, log, met)
 	case model.SinkFile:

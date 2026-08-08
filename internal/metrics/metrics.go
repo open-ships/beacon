@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -29,6 +30,12 @@ type Set struct {
 	queueBytes             api.Int64ObservableGauge
 	componentState         api.Int64ObservableGauge
 	sinkClients            api.Int64UpDownCounter
+	sinkHTTPRequests       api.Int64Counter
+	sinkHTTPEnvelopes      api.Int64Counter
+	sinkHTTPPayloadBytes   api.Int64Histogram
+	sinkHTTPOriginalBytes  api.Int64Histogram
+	sinkHTTPLatency        api.Float64Histogram
+	sinkHTTPRetryAfter     api.Float64Histogram
 	sourcePGNMessages      api.Int64ObservableCounter
 	sourcePGNFrequency     api.Float64ObservableGauge
 	sourcePGNPeriod        api.Float64ObservableGauge
@@ -75,6 +82,21 @@ func New(registries ...*stats.Registry) (*Set, http.Handler, error) {
 	s.sourceMessages, _ = meter.Int64Counter("beacon.source.messages")
 	s.subscriberDrops, _ = meter.Int64Counter("beacon.subscriber.dropped")
 	s.sinkClients, _ = meter.Int64UpDownCounter("beacon.sink.clients")
+	s.sinkHTTPRequests, _ = meter.Int64Counter("beacon.sink.http.requests",
+		api.WithDescription("HTTP sink request attempts, including retries"))
+	s.sinkHTTPEnvelopes, _ = meter.Int64Counter("beacon.sink.http.payload.envelopes",
+		api.WithDescription("Canonical envelopes included in HTTP sink request attempts"))
+	payloadBuckets := api.WithExplicitBucketBoundaries(512, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304)
+	s.sinkHTTPPayloadBytes, _ = meter.Int64Histogram("beacon.sink.http.payload.size.bytes",
+		api.WithDescription("HTTP sink request payload size on the wire"), payloadBuckets)
+	s.sinkHTTPOriginalBytes, _ = meter.Int64Histogram("beacon.sink.http.payload.uncompressed_size.bytes",
+		api.WithDescription("HTTP sink request payload size before optional compression"), payloadBuckets)
+	s.sinkHTTPLatency, _ = meter.Float64Histogram("beacon.sink.http.request.latency.seconds",
+		api.WithDescription("HTTP sink request latency through response-body read"),
+		api.WithExplicitBucketBoundaries(.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30))
+	s.sinkHTTPRetryAfter, _ = meter.Float64Histogram("beacon.sink.http.retry_after.seconds",
+		api.WithDescription("Valid Retry-After delay returned by an HTTP sink endpoint"),
+		api.WithExplicitBucketBoundaries(0, .25, .5, 1, 2, 5, 10, 30, 60, 300, 900, 3600))
 	s.queueDepth, _ = meter.Int64ObservableGauge("beacon.connector.queue.depth")
 	s.queueBytes, _ = meter.Int64ObservableGauge("beacon.connector.queue.bytes")
 	s.componentState, _ = meter.Int64ObservableGauge("beacon.component.state")
@@ -366,6 +388,40 @@ func (s *Set) SinkClients(sink string, delta int64) {
 		return
 	}
 	s.sinkClients.Add(context.Background(), delta, api.WithAttributes(attribute.String("sink", sink)))
+}
+
+// SinkHTTPRequest records one HTTP sink request attempt. status is the
+// numeric response code, or "transport_error" when no response arrived.
+// Payload sizes are recorded per request so their histogram count is also a
+// batch/request count; envelopes records the number of canonical envelopes
+// contained in that attempted payload.
+func (s *Set) SinkHTTPRequest(ctx context.Context, sink, status, encoding string,
+	envelopes, payloadBytes, uncompressedBytes int64, latency time.Duration,
+) {
+	if s == nil {
+		return
+	}
+	attrs := api.WithAttributes(
+		attribute.String("sink", sink),
+		attribute.String("status", status),
+		attribute.String("encoding", encoding),
+	)
+	s.sinkHTTPRequests.Add(ctx, 1, attrs)
+	s.sinkHTTPEnvelopes.Add(ctx, envelopes, attrs)
+	s.sinkHTTPPayloadBytes.Record(ctx, payloadBytes, attrs)
+	s.sinkHTTPOriginalBytes.Record(ctx, uncompressedBytes, attrs)
+	s.sinkHTTPLatency.Record(ctx, latency.Seconds(), attrs)
+}
+
+// SinkHTTPRetryAfter records a valid Retry-After value returned by an HTTP
+// sink endpoint. It is separate from SinkHTTPRequest because most responses
+// do not carry the header.
+func (s *Set) SinkHTTPRetryAfter(ctx context.Context, sink, status string, delay time.Duration) {
+	if s == nil {
+		return
+	}
+	s.sinkHTTPRetryAfter.Record(ctx, delay.Seconds(), api.WithAttributes(
+		attribute.String("sink", sink), attribute.String("status", status)))
 }
 
 func (s *Set) SetQueueDepth(connector string, depth, bytes int64) {

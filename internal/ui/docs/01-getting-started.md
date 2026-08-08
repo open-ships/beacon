@@ -19,7 +19,9 @@ source --> [connector: CEL filters] --> sink
   passive Yacht Devices/Actisense gateway stream (`tcp` / `udp`).
 - **Sinks** deliver messages somewhere: back onto a CAN bus (`socketcan` /
   `usbcan`, confirmed at-least-once delivery), or out over HTTP
-  (`http_sse` / `http_ws`, with replay for reconnecting clients), a plain
+  (`http_sse` / `http_ws`, with replay for reconnecting clients), a remote
+  HTTP(S) API (`http_post`, confirmed JSON batches with optional gzip, custom
+  authentication headers, and receiver-directed retry timing), a plain
   `tcp` NDJSON feed (live-only, no replay), or an MQTT topic (`mqtt`,
   live-only), or a remote NMEA 2000 bus through a claiming TCP gateway client
   (`tcp_gateway`), or intentionally nowhere (`null`, with normal statistics).

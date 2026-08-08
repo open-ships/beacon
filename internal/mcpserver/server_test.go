@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -296,6 +297,39 @@ func TestConnectorOutputsExposeEffectiveDefaultWithoutChangingAuthoredConfig(t *
 	}
 	if stored.Buffer.MaxMessages != 0 {
 		t.Fatalf("stored authored max_messages = %d, want zero", stored.Buffer.MaxMessages)
+	}
+}
+
+func TestHTTPPostSinkFieldsRoundTripThroughMCP(t *testing.T) {
+	tm := newTestMCP(t)
+	result := callTool(t, tm.client, "put_sink", map[string]any{"sink": map[string]any{
+		"id": "webhook", "name": "Telemetry API", "type": "http_post", "enabled": false,
+		"url": "https://api.example.com/v1/envelopes", "batch_size": 250, "request_timeout": "15s",
+		"gzip":    true,
+		"headers": map[string]any{"Authorization": "Bearer token", "X-API-Key": "secret"},
+	}})
+	if result.IsError {
+		t.Fatalf("put_sink: %s", toolErrorText(result))
+	}
+	put := decodeStructured[putSinkOutput](t, result)
+	if put.Sink.Type != "http_post" || put.Sink.BatchSize != 250 || put.Sink.RequestTimeout != "15s" || !put.Sink.Gzip ||
+		put.Sink.Headers["Authorization"] != "Bearer token" {
+		t.Fatalf("put sink output = %+v", put.Sink)
+	}
+	stored, err := tm.svc.GetSink(context.Background(), "webhook")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.URL != "https://api.example.com/v1/envelopes" || stored.BatchSize != 250 || !stored.Gzip ||
+		time.Duration(stored.RequestTimeout) != 15*time.Second || stored.Headers["X-API-Key"] != "secret" {
+		t.Fatalf("stored sink = %+v", stored)
+	}
+
+	bad := callTool(t, tm.client, "put_sink", map[string]any{"sink": map[string]any{
+		"id": "bad", "name": "Bad", "type": "http_post", "url": "https://api.example.com", "request_timeout": "soon",
+	}})
+	if !bad.IsError {
+		t.Fatal("put_sink accepted an invalid request_timeout")
 	}
 }
 

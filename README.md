@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/github/license/open-ships/beacon)](LICENSE)
 
 An offline-first NMEA 2000 gateway for moving vessel data between CAN,
-USB-CAN, HTTP, WebSocket, TCP, MQTT, capture files, and marine gateways.
+USB-CAN, HTTP streams and POST APIs, WebSocket, TCP, MQTT, capture files, and marine gateways.
 Beacon adds CEL filtering, durable per-route buffering, replay, live diagnostics,
 and one REST API without requiring a cloud service.
 
@@ -131,7 +131,7 @@ routes, making fan-out and fan-in explicit rather than implicit.
 | Kind | Sources | Sinks | Notes |
 |---|---|---|---|
 | CAN | `socketcan`, `usbcan` | `socketcan`, `usbcan` | Physical NMEA 2000 buses; SocketCAN is Linux-native |
-| HTTP | `http_sse`, `http_ws` | `http_sse`, `http_ws` | SSE and WebSocket ingestion or broadcast; sink clients can replay |
+| HTTP | `http_sse`, `http_ws` | `http_sse`, `http_ws`, `http_post` | SSE/WS streaming and replay, or confirmed JSON-batch POST delivery over HTTP(S) |
 | Gateways | `tcp`, `udp` | `tcp_gateway` | Yacht Devices RAW or Actisense gateway streams |
 | Messaging | `mqtt` | `mqtt` | Topic-based ingestion and live publishing |
 | Files | `file` | `file` | Replay captures; write rotating `ndjson` or `candump` logs |
@@ -186,7 +186,7 @@ A slow or disconnected sink does not block another route using the same source.
 
 | Delivery class | Sinks / mode | Checkpoint advances when… |
 |---|---|---|
-| Confirmed | SocketCAN, USB-CAN, file, TCP gateway, null | The write succeeds or the null sink accepts the message |
+| Confirmed | SocketCAN, USB-CAN, file, TCP gateway, HTTP POST, null | The write succeeds, an HTTP POST returns 2xx, or the null sink accepts the message |
 | Resumable | SSE, WebSocket | The message is available in the replayable stream |
 | Best effort | TCP, MQTT | Dispatch completes; downstream receipt is not claimed |
 | Observe only | `observe` bridge mode | Local inspection completes without a sink write |
@@ -206,8 +206,13 @@ comma-separated cursor such as `?after=nav:104,engine:57`. TCP and MQTT are
 live-only.
 
 Confirmed writes use retry with bounded exponential backoff and at-least-once
-semantics. An envelope that cannot be encoded for semantic CAN delivery is
-counted as skipped and checkpointed so an unknown PGN cannot wedge a route.
+semantics. HTTP POST retries carry a deterministic `Idempotency-Key` derived
+from the sink, connector route, and queue range so a receiver can deduplicate
+an ambiguous resend. A valid HTTP `Retry-After` response header raises the
+next delay above that backoff when the receiver needs more time. An envelope
+that cannot be encoded for semantic CAN
+delivery is counted as skipped and checkpointed so an unknown PGN cannot wedge
+a route.
 Transparent SocketCAN delivery preserves that unknown PGN losslessly. A
 `null` sink accepts each message at this same confirmed boundary, records the
 normal connector and sink statistics, and then intentionally discards it.
@@ -216,10 +221,57 @@ For the precise retention, pruning, replay, retry, and file-rotation contract,
 read [Concepts](internal/ui/docs/03-concepts.md) and
 [ADR 0001](docs/adr/0001-route-delivery-boundaries.md).
 
+### HTTP POST sink
+
+An `http_post` sink sends a JSON array of canonical envelopes to an `http://`
+or `https://` URL. `batch_size` is the maximum number of envelopes per request;
+short batches send immediately. A 2xx response confirms the whole batch and
+advances the connector checkpoint. Network errors, timeouts, redirects, and
+non-2xx responses leave the batch pending and use the connector's bounded
+retry backoff. Valid `Retry-After` delta-seconds and HTTP-date values are
+honored as a minimum delay.
+
+```json
+{
+  "id": "telemetry-api",
+  "name": "Telemetry API",
+  "type": "http_post",
+  "enabled": true,
+  "url": "https://api.example.com/v1/envelopes",
+  "batch_size": 250,
+  "request_timeout": "15s",
+  "gzip": true,
+  "headers": {
+    "Authorization": "Bearer token",
+    "X-API-Key": "secret"
+  }
+}
+```
+
+`batch_size` defaults to 100 and is capped at 1,000. `request_timeout`
+defaults to 10 seconds. Authentication is expressed as request headers, so API
+keys, bearer tokens, and pre-encoded Basic credentials all work. Beacon uses
+the host trust store for HTTPS, does not follow redirects (which avoids
+forwarding credentials to an unexpected target), and considers every non-2xx
+response retryable rather than silently dropping buffered envelopes.
+Set `gzip` to send the JSON body compressed with `Content-Encoding: gzip`;
+batch size continues to count envelopes rather than bytes.
+Header values are stored in Beacon's SQLite configuration and included in
+configuration/API exports, so protect the database and exported files as
+secrets.
+
+Prometheus request telemetry is labeled by sink id, HTTP status, and payload
+encoding. `beacon_sink_http_requests_total` and
+`beacon_sink_http_payload_envelopes_total` count attempts (including retries);
+payload-size, uncompressed-size, request-latency, and accepted `Retry-After`
+values are exported as `beacon_sink_http_*` histograms. Successful connector
+delivery counters remain separate, so an operator can distinguish receiver
+attempts from confirmed batches.
+
 ## The envelope
 
-MQTT, SSE, WebSocket, TCP, and NDJSON consumers receive exactly three top-level
-keys:
+MQTT, SSE, WebSocket, TCP, NDJSON, and each element in an HTTP POST batch
+receive exactly three top-level keys:
 
 ```json
 {
@@ -353,7 +405,7 @@ take away the control surface used to repair it.
 | API reference | `:2112/api/docs` | Interactive, embedded OpenAPI 3.1 documentation |
 | OpenAPI document | `:2112/api/openapi.json` | Machine-readable discovery for SDKs, scripts, and agents |
 | Health | `:2112/health` | Rolled-up component health; mirrored at `/api/v1/health` |
-| Metrics | `:2112/metrics` | Prometheus exposition, including per-source/sender PGN traffic and value distributions |
+| Metrics | `:2112/metrics` | Prometheus exposition, including per-source/sender PGN traffic, HTTP sink requests, and value distributions |
 | SSE / WebSocket sinks | `:8080/<configured-path>` | Data and replay endpoints |
 | TCP sinks | Configured listener address | Live-only NDJSON stream |
 
@@ -507,7 +559,7 @@ internal/
   model/          sources, sinks, connector routes, validation
   msg/            canonical NMEA 2000 envelope
   queue/          SQLite-backed per-route buffer and checkpoints
-  sink/           CAN, HTTP, TCP, MQTT, file, gateway, and null delivery
+  sink/           CAN, HTTP stream/POST, TCP, MQTT, file, gateway, and null delivery
   source/         CAN, HTTP, MQTT, file, and gateway ingestion
   stats/          live route counters
   supervisor/     desired-state runtime reconciliation

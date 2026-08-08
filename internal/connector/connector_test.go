@@ -58,6 +58,47 @@ type pushSink struct {
 	got      []*msg.Envelope
 }
 
+type batchSink struct {
+	mu        sync.Mutex
+	batchSize int
+	failures  int
+	batches   [][]queue.Entry
+}
+
+type delayedRetryError struct{ delay time.Duration }
+
+func (e delayedRetryError) Error() string             { return "retry later" }
+func (e delayedRetryError) RetryAfter() time.Duration { return e.delay }
+
+func (b *batchSink) ID() string             { return "fake-batch" }
+func (b *batchSink) Stop()                  {}
+func (b *batchSink) State() (string, error) { return "up", nil }
+func (b *batchSink) BatchSize() int         { return b.batchSize }
+func (b *batchSink) PushBatch(_ context.Context, entries []queue.Entry) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.failures > 0 {
+		b.failures--
+		return errors.New("endpoint down")
+	}
+	b.batches = append(b.batches, append([]queue.Entry(nil), entries...))
+	return nil
+}
+func (b *batchSink) snapshot() [][]queue.Entry {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([][]queue.Entry(nil), b.batches...)
+}
+func (b *batchSink) count() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var count int
+	for _, batch := range b.batches {
+		count += len(batch)
+	}
+	return count
+}
+
 type wireSink struct {
 	pushSink
 	wire []*msg.Envelope
@@ -365,6 +406,68 @@ func TestPushRetriesUntilSinkRecovers(t *testing.T) {
 
 	src.emit(env(127250))
 	waitFor(t, 10*time.Second, func() bool { return snk.count() == 1 }, "delivery after retries")
+}
+
+func TestBatchPushUsesConfiguredChunksRetriesAndCheckpoints(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "batch.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	q := queue.NewSQLite(st, "conn1", model.BufferLimits{MaxMessages: 1000})
+	envelopes := []*msg.Envelope{env(1), env(2), env(3), env(4), env(5)}
+	if err := q.Append(context.Background(), envelopes); err != nil {
+		t.Fatal(err)
+	}
+	all, err := q.Read(context.Background(), 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	chain, _ := filter.Compile(nil)
+	snk := &batchSink{batchSize: 2, failures: 1}
+	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true},
+		&fakeSource{}, snk, q, chain, slog.Default(), nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	waitFor(t, 3*time.Second, func() bool { return snk.count() == 5 }, "batched delivery after retry")
+	c.Stop()
+
+	batches := snk.snapshot()
+	var sizes []int
+	for _, batch := range batches {
+		sizes = append(sizes, len(batch))
+	}
+	if len(sizes) != 3 || sizes[0] != 2 || sizes[1] != 2 || sizes[2] != 1 {
+		t.Fatalf("batch sizes = %v, want [2 2 1]", sizes)
+	}
+	cur, err := q.Cursor(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur != all[len(all)-1].Seq {
+		t.Fatalf("checkpoint = %d, want %d", cur, all[len(all)-1].Seq)
+	}
+}
+
+func TestRetryDelayHonorsSinkMinimum(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		err       error
+		backoff   time.Duration
+		wantDelay time.Duration
+	}{
+		{name: "server delay is longer", err: delayedRetryError{delay: 3 * time.Second}, backoff: time.Second, wantDelay: 3 * time.Second},
+		{name: "connector backoff is longer", err: delayedRetryError{delay: time.Second}, backoff: 3 * time.Second, wantDelay: 3 * time.Second},
+		{name: "ordinary error", err: errors.New("offline"), backoff: time.Second, wantDelay: time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := retryDelay(tc.err, tc.backoff); got != tc.wantDelay {
+				t.Fatalf("retry delay = %v, want %v", got, tc.wantDelay)
+			}
+		})
+	}
 }
 
 // Regression: a Pusher returning ErrSkip (e.g. a CAN sink skipping an
