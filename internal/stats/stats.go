@@ -369,6 +369,7 @@ type Registry struct {
 	sourceDeviceAddresses map[sourceDeviceKey]uint8
 	streamSubscribers     map[string]map[uint64]chan []byte
 	nextStreamSubscriber  uint64
+	sourceDeviceCount     int
 }
 
 // NewRegistry returns an empty Registry using the real wall clock.
@@ -461,9 +462,7 @@ func (r *Registry) RecordSource(source string, e *msg.Envelope) {
 	ev := eventFromEnvelope(now, "received", "", e)
 	r.getSource(source).record(now, 1, int64(ev.SizeBytes))
 	stream, created := r.getSourceStream(source, e)
-	before := stream.sourceEventState()
-	stream.record(now, e)
-	after := stream.sourceEventState()
+	before, after := stream.record(now, e)
 	for _, event := range r.sourceLifecycleEvents(now, source, e, created, before, after) {
 		r.recordSourceMetricEvent(event)
 	}
@@ -644,6 +643,17 @@ func (r *Registry) RemoveSource(source string) {
 	for key := range r.sourceStreams {
 		if key.source == source {
 			delete(r.sourceStreams, key)
+		}
+	}
+	for key := range r.sourceAddressNames {
+		if key.source == source {
+			delete(r.sourceAddressNames, key)
+		}
+	}
+	for key := range r.sourceDeviceAddresses {
+		if key.source == source {
+			delete(r.sourceDeviceAddresses, key)
+			r.sourceDeviceCount--
 		}
 	}
 	r.mu.Unlock()

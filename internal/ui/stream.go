@@ -16,7 +16,7 @@ import (
 	"github.com/open-ships/beacon/internal/stats"
 )
 
-const streamPreviewBuffer = 256
+const streamPreviewBuffer = 16
 
 // handleComponentStream exposes a future-only, best-effort SSE tap used by
 // source and sink overview pages. The tap is fed by stats.Registry at the

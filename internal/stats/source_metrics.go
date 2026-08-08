@@ -1,11 +1,13 @@
 package stats
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,9 +15,14 @@ import (
 )
 
 const (
-	sourceIntervalSamples = 64
-	maxSourceFields       = 128
-	maxCategoryValues     = 16
+	sourceIntervalSamples       = 64
+	maxSourceFields             = 128
+	maxCategoryValues           = 16
+	sourceDiagnosticInterval    = time.Second
+	sourceExpectedRefresh       = 8
+	maxSourceStreamsPerSource   = 2048
+	sourceStreamRetention       = 24 * time.Hour
+	maxTrackedSourceDeviceNames = 4096
 )
 
 // FieldDistribution is the process-local distribution of one decoded field
@@ -72,6 +79,7 @@ type SourcePGNMetric struct {
 	DeviceName              *uint64                `json:"device_name,omitempty"`
 	DeviceNameHex           string                 `json:"device_name_hex,omitempty"`
 	Messages                int64                  `json:"messages"`
+	DiagnosticSamples       int64                  `json:"diagnostic_samples"`
 	FirstSeen               time.Time              `json:"first_seen"`
 	LastSeen                time.Time              `json:"last_seen"`
 	AgeSeconds              float64                `json:"age_seconds"`
@@ -193,33 +201,39 @@ type sourceField struct {
 type sourceStream struct {
 	mu sync.Mutex
 
-	key                  sourceStreamKey
-	pgnName              string
-	variant              string
-	transport            string
-	manufacturerCode     *uint16
-	deviceName           *uint64
-	identityChanges      int64
-	messages             int64
-	firstSeen            time.Time
-	lastSeen             time.Time
-	intervals            [sourceIntervalSamples]time.Duration
-	intHead              int
-	intLen               int
-	payload              runningDistribution
-	fields               map[string]*sourceField
-	destinations         map[uint8]int64
-	priorities           map[uint8]int64
-	decodeStatuses       map[string]int64
-	lastDecodeStatus     string
-	decodeComplete       int64
-	decodeIncomplete     int64
-	decodeFallback       int64
-	unknownMessages      int64
-	missingDecodedFields map[string]int64
-	burstCount           int64
-	wire                 sourceWireStats
-	rate                 sourceRateStats
+	key                    sourceStreamKey
+	pgnName                string
+	variant                string
+	transport              string
+	manufacturerCode       *uint16
+	deviceName             *uint64
+	identityChanges        int64
+	messages               int64
+	firstSeen              time.Time
+	lastSeen               time.Time
+	diagnosticSamples      int64
+	lastDiagnostic         time.Time
+	lastPayload            json.RawMessage
+	intervals              [sourceIntervalSamples]time.Duration
+	intHead                int
+	intLen                 int
+	expectedInterval       time.Duration
+	intervalsSinceExpected int
+	payload                runningDistribution
+	fields                 map[string]*sourceField
+	destinations           map[uint8]int64
+	priorities             map[uint8]int64
+	decodeStatuses         map[string]int64
+	lastDecodeStatus       string
+	decodeComplete         int64
+	decodeIncomplete       int64
+	decodeFallback         int64
+	unknownMessages        int64
+	novelValues            int64
+	missingDecodedFields   map[string]int64
+	burstCount             int64
+	wire                   sourceWireStats
+	rate                   sourceRateStats
 
 	gapCount   int64
 	lastGap    time.Time
@@ -234,18 +248,13 @@ func (s *sourceStream) addInterval(value time.Duration) {
 	}
 }
 
-func (s *sourceStream) sourceEventState() sourceEventState {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	state := sourceEventState{
+func (s *sourceStream) sourceEventStateLocked() sourceEventState {
+	return sourceEventState{
 		messages: s.messages, gapCount: s.gapCount,
 		identityChanges: s.identityChanges, decodeStatus: s.lastDecodeStatus,
 		payloadLengths: len(s.wire.lengths),
+		novelValues:    s.novelValues,
 	}
-	for _, field := range s.fields {
-		state.novelValues += field.novelValueCount
-	}
-	return state
 }
 
 func (s *sourceStream) intervalValues() []time.Duration {
@@ -258,32 +267,41 @@ func (s *sourceStream) intervalValues() []time.Duration {
 }
 
 func medianInterval(values []time.Duration) time.Duration {
-	if len(values) == 0 {
-		return 0
-	}
-	copyValues := append([]time.Duration(nil), values...)
-	sort.Slice(copyValues, func(i, j int) bool { return copyValues[i] < copyValues[j] })
-	mid := len(copyValues) / 2
-	if len(copyValues)%2 == 1 {
-		return copyValues[mid]
-	}
-	return copyValues[mid-1]/2 + copyValues[mid]/2
+	return medianSortedInterval(sortedIntervals(values))
 }
 
-func durationPercentile(values []time.Duration, percentile float64) time.Duration {
+func sortedIntervals(values []time.Duration) []time.Duration {
 	if len(values) == 0 {
-		return 0
+		return nil
 	}
 	copyValues := append([]time.Duration(nil), values...)
 	sort.Slice(copyValues, func(i, j int) bool { return copyValues[i] < copyValues[j] })
-	index := int(math.Ceil(percentile*float64(len(copyValues)))) - 1
+	return copyValues
+}
+
+func medianSortedInterval(sorted []time.Duration) time.Duration {
+	if len(sorted) == 0 {
+		return 0
+	}
+	mid := len(sorted) / 2
+	if len(sorted)%2 == 1 {
+		return sorted[mid]
+	}
+	return sorted[mid-1]/2 + sorted[mid]/2
+}
+
+func durationPercentileSorted(sorted []time.Duration, percentile float64) time.Duration {
+	if len(sorted) == 0 {
+		return 0
+	}
+	index := int(math.Ceil(percentile*float64(len(sorted)))) - 1
 	if index < 0 {
 		index = 0
 	}
-	if index >= len(copyValues) {
-		index = len(copyValues) - 1
+	if index >= len(sorted) {
+		index = len(sorted) - 1
 	}
-	return copyValues[index]
+	return sorted[index]
 }
 
 func intervalMAD(values []time.Duration, median time.Duration) time.Duration {
@@ -319,16 +337,20 @@ func sourcePayloadSize(e *msg.Envelope) int {
 	return len(e.Payload)
 }
 
-func (s *sourceStream) record(now time.Time, e *msg.Envelope) {
+func (s *sourceStream) record(now time.Time, e *msg.Envelope) (sourceEventState, sourceEventState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	before := s.sourceEventStateLocked()
 
 	if s.messages == 0 {
 		s.firstSeen = now
 	}
 	if !s.lastSeen.IsZero() && now.After(s.lastSeen) {
 		interval := now.Sub(s.lastSeen)
-		expectedBefore := medianInterval(s.intervalValues())
+		expectedBefore := s.expectedInterval
+		if expectedBefore == 0 && s.intLen > 0 {
+			expectedBefore = medianInterval(s.intervalValues())
+		}
 		if s.intLen >= 3 && interval > gapThreshold(expectedBefore) {
 			s.gapCount++
 			s.lastGap = now
@@ -340,6 +362,11 @@ func (s *sourceStream) record(now time.Time, e *msg.Envelope) {
 			s.burstCount++
 		}
 		s.addInterval(interval)
+		s.intervalsSinceExpected++
+		if s.intLen <= 4 || s.intervalsSinceExpected >= sourceExpectedRefresh {
+			s.expectedInterval = medianInterval(s.intervalValues())
+			s.intervalsSinceExpected = 0
+		}
 	}
 	s.messages++
 	s.lastSeen = now
@@ -365,8 +392,14 @@ func (s *sourceStream) record(now time.Time, e *msg.Envelope) {
 	}
 	payloadSize := sourcePayloadSize(e)
 	s.payload.add(float64(payloadSize))
+	if len(e.Payload) > 0 {
+		// Published envelopes are immutable. Retain the current payload slice
+		// and copy only when an explicit latest-payload read snapshots it.
+		s.lastPayload = e.Payload
+	} else {
+		s.lastPayload = nil
+	}
 	s.rate.record(now, payloadSize, e.Transport == "Fast" || e.Transport == "fast")
-	s.wire.record(now, e.Raw)
 	if s.destinations == nil {
 		s.destinations = make(map[uint8]int64)
 		s.priorities = make(map[uint8]int64)
@@ -392,6 +425,21 @@ func (s *sourceStream) record(now time.Time, e *msg.Envelope) {
 	for _, missing := range e.Decode.Missing {
 		s.missingDecodedFields[missing]++
 	}
+
+	if s.lastDiagnostic.IsZero() || now.Before(s.lastDiagnostic) || now.Sub(s.lastDiagnostic) >= sourceDiagnosticInterval {
+		s.lastDiagnostic = now
+		s.diagnosticSamples++
+		s.recordDiagnosticsLocked(now, e)
+	}
+	return before, s.sourceEventStateLocked()
+}
+
+// recordDiagnosticsLocked updates bounded, sampled decoded-field and raw-byte
+// distributions. Exact traffic, addressing, decode, timing, and delivery
+// counters are updated above for every message; these rich diagnostics do not
+// need to re-parse identical high-frequency payloads continuously.
+func (s *sourceStream) recordDiagnosticsLocked(now time.Time, e *msg.Envelope) {
+	s.wire.record(now, e.Raw)
 
 	observedFields := make(map[string]bool)
 	physicalNames := make([]string, 0, len(e.Physical))
@@ -436,12 +484,16 @@ func (s *sourceStream) record(now time.Time, e *msg.Envelope) {
 		case string:
 			if field := s.field(name, "category", ""); field != nil {
 				observedFields[name] = true
-				field.recordCategory(now, value)
+				if field.recordCategory(now, value) {
+					s.novelValues++
+				}
 			}
 		case bool:
 			if field := s.field(name, "category", ""); field != nil {
 				observedFields[name] = true
-				field.recordCategory(now, strconv.FormatBool(value))
+				if field.recordCategory(now, strconv.FormatBool(value)) {
+					s.novelValues++
+				}
 			}
 		}
 	}
@@ -543,7 +595,7 @@ func (f *sourceField) recordNumeric(now time.Time, value float64) {
 	f.lastSeen = now
 }
 
-func (f *sourceField) recordCategory(now time.Time, value string) {
+func (f *sourceField) recordCategory(now time.Time, value string) bool {
 	if len(value) > 64 {
 		value = value[:64] + "…"
 	}
@@ -553,7 +605,8 @@ func (f *sourceField) recordCategory(now time.Time, value string) {
 	} else {
 		f.other++
 	}
-	if f.presentMessages > 0 && !known {
+	novel := f.presentMessages > 0 && !known
+	if novel {
 		f.novelValueCount++
 	}
 	if f.presentMessages == 0 || f.lastCategory != value {
@@ -562,6 +615,7 @@ func (f *sourceField) recordCategory(now time.Time, value string) {
 	f.presentMessages++
 	f.lastCategory = value
 	f.lastSeen = now
+	return novel
 }
 
 func (s *sourceStream) snapshot(now time.Time) SourcePGNMetric {
@@ -569,10 +623,11 @@ func (s *sourceStream) snapshot(now time.Time) SourcePGNMetric {
 	defer s.mu.Unlock()
 
 	intervals := s.intervalValues()
-	expected := medianInterval(intervals)
-	periodP90 := durationPercentile(intervals, 0.90)
-	periodP95 := durationPercentile(intervals, 0.95)
-	periodP99 := durationPercentile(intervals, 0.99)
+	sorted := sortedIntervals(intervals)
+	expected := medianSortedInterval(sorted)
+	periodP90 := durationPercentileSorted(sorted, 0.90)
+	periodP95 := durationPercentileSorted(sorted, 0.95)
+	periodP99 := durationPercentileSorted(sorted, 0.99)
 	jitterMAD := intervalMAD(intervals, expected)
 	var shortest, longest time.Duration
 	for _, interval := range intervals {
@@ -607,7 +662,7 @@ func (s *sourceStream) snapshot(now time.Time) SourcePGNMetric {
 		DecodeStatuses: cloneStringTotals(s.decodeStatuses), DecodeComplete: s.decodeComplete,
 		DecodeIncomplete: s.decodeIncomplete, DecodeFallback: s.decodeFallback,
 		UnknownMessages: s.unknownMessages, MissingDecodedFields: cloneStringTotals(s.missingDecodedFields),
-		SourceAddress: s.key.address, Messages: s.messages,
+		SourceAddress: s.key.address, Messages: s.messages, DiagnosticSamples: s.diagnosticSamples,
 		FirstSeen: s.firstSeen, LastSeen: s.lastSeen, AgeSeconds: age.Seconds(),
 		ExpectedPeriodSeconds: expected.Seconds(), ShortestPeriodSeconds: shortest.Seconds(),
 		LongestPeriodSeconds: longest.Seconds(), PeriodP90Seconds: periodP90.Seconds(),
@@ -649,7 +704,70 @@ func (s *sourceStream) snapshot(now time.Time) SourcePGNMetric {
 	}
 	sort.Strings(fieldNames)
 	for _, name := range fieldNames {
-		out.Fields = append(out.Fields, fieldSnapshot(name, s.fields[name], now, s.messages))
+		out.Fields = append(out.Fields, fieldSnapshot(name, s.fields[name], now, s.diagnosticSamples))
+	}
+	return out
+}
+
+// summarySnapshot returns only the compact stream state needed by continuously
+// refreshed device tables. It deliberately skips timing-percentile sorting,
+// raw-byte histograms, decode maps, and general field distributions. Device
+// identity streams retain the small pieces needed to label a row.
+func (s *sourceStream) summarySnapshot(now time.Time) SourcePGNMetric {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	expected := s.expectedInterval
+	if expected == 0 && s.intLen > 0 {
+		expected = medianInterval(s.intervalValues())
+	}
+	age := now.Sub(s.lastSeen)
+	if age < 0 {
+		age = 0
+	}
+	gapActive := s.intLen >= 3 && age > gapThreshold(expected)
+	status := "active"
+	if s.intLen < 3 {
+		status = "warming"
+	}
+	if gapActive {
+		status = "gap"
+	}
+	recentMessages, recentBytes, busLoad := s.rate.snapshot(now)
+	out := SourcePGNMetric{
+		Observed: true, SourceID: s.key.source, PGN: s.key.pgn, PGNName: s.pgnName,
+		Variant: s.variant, Transport: s.transport, DecodeStatus: s.lastDecodeStatus,
+		SourceAddress: s.key.address, Messages: s.messages, DiagnosticSamples: s.diagnosticSamples,
+		FirstSeen: s.firstSeen, LastSeen: s.lastSeen, AgeSeconds: age.Seconds(),
+		ExpectedPeriodSeconds: expected.Seconds(), RecentMessagesPerSec: recentMessages,
+		RecentBytesPerSec: recentBytes, EstimatedBusLoadPercent: busLoad,
+		PayloadBytesLast: int64(s.payload.last), PayloadBytesMin: int64(s.payload.min),
+		PayloadBytesMax: int64(s.payload.max), PayloadBytesMean: s.payload.mean,
+		GapActive: gapActive, Status: status, IdentityChanges: s.identityChanges,
+	}
+	if s.deviceName != nil {
+		name := *s.deviceName
+		out.DeviceName = &name
+		out.DeviceNameHex = fmt.Sprintf("%016x", name)
+	}
+	if s.manufacturerCode != nil {
+		manufacturer := *s.manufacturerCode
+		out.ManufacturerCode = &manufacturer
+	}
+	// Product/configuration fields label device rows. Address-claim raw bytes
+	// are a fallback for older envelopes that predate DeviceName metadata.
+	if s.key.pgn == 60928 {
+		out.Raw = s.wire.snapshot(now)
+	}
+	if s.key.pgn == 126996 || s.key.pgn == 126998 {
+		fieldNames := make([]string, 0, len(s.fields))
+		for name := range s.fields {
+			fieldNames = append(fieldNames, name)
+		}
+		sort.Strings(fieldNames)
+		for _, name := range fieldNames {
+			out.Fields = append(out.Fields, fieldSnapshot(name, s.fields[name], now, s.diagnosticSamples))
+		}
 	}
 	return out
 }
@@ -683,8 +801,9 @@ func fieldSnapshot(name string, field *sourceField, now time.Time, messages int6
 		for i := range values {
 			values[i] = field.numericSamples[(start+i)%sourceIntervalSamples]
 		}
-		p05, p50 := floatPercentile(values, 0.05), floatPercentile(values, 0.50)
-		p95, p99 := floatPercentile(values, 0.95), floatPercentile(values, 0.99)
+		sort.Float64s(values)
+		p05, p50 := floatPercentileSorted(values, 0.05), floatPercentileSorted(values, 0.50)
+		p95, p99 := floatPercentileSorted(values, 0.95), floatPercentileSorted(values, 0.99)
 		out.P05, out.P50, out.P95, out.P99 = &p05, &p50, &p95, &p99
 		if field.changes.count > 0 {
 			change := field.changes.last
@@ -725,9 +844,144 @@ func formatMetricNumber(value float64) string {
 	return strconv.FormatFloat(value, 'g', 6, 64)
 }
 
+// SourcePGNMetricFilter limits rich metric snapshots before their field and raw
+// diagnostics are copied and sorted. DeviceNameHex is the stable NMEA 2000
+// Device NAME without regard to an optional 0x prefix or hex letter case.
+type SourcePGNMetricFilter struct {
+	PGN           *uint32
+	SourceAddress *uint8
+	DeviceNameHex string
+}
+
+func (s *sourceStream) matchesFilter(filter SourcePGNMetricFilter) bool {
+	if filter.PGN != nil && s.key.pgn != *filter.PGN {
+		return false
+	}
+	if filter.SourceAddress != nil && s.key.address != *filter.SourceAddress {
+		return false
+	}
+	if filter.DeviceNameHex == "" {
+		return true
+	}
+	rawName := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(filter.DeviceNameHex)), "0x")
+	name, err := strconv.ParseUint(rawName, 16, 64)
+	if err != nil {
+		return false
+	}
+	want := fmt.Sprintf("%016x", name)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deviceName != nil && fmt.Sprintf("%016x", *s.deviceName) == want
+}
+
+func (r *Registry) sourceStreamsFiltered(source string, filter SourcePGNMetricFilter) []*sourceStream {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	streams := make([]*sourceStream, 0)
+	for key, stream := range r.sourceStreams {
+		if key.source != source {
+			continue
+		}
+		if filter.PGN != nil && key.pgn != *filter.PGN {
+			continue
+		}
+		if filter.SourceAddress != nil && key.address != *filter.SourceAddress {
+			continue
+		}
+		streams = append(streams, stream)
+	}
+	r.mu.Unlock()
+	if filter.DeviceNameHex == "" {
+		return streams
+	}
+	matched := streams[:0]
+	for _, stream := range streams {
+		if stream.matchesFilter(filter) {
+			matched = append(matched, stream)
+		}
+	}
+	return matched
+}
+
+// SourcePGNMetricsFiltered returns rich metrics for matching PGN/sender
+// streams. Filtering occurs before snapshot generation so narrow MCP and UI
+// reads do not rebuild diagnostics for unrelated sensors.
+func (r *Registry) SourcePGNMetricsFiltered(source string, filter SourcePGNMetricFilter) []SourcePGNMetric {
+	if r == nil {
+		return nil
+	}
+	streams := r.sourceStreamsFiltered(source, filter)
+	now := r.now()
+	out := make([]SourcePGNMetric, 0, len(streams))
+	for _, stream := range streams {
+		out = append(out, stream.snapshot(now))
+	}
+	applyTrafficShares(out)
+	sortSourcePGNMetrics(out)
+	return out
+}
+
+// SourcePGNLastPayload is the single most recently observed decoded payload
+// for one configured-source/PGN/sender stream. The registry stores only this
+// one payload per bounded stream; it never retains a growing message history.
+// Payload is intentionally excluded from generic JSON/schema reflection so an
+// MCP boundary can decode the raw JSON into its true object/array/scalar type.
+type SourcePGNLastPayload struct {
+	SourceID      string
+	PGN           uint32
+	PGNName       string
+	SourceAddress uint8
+	DeviceNameHex string
+	LastSeen      time.Time
+	Payload       json.RawMessage `json:"-"`
+}
+
+func (s *sourceStream) lastPayloadSnapshot() SourcePGNLastPayload {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := SourcePGNLastPayload{
+		SourceID: s.key.source, PGN: s.key.pgn, PGNName: s.pgnName,
+		SourceAddress: s.key.address, LastSeen: s.lastSeen,
+		Payload: bytes.Clone(s.lastPayload),
+	}
+	if s.deviceName != nil {
+		out.DeviceNameHex = fmt.Sprintf("%016x", *s.deviceName)
+	}
+	return out
+}
+
+// SourcePGNLastPayloadsFiltered returns one latest payload per matching
+// sensor/PGN stream, sorted by sender address and PGN for stable MCP output.
+func (r *Registry) SourcePGNLastPayloadsFiltered(source string, filter SourcePGNMetricFilter) []SourcePGNLastPayload {
+	streams := r.sourceStreamsFiltered(source, filter)
+	out := make([]SourcePGNLastPayload, 0, len(streams))
+	for _, stream := range streams {
+		payload := stream.lastPayloadSnapshot()
+		if len(payload.Payload) > 0 {
+			out = append(out, payload)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SourceAddress != out[j].SourceAddress {
+			return out[i].SourceAddress < out[j].SourceAddress
+		}
+		return out[i].PGN < out[j].PGN
+	})
+	return out
+}
+
 // SourcePGNMetrics returns every observed PGN/sender stream for one source.
 // Results are sorted with active problems first, then by PGN and address.
 func (r *Registry) SourcePGNMetrics(source string) []SourcePGNMetric {
+	return r.SourcePGNMetricsFiltered(source, SourcePGNMetricFilter{})
+}
+
+// SourcePGNSummaries returns compact per-stream state for high-frequency UI
+// refreshes. Rich decoded-field and raw-payload diagnostics remain available
+// through SourcePGNMetrics when explicitly requested.
+func (r *Registry) SourcePGNSummaries(source string) []SourcePGNMetric {
 	if r == nil {
 		return nil
 	}
@@ -742,11 +996,17 @@ func (r *Registry) SourcePGNMetrics(source string) []SourcePGNMetric {
 	now := r.now()
 	out := make([]SourcePGNMetric, 0, len(streams))
 	for _, stream := range streams {
-		out = append(out, stream.snapshot(now))
+		out = append(out, stream.summarySnapshot(now))
 	}
 	applyTrafficShares(out)
 	sortSourcePGNMetrics(out)
 	return out
+}
+
+// SourcePGNMetricsForAddress returns rich metrics for one opened device only,
+// avoiding full diagnostic snapshots for unrelated devices.
+func (r *Registry) SourcePGNMetricsForAddress(source string, address uint8) []SourcePGNMetric {
+	return r.SourcePGNMetricsFiltered(source, SourcePGNMetricFilter{SourceAddress: &address})
 }
 
 // AllSourcePGNMetrics returns source metrics keyed by configured source id.
@@ -807,11 +1067,38 @@ func (r *Registry) getSourceStream(source string, e *msg.Envelope) (*sourceStrea
 	stream := r.sourceStreams[key]
 	created := false
 	if stream == nil {
+		cutoff := r.now().Add(-sourceStreamRetention)
+		count := 0
+		var oldestKey sourceStreamKey
+		var oldestSeen time.Time
+		for candidateKey, candidate := range r.sourceStreams {
+			if candidateKey.source != source {
+				continue
+			}
+			seen := candidate.lastSeenTime()
+			if !seen.IsZero() && seen.Before(cutoff) {
+				delete(r.sourceStreams, candidateKey)
+				continue
+			}
+			count++
+			if oldestSeen.IsZero() || seen.Before(oldestSeen) {
+				oldestKey, oldestSeen = candidateKey, seen
+			}
+		}
+		if count >= maxSourceStreamsPerSource {
+			delete(r.sourceStreams, oldestKey)
+		}
 		stream = &sourceStream{key: key, fields: make(map[string]*sourceField)}
 		r.sourceStreams[key] = stream
 		created = true
 	}
 	return stream, created
+}
+
+func (s *sourceStream) lastSeenTime() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastSeen
 }
 
 func (r *Registry) sourceLifecycleEvents(now time.Time, source string, e *msg.Envelope, created bool, before, after sourceEventState) []SourceMetricEvent {
@@ -864,7 +1151,12 @@ func (r *Registry) sourceIdentityEvents(now time.Time, source string, e *msg.Env
 	previousName, addressKnown := r.sourceAddressNames[addressKey]
 	previousAddress, deviceKnown := r.sourceDeviceAddresses[deviceKey]
 	r.sourceAddressNames[addressKey] = name
-	r.sourceDeviceAddresses[deviceKey] = e.Source
+	if deviceKnown {
+		r.sourceDeviceAddresses[deviceKey] = e.Source
+	} else if r.sourceDeviceCount < maxTrackedSourceDeviceNames {
+		r.sourceDeviceAddresses[deviceKey] = e.Source
+		r.sourceDeviceCount++
+	}
 	r.mu.Unlock()
 	base := SourceMetricEvent{Time: now.UTC(), SourceID: source, PGN: e.PGN,
 		SourceAddress: e.Source, DeviceNameHex: fmt.Sprintf("%016x", name)}

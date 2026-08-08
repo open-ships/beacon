@@ -58,7 +58,7 @@ Replace `can0` / `vcan0` with your actual interface name, and adjust sink
 paths/addresses and connector filters as needed — these are starting
 points, not fixed configurations. All buffer limits shown are optional; if
 a connector's `buffer` object sets nothing at all, `max_messages` defaults
-to 100000 (see `/docs/concepts`).
+to 10000 (see `/docs/concepts`).
 
 ## Using an example
 

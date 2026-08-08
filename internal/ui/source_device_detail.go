@@ -127,8 +127,8 @@ func sourceDeviceDetail(
 	return &sourceDeviceDetailView{
 		Device:      *device,
 		PGNs:        rows,
-		Sort:        sourceDevicePGNSortControls(base, deviceSorting, *selectedAddress, pgnSorting),
-		RefreshHref: sourceDeviceSortURL(base, deviceSorting, selectedAddress, pgnSorting),
+		Sort:        sourceDevicePGNSortControls(base+"?detail=1", deviceSorting, *selectedAddress, pgnSorting),
+		RefreshHref: sourceDeviceSortURL(base+"?detail=1", deviceSorting, selectedAddress, pgnSorting),
 		CloseHref:   sourceDeviceSortURL(base, deviceSorting, nil, pgnSorting),
 	}
 }
@@ -253,7 +253,7 @@ func formatPayloadSize(last int64, mean float64) string {
 // pgnActivityGrade rates how recently a PGN was seen against its own learned
 // p90 period, so a 10 Hz PGN and a once-a-minute PGN are judged on their own
 // cadence. The half-second slack keeps sub-second PGNs from flapping between
-// colors on the panel's 500ms refresh.
+// panel refreshes.
 func pgnActivityGrade(ageSeconds, periodP90Seconds float64) (level, label string) {
 	if periodP90Seconds <= 0 {
 		return "warming", "Cadence still being learned"

@@ -6,11 +6,13 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,7 +44,8 @@ var toolCatalog = []ToolInfo{
 	{Name: "delete_connector", Access: "delete", Description: "Delete a connector route and its route-owned queue."},
 	{Name: "get_health", Access: "read", Description: "Read rolled-up health and live source, sink, and connector states."},
 	{Name: "get_delivery_metrics", Access: "read", Description: "Read delivery rates, totals, pending delivery, retained history, limits, drops, and errors."},
-	{Name: "get_source_metrics", Access: "read", Description: "Inspect all PGNs by source and sender, including unknown raw payloads, timing, load, decode quality, addressing, gaps, field distributions, and lifecycle events."},
+	{Name: "get_source_metrics", Access: "read", Description: "Inspect every sensor/PGN stream, including sampled raw payload diagnostics, timing, load, decode quality, addressing, gaps, field distributions, and lifecycle events."},
+	{Name: "get_latest_payloads", Access: "read", Description: "Read the single latest decoded payload for every matching source, sensor id, and PGN stream."},
 }
 
 // Catalog returns a copy so callers cannot mutate the registered tool list.
@@ -188,7 +191,7 @@ func (v sinkDefinition) model() model.Sink {
 }
 
 type bufferDefinition struct {
-	MaxMessages int64  `json:"max_messages,omitempty" jsonschema:"Maximum retained messages; all-zero limits default to 100000 messages."`
+	MaxMessages int64  `json:"max_messages,omitempty" jsonschema:"Maximum retained messages; all-zero limits default to 10000 messages."`
 	MaxAge      string `json:"max_age,omitempty" jsonschema:"Maximum retained age as a Go duration such as 24h or 90s."`
 	MaxBytes    int64  `json:"max_bytes,omitempty" jsonschema:"Maximum retained bytes."`
 }
@@ -205,17 +208,33 @@ type connectorDefinition struct {
 	ForwardManagement bool             `json:"forward_management,omitempty" jsonschema:"Allow NMEA network-management PGNs in transparent mode."`
 }
 
-func connectorDefinitionFromModel(v model.Connector) connectorDefinition {
+type connectorView struct {
+	ID                string           `json:"id"`
+	Name              string           `json:"name"`
+	SourceID          string           `json:"source_id"`
+	SinkID            string           `json:"sink_id"`
+	Filters           []string         `json:"filters,omitempty"`
+	Buffer            bufferDefinition `json:"buffer"`
+	EffectiveBuffer   bufferDefinition `json:"effective_buffer" jsonschema:"Effective durable queue limits after Beacon defaults are applied."`
+	Enabled           bool             `json:"enabled"`
+	Mode              string           `json:"mode,omitempty"`
+	ForwardManagement bool             `json:"forward_management,omitempty"`
+}
+
+func bufferDefinitionFromModel(v model.BufferLimits) bufferDefinition {
 	maxAge := ""
-	if v.Buffer.MaxAge != 0 {
-		maxAge = time.Duration(v.Buffer.MaxAge).String()
+	if v.MaxAge != 0 {
+		maxAge = time.Duration(v.MaxAge).String()
 	}
-	return connectorDefinition{
+	return bufferDefinition{MaxMessages: v.MaxMessages, MaxAge: maxAge, MaxBytes: v.MaxBytes}
+}
+
+func connectorViewFromModel(v model.Connector) connectorView {
+	return connectorView{
 		ID: v.ID, Name: v.Name, SourceID: v.SourceID, SinkID: v.SinkID,
-		Filters: v.Filters, Buffer: bufferDefinition{
-			MaxMessages: v.Buffer.MaxMessages, MaxAge: maxAge, MaxBytes: v.Buffer.MaxBytes,
-		},
-		Enabled: v.Enabled, Mode: string(v.Mode), ForwardManagement: v.ForwardManagement,
+		Filters: v.Filters, Buffer: bufferDefinitionFromModel(v.Buffer),
+		EffectiveBuffer: bufferDefinitionFromModel(v.Buffer.ApplyDefaults()),
+		Enabled:         v.Enabled, Mode: string(v.Mode), ForwardManagement: v.ForwardManagement,
 	}
 }
 
@@ -238,9 +257,9 @@ func (v connectorDefinition) model() (model.Connector, error) {
 }
 
 type getConfigOutput struct {
-	Sources    []sourceDefinition    `json:"sources"`
-	Sinks      []sinkDefinition      `json:"sinks"`
-	Connectors []connectorDefinition `json:"connectors"`
+	Sources    []sourceDefinition `json:"sources"`
+	Sinks      []sinkDefinition   `json:"sinks"`
+	Connectors []connectorView    `json:"connectors"`
 }
 
 type putSourceInput struct {
@@ -266,7 +285,7 @@ type putConnectorInput struct {
 }
 
 type putConnectorOutput struct {
-	Connector connectorDefinition `json:"connector"`
+	Connector connectorView       `json:"connector"`
 	Status    []supervisor.Status `json:"status"`
 }
 
@@ -292,7 +311,8 @@ type deliveryMetricsInput struct {
 type sourceMetricsInput struct {
 	SourceID      string  `json:"source_id,omitempty" jsonschema:"Optional configured source id. Omit to inspect every source."`
 	PGN           *uint32 `json:"pgn,omitempty" jsonschema:"Optional PGN number filter."`
-	SourceAddress *uint8  `json:"source_address,omitempty" jsonschema:"Optional NMEA 2000 source-address filter."`
+	SourceAddress *uint8  `json:"source_address,omitempty" jsonschema:"Optional NMEA 2000 source-address (sensor/sender id) filter."`
+	DeviceNameHex string  `json:"device_name_hex,omitempty" jsonschema:"Optional stable 64-bit NMEA 2000 Device NAME filter, as hexadecimal with or without a 0x prefix."`
 	EventLimit    int     `json:"event_limit,omitempty" jsonschema:"Recent lifecycle events per source to include; zero defaults to 50."`
 }
 
@@ -300,6 +320,96 @@ type sourceMetricsOutput struct {
 	GeneratedAt time.Time                            `json:"generated_at"`
 	Sources     map[string][]stats.SourcePGNMetric   `json:"sources"`
 	Events      map[string][]stats.SourceMetricEvent `json:"events"`
+}
+
+type latestPayloadsInput struct {
+	SourceID      string  `json:"source_id,omitempty" jsonschema:"Optional configured source id. Omit to inspect every source."`
+	SensorID      string  `json:"sensor_id,omitempty" jsonschema:"Optional sensor_id returned by this tool: a stable Device NAME hex value or address:<source_address>."`
+	PGN           *uint32 `json:"pgn,omitempty" jsonschema:"Optional PGN number filter."`
+	SourceAddress *uint8  `json:"source_address,omitempty" jsonschema:"Optional NMEA 2000 source-address (sensor/sender id) filter."`
+	DeviceNameHex string  `json:"device_name_hex,omitempty" jsonschema:"Optional stable 64-bit NMEA 2000 Device NAME filter, as hexadecimal with or without a 0x prefix."`
+}
+
+type latestPayloadView struct {
+	SourceID      string    `json:"source_id"`
+	SensorID      string    `json:"sensor_id" jsonschema:"Stable Device NAME when known; otherwise address:<source_address>."`
+	SourceAddress uint8     `json:"source_address"`
+	DeviceNameHex string    `json:"device_name_hex,omitempty"`
+	PGN           uint32    `json:"pgn"`
+	PGNName       string    `json:"pgn_name,omitempty"`
+	LastSeen      time.Time `json:"last_seen"`
+	Payload       any       `json:"payload"`
+}
+
+type latestPayloadsOutput struct {
+	GeneratedAt time.Time           `json:"generated_at"`
+	Payloads    []latestPayloadView `json:"payloads"`
+}
+
+func latestPayloadViewFromStats(v stats.SourcePGNLastPayload) (latestPayloadView, error) {
+	var payload any
+	if err := json.Unmarshal(v.Payload, &payload); err != nil {
+		return latestPayloadView{}, fmt.Errorf("decode latest payload for source %s address %d PGN %d: %w",
+			v.SourceID, v.SourceAddress, v.PGN, err)
+	}
+	sensorID := "address:" + strconv.Itoa(int(v.SourceAddress))
+	if v.DeviceNameHex != "" {
+		sensorID = v.DeviceNameHex
+	}
+	return latestPayloadView{
+		SourceID: v.SourceID, SensorID: sensorID, SourceAddress: v.SourceAddress,
+		DeviceNameHex: v.DeviceNameHex, PGN: v.PGN, PGNName: v.PGNName,
+		LastSeen: v.LastSeen, Payload: payload,
+	}, nil
+}
+
+func normalizeDeviceNameHex(raw string) (string, error) {
+	trimmed := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(raw)), "0x")
+	name, err := strconv.ParseUint(trimmed, 16, 64)
+	if err != nil {
+		return "", fmt.Errorf("invalid Device NAME %q: expected up to 16 hexadecimal digits", raw)
+	}
+	return fmt.Sprintf("%016x", name), nil
+}
+
+func latestPayloadFilter(in latestPayloadsInput) (stats.SourcePGNMetricFilter, error) {
+	filter := stats.SourcePGNMetricFilter{
+		PGN: in.PGN, SourceAddress: in.SourceAddress, DeviceNameHex: in.DeviceNameHex,
+	}
+	if filter.DeviceNameHex != "" {
+		normalized, err := normalizeDeviceNameHex(filter.DeviceNameHex)
+		if err != nil {
+			return stats.SourcePGNMetricFilter{}, err
+		}
+		filter.DeviceNameHex = normalized
+	}
+	if in.SensorID == "" {
+		return filter, nil
+	}
+	if rawAddress, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(in.SensorID)), "address:"); ok {
+		parsed, err := strconv.ParseUint(rawAddress, 10, 8)
+		if err != nil {
+			return stats.SourcePGNMetricFilter{}, fmt.Errorf("invalid sensor_id %q: expected address:<0-255>", in.SensorID)
+		}
+		address := uint8(parsed)
+		if filter.SourceAddress != nil && *filter.SourceAddress != address {
+			return stats.SourcePGNMetricFilter{}, fmt.Errorf("sensor_id %q conflicts with source_address %d", in.SensorID, *filter.SourceAddress)
+		}
+		filter.SourceAddress = &address
+		return filter, nil
+	}
+	normalizedName, err := normalizeDeviceNameHex(in.SensorID)
+	if err != nil {
+		return stats.SourcePGNMetricFilter{}, fmt.Errorf("invalid sensor_id %q: expected Device NAME hex or address:<0-255>", in.SensorID)
+	}
+	if filter.DeviceNameHex != "" {
+		configuredName, err := normalizeDeviceNameHex(filter.DeviceNameHex)
+		if err != nil || configuredName != normalizedName {
+			return stats.SourcePGNMetricFilter{}, fmt.Errorf("sensor_id %q conflicts with device_name_hex %q", in.SensorID, filter.DeviceNameHex)
+		}
+	}
+	filter.DeviceNameHex = normalizedName
+	return filter, nil
 }
 
 type deliveryMetricsOutput struct {
@@ -366,7 +476,7 @@ func registerTools(server *sdkmcp.Server, svc *config.Service, reg *stats.Regist
 			out := getConfigOutput{
 				Sources:    make([]sourceDefinition, 0, len(cfg.Sources)),
 				Sinks:      make([]sinkDefinition, 0, len(cfg.Sinks)),
-				Connectors: make([]connectorDefinition, 0, len(cfg.Connectors)),
+				Connectors: make([]connectorView, 0, len(cfg.Connectors)),
 			}
 			for _, v := range cfg.Sources {
 				out.Sources = append(out.Sources, sourceDefinitionFromModel(v))
@@ -375,7 +485,7 @@ func registerTools(server *sdkmcp.Server, svc *config.Service, reg *stats.Regist
 				out.Sinks = append(out.Sinks, sinkDefinitionFromModel(v))
 			}
 			for _, v := range cfg.Connectors {
-				out.Connectors = append(out.Connectors, connectorDefinitionFromModel(v))
+				out.Connectors = append(out.Connectors, connectorViewFromModel(v))
 			}
 			return nil, out, nil
 		})
@@ -419,7 +529,7 @@ func registerTools(server *sdkmcp.Server, svc *config.Service, reg *stats.Regist
 			if err := svc.PutConnector(ctx, v, isCreate); err != nil {
 				return nil, putConnectorOutput{}, publicError(log, err)
 			}
-			return nil, putConnectorOutput{Connector: connectorDefinitionFromModel(v), Status: statusesFor(svc.Statuses(), v.ID)}, nil
+			return nil, putConnectorOutput{Connector: connectorViewFromModel(v), Status: statusesFor(svc.Statuses(), v.ID)}, nil
 		})
 
 	sdkmcp.AddTool(server, tool("delete_source", "Delete source", deleteAnnotations),
@@ -488,11 +598,21 @@ func registerTools(server *sdkmcp.Server, svc *config.Service, reg *stats.Regist
 			if eventLimit <= 0 || eventLimit > 200 {
 				eventLimit = 50
 			}
+			if in.DeviceNameHex != "" {
+				normalized, err := normalizeDeviceNameHex(in.DeviceNameHex)
+				if err != nil {
+					return nil, sourceMetricsOutput{}, err
+				}
+				in.DeviceNameHex = normalized
+			}
+			metricFilter := stats.SourcePGNMetricFilter{
+				PGN: in.PGN, SourceAddress: in.SourceAddress, DeviceNameHex: in.DeviceNameHex,
+			}
 			if in.SourceID != "" {
 				if _, err := svc.GetSource(ctx, in.SourceID); err != nil {
 					return nil, sourceMetricsOutput{}, publicError(log, err)
 				}
-				out.Sources[in.SourceID] = filterSourceMetrics(reg.SourcePGNMetrics(in.SourceID), in)
+				out.Sources[in.SourceID] = reg.SourcePGNMetricsFiltered(in.SourceID, metricFilter)
 				out.Events[in.SourceID] = filterSourceMetricEvents(reg.SourceMetricEvents(in.SourceID, eventLimit), in)
 				return nil, out, nil
 			}
@@ -500,27 +620,58 @@ func registerTools(server *sdkmcp.Server, svc *config.Service, reg *stats.Regist
 			if err != nil {
 				return nil, sourceMetricsOutput{}, publicError(log, err)
 			}
-			all := reg.AllSourcePGNMetrics()
+			if in.PGN == nil && in.SourceAddress == nil && in.DeviceNameHex == "" {
+				all := reg.AllSourcePGNMetrics()
+				for _, source := range sources {
+					out.Sources[source.ID] = all[source.ID]
+					out.Events[source.ID] = filterSourceMetricEvents(reg.SourceMetricEvents(source.ID, eventLimit), in)
+				}
+				return nil, out, nil
+			}
 			for _, source := range sources {
-				out.Sources[source.ID] = filterSourceMetrics(all[source.ID], in)
+				out.Sources[source.ID] = reg.SourcePGNMetricsFiltered(source.ID, metricFilter)
 				out.Events[source.ID] = filterSourceMetricEvents(reg.SourceMetricEvents(source.ID, eventLimit), in)
 			}
 			return nil, out, nil
 		})
-}
 
-func filterSourceMetrics(metrics []stats.SourcePGNMetric, in sourceMetricsInput) []stats.SourcePGNMetric {
-	out := make([]stats.SourcePGNMetric, 0, len(metrics))
-	for _, metric := range metrics {
-		if in.PGN != nil && metric.PGN != *in.PGN {
-			continue
-		}
-		if in.SourceAddress != nil && metric.SourceAddress != *in.SourceAddress {
-			continue
-		}
-		out = append(out, metric)
-	}
-	return out
+	sdkmcp.AddTool(server, tool("get_latest_payloads", "Get latest sensor payloads", readAnnotations),
+		func(ctx context.Context, _ *sdkmcp.CallToolRequest, in latestPayloadsInput) (*sdkmcp.CallToolResult, latestPayloadsOutput, error) {
+			out := latestPayloadsOutput{GeneratedAt: time.Now().UTC(), Payloads: []latestPayloadView{}}
+			filter, err := latestPayloadFilter(in)
+			if err != nil {
+				return nil, latestPayloadsOutput{}, err
+			}
+			appendSource := func(sourceID string) error {
+				for _, payload := range reg.SourcePGNLastPayloadsFiltered(sourceID, filter) {
+					view, err := latestPayloadViewFromStats(payload)
+					if err != nil {
+						return err
+					}
+					out.Payloads = append(out.Payloads, view)
+				}
+				return nil
+			}
+			if in.SourceID != "" {
+				if _, err := svc.GetSource(ctx, in.SourceID); err != nil {
+					return nil, latestPayloadsOutput{}, publicError(log, err)
+				}
+				if err := appendSource(in.SourceID); err != nil {
+					return nil, latestPayloadsOutput{}, publicError(log, err)
+				}
+				return nil, out, nil
+			}
+			sources, err := svc.ListSources(ctx)
+			if err != nil {
+				return nil, latestPayloadsOutput{}, publicError(log, err)
+			}
+			for _, source := range sources {
+				if err := appendSource(source.ID); err != nil {
+					return nil, latestPayloadsOutput{}, publicError(log, err)
+				}
+			}
+			return nil, out, nil
+		})
 }
 
 func filterSourceMetricEvents(events []stats.SourceMetricEvent, in sourceMetricsInput) []stats.SourceMetricEvent {
@@ -531,6 +682,13 @@ func filterSourceMetricEvents(events []stats.SourceMetricEvent, in sourceMetrics
 		}
 		if in.SourceAddress != nil && event.SourceAddress != *in.SourceAddress {
 			continue
+		}
+		if in.DeviceNameHex != "" {
+			want := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(in.DeviceNameHex)), "0x")
+			got := strings.TrimPrefix(strings.ToLower(event.DeviceNameHex), "0x")
+			if got != want {
+				continue
+			}
 		}
 		out = append(out, event)
 	}

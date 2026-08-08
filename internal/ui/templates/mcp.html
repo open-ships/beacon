@@ -180,6 +180,13 @@
   "arguments": {"source_id": "can0"}
 }</code></pre>
       </article>
+      <article>
+        <h4>Read one sensor's latest PGN payloads</h4>
+        <pre class="mcp-code"><code>{
+  "name": "get_latest_payloads",
+  "arguments": {"source_id": "can0", "sensor_id": "address:12"}
+}</code></pre>
+      </article>
     </div>
   </section>
 
@@ -189,6 +196,7 @@
       <dt>Writes</dt><dd>Validated, persisted to SQLite, and reconciled against the running graph in the same call.</dd>
       <dt>Tool errors</dt><dd>Invalid ids, types, references, CEL, durations, and in-use deletes return correctable MCP tool errors.</dd>
       <dt>Metrics</dt><dd>Reports pending delivery separately from retained history, plus per-source/sender PGN rates, payload sizes, learned gaps, and decoded value distributions.</dd>
+      <dt>Latest payloads</dt><dd>Keeps one exact current decoded payload per bounded sensor/PGN stream; no growing payload history is accumulated.</dd>
       <dt>Network</dt><dd>No cloud service, CDN, remote schema, telemetry endpoint, or internet connection is required.</dd>
     </dl>
   </section>

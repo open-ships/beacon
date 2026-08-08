@@ -185,7 +185,11 @@ func sourceDeviceSortURL(base string, sorting sourceDeviceSort, selectedAddress 
 		query.Set("pgn_sort", pgnSorting.key)
 		query.Set("pgn_dir", pgnSorting.direction)
 	}
-	return base + "?" + query.Encode()
+	separator := "?"
+	if strings.Contains(base, "?") {
+		separator = "&"
+	}
+	return base + separator + query.Encode()
 }
 
 func sourceDeviceSortControls(base string, current sourceDeviceSort, selectedAddress *uint8, pgnSorting sourceDevicePGNSort) sourceDeviceSortView {

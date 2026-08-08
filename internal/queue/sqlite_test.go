@@ -183,6 +183,15 @@ func TestPurgeRemovesRowsAndCheckpoint(t *testing.T) {
 	if cur != 0 {
 		t.Fatalf("cursor = %d after purge, want 0", cur)
 	}
+	var aggregateRows int
+	sqlite := q.(*sqliteQueue)
+	if err := sqlite.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM queue_aggregates WHERE connector_id = ?`, sqlite.connectorID).Scan(&aggregateRows); err != nil {
+		t.Fatal(err)
+	}
+	if aggregateRows != 0 {
+		t.Fatalf("aggregate rows = %d after purge and stats read, want 0", aggregateRows)
+	}
 }
 
 func TestQueuesAreIsolated(t *testing.T) {
@@ -198,5 +207,74 @@ func TestQueuesAreIsolated(t *testing.T) {
 	entries, _ := qb.Read(ctx, 0, 10)
 	if len(entries) != 0 {
 		t.Fatal("queue b sees queue a's entries")
+	}
+}
+
+func TestStatsAggregateSelfHealsWithoutChangingDeliveryTruth(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "q.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	q := NewSQLite(st, "repair", model.BufferLimits{MaxMessages: 100})
+	ctx := context.Background()
+	appendN(t, q, 5, time.Now())
+	entries, err := q.Read(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Ack(ctx, entries[1].Seq); err != nil {
+		t.Fatal(err)
+	}
+	want, err := q.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `DELETE FROM queue_aggregates WHERE connector_id = ?`, "repair"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := q.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Depth != want.Depth || got.Bytes != want.Bytes ||
+		got.RetainedDepth != want.RetainedDepth || got.RetainedBytes != want.RetainedBytes ||
+		got.Cursor != want.Cursor || got.Tail != want.Tail ||
+		!got.Oldest.Equal(want.Oldest) || !got.OldestRetained.Equal(want.OldestRetained) {
+		t.Fatalf("rebuilt stats = %+v, want %+v", got, want)
+	}
+}
+
+func TestStatsOldestUsesQueueOrderForOutOfOrderTimestamps(t *testing.T) {
+	q := testQueue(t, model.BufferLimits{MaxMessages: 100})
+	ctx := context.Background()
+	first := time.Unix(200, 0)
+	second := time.Unix(100, 0)
+	if err := q.Append(ctx, []*msg.Envelope{env(1, first)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Append(ctx, []*msg.Envelope{env(2, second)}); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := q.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stats.Oldest.Equal(first) || !stats.OldestRetained.Equal(first) {
+		t.Fatalf("oldest = %v retained = %v; want first queued timestamp %v", stats.Oldest, stats.OldestRetained, first)
+	}
+	entries, err := q.Read(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Ack(ctx, entries[0].Seq); err != nil {
+		t.Fatal(err)
+	}
+	stats, err = q.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stats.Oldest.Equal(second) || !stats.OldestRetained.Equal(first) {
+		t.Fatalf("oldest after ack = %v retained = %v; want %v / %v", stats.Oldest, stats.OldestRetained, second, first)
 	}
 }

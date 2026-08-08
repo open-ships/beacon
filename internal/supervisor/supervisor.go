@@ -311,9 +311,7 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 
 	// --- Drop stats/gauge entries for every connector actually deleted from
 	// config this Reconcile, regardless of whether it ever had durable
-	// storage. An idle connector (never delivered a message, so no
-	// queue/checkpoint rows) is invisible to the KnownConnectorIDs purge
-	// sweep below, yet its prune loop calls stats.Registry.SetQueue and
+	// storage. Its prune loop calls stats.Registry.SetQueue and
 	// metrics.Set.SetQueueDepth on a timer purely from existing — those
 	// registry/gauge entries would otherwise linger forever (GET
 	// /api/v1/metrics would keep listing it, and the queue_depth gauge would
@@ -341,13 +339,11 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	// deleted, so their storage was never touched by the stop phase above.
 	//
 	// Gated behind needsPurgeSweep (first Reconcile + configured-set
-	// shrinkage, see above) because KnownConnectorIDs is an unfiltered scan
-	// of the whole queue table plus a UNION temp b-tree, and the app shares
-	// one SQLite connection (store.Open sets SetMaxOpenConns(1)): running it
-	// on every Reconcile would stall every connector's Append/Read/Ack
-	// system-wide for the duration of the scan. It must stay after the stop
-	// phase so a just-deleted connector's final flush/ack lands before its
-	// rows are purged. ---
+	// shrinkage, see above) because a sweep is only useful when storage can
+	// have become orphaned. KnownConnectorIDs reads the compact aggregate and
+	// checkpoint tables rather than retained envelopes. It stays after the
+	// stop phase so a just-deleted connector's final flush/ack lands before
+	// its rows are purged. ---
 	if s.needsPurgeSweep {
 		if known, err := s.st.KnownConnectorIDs(ctx); err != nil {
 			s.log.Error("list known connector ids failed", "err", err)

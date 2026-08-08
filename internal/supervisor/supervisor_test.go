@@ -394,8 +394,8 @@ func TestDisabledConnectorQueueSurvives(t *testing.T) {
 	_ = sup.Reconcile(ctx)
 
 	stats, _ := q.Stats(ctx)
-	if stats.Depth != 1 {
-		t.Fatalf("disabled connector queue depth = %d, want 1 (kept)", stats.Depth)
+	if stats.RetainedDepth != 1 {
+		t.Fatalf("disabled connector retained depth = %d, want 1 (kept)", stats.RetainedDepth)
 	}
 }
 
@@ -461,10 +461,9 @@ func TestRecoveredComponentStateNotSticky(t *testing.T) {
 	}
 }
 
-// The KnownConnectorIDs purge sweep scans the whole queue table over the
-// app's single shared SQLite connection, so it must stay off the steady-state
-// Reconcile path: it runs on the first Reconcile after construction and again
-// only when the configured-connector id set shrinks.
+// The KnownConnectorIDs purge sweep stays off the steady-state Reconcile path:
+// it runs on the first Reconcile after construction and again only when the
+// configured-connector id set shrinks.
 func TestPurgeSweepGating(t *testing.T) {
 	st, sup, _ := setup(t)
 	ctx := context.Background()

@@ -107,10 +107,10 @@ func TestKnownConnectorIDs(t *testing.T) {
 	s := open(t)
 	ctx := context.Background()
 
-	// "a" has queue rows only, "b" has a checkpoint only, "a" appears in
+	// "a" has aggregate state, "b" has a checkpoint only, "a" appears in
 	// both — the result must be the deduplicated union.
 	if _, err := s.DB().ExecContext(ctx,
-		`INSERT INTO queue (connector_id, ts, envelope, bytes) VALUES ('a', 1, '{}', 2)`); err != nil {
+		`INSERT INTO queue_aggregates (connector_id) VALUES ('a')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.DB().ExecContext(ctx,
@@ -194,5 +194,55 @@ func TestSourceTrafficBaselineTableIsRemovedOnUpgrade(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("source_metric_baselines table count = %d, want 0", count)
+	}
+}
+
+func TestQueueAggregateMigrationBackfillsPartialCheckpoint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pre-aggregate.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	for i, migration := range migrations[:4] {
+		if _, err := db.Exec(migration); err != nil {
+			t.Fatalf("migration %d setup: %v", i+1, err)
+		}
+		if _, err := db.Exec(`INSERT INTO schema_migrations(version) VALUES (?)`, i+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, ts := range []int64{300, 100, 200} {
+		if _, err := db.Exec(`INSERT INTO queue(connector_id, ts, envelope, bytes) VALUES ('route', ?, '{}', ?)`, ts, 10+i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO checkpoints(connector_id, last_seq) VALUES ('route', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	var pendingCount, pendingBytes, retainedCount, retainedBytes, oldestPending, oldestRetained, tail int64
+	if err := st.DB().QueryRow(`
+		SELECT pending_count, pending_bytes, retained_count, retained_bytes,
+		       oldest_pending_ts, oldest_retained_ts, tail_id
+		FROM queue_aggregates WHERE connector_id = 'route'`).Scan(
+		&pendingCount, &pendingBytes, &retainedCount, &retainedBytes,
+		&oldestPending, &oldestRetained, &tail); err != nil {
+		t.Fatal(err)
+	}
+	if pendingCount != 2 || pendingBytes != 23 || retainedCount != 3 || retainedBytes != 33 ||
+		oldestPending != 100 || oldestRetained != 300 || tail != 3 {
+		t.Fatalf("backfilled aggregate = pending %d/%d retained %d/%d oldest %d/%d tail %d",
+			pendingCount, pendingBytes, retainedCount, retainedBytes, oldestPending, oldestRetained, tail)
 	}
 }

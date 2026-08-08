@@ -30,6 +30,7 @@ type overviewPageData struct {
 	ConfigRows  []configRow
 	LiveDOMID   string
 	LiveHref    string
+	DevicesHref string
 	StreamHref  string
 	StreamID    string
 	Description string
@@ -71,7 +72,8 @@ func sourceOverviewPageData(version string, s model.Source) overviewPageData {
 		DeleteHref:  "/sources/" + s.ID + "/delete?context=overview",
 		ConfigRows:  sourceConfigRows(s),
 		LiveDOMID:   "source-overview-live",
-		LiveHref:    "/frag/sources/" + s.ID + "/overview",
+		LiveHref:    "/frag/sources/" + s.ID + "/overview?summary=1",
+		DevicesHref: "/frag/sources/" + s.ID + "/overview",
 		StreamHref:  "/ui/streams/sources/" + s.ID,
 		StreamID:    s.ID,
 		Description: "Received message activity and runtime health for this source.",
@@ -91,7 +93,7 @@ func sinkOverviewPageData(version string, s model.Sink) overviewPageData {
 		DeleteHref:  "/sinks/" + s.ID + "/delete?context=overview",
 		ConfigRows:  sinkConfigRows(s),
 		LiveDOMID:   "sink-overview-live",
-		LiveHref:    "/frag/sinks/" + s.ID + "/overview",
+		LiveHref:    "/frag/sinks/" + s.ID + "/overview?summary=1",
 		StreamHref:  "/ui/streams/sinks/" + s.ID,
 		StreamID:    s.ID,
 		Description: "Sent message activity and runtime health for this sink.",
@@ -111,7 +113,7 @@ func connectorOverviewPageData(version string, c model.Connector) overviewPageDa
 		DeleteHref:  "/connectors/" + c.ID + "/delete?context=overview",
 		ConfigRows:  connectorConfigRows(c),
 		LiveDOMID:   "connector-overview-live",
-		LiveHref:    "/frag/connectors/" + c.ID + "/overview",
+		LiveHref:    "/frag/connectors/" + c.ID + "/overview?summary=1",
 		Description: "Matched and delivered message activity for this connector.",
 	}
 }
@@ -184,8 +186,9 @@ func connectorConfigRows(c model.Connector) []configRow {
 	if len(c.Filters) > 0 {
 		rows = append(rows, configRow{"Filter expression", strings.Join(c.Filters, " && "), true})
 	}
-	if c.Buffer.MaxMessages != 0 {
-		rows = append(rows, configRow{"Max messages", strconv.FormatInt(c.Buffer.MaxMessages, 10), false})
+	effectiveBuffer := c.Buffer.ApplyDefaults()
+	if effectiveBuffer.MaxMessages != 0 {
+		rows = append(rows, configRow{"Max messages", strconv.FormatInt(effectiveBuffer.MaxMessages, 10), false})
 	}
 	if c.Buffer.MaxAge != 0 {
 		rows = append(rows, configRow{"Max age", time.Duration(c.Buffer.MaxAge).String(), false})
@@ -239,33 +242,81 @@ func sourceOverviewLiveData(
 	selectedAddress *uint8,
 	pgnSorting sourceDevicePGNSort,
 ) overviewLiveData {
+	data := sourceOverviewSummaryData(s, reg, statuses)
+	deviceData := sourceDeviceLiveData(s.ID, reg, deviceSorting, selectedAddress, pgnSorting)
+	data.SourceDevices = deviceData.SourceDevices
+	data.SourceDeviceSort = deviceData.SourceDeviceSort
+	data.SourceDeviceDetail = deviceData.SourceDeviceDetail
+	data.SourceDeviceRowsRefreshHref = deviceData.SourceDeviceRowsRefreshHref
+	return data
+}
+
+func sourceOverviewSummaryData(s model.Source, reg *stats.Registry, statuses []supervisor.Status) overviewLiveData {
 	snap, _ := reg.SourceSnapshot(s.ID)
-	sourceMetrics := reg.SourcePGNMetrics(s.ID)
 	state, errText := overviewStatus(statuses, "source", s.ID, s.Enabled)
-	refreshBase := "/frag/sources/" + s.ID + "/overview"
-	sourceDevices := sourceDeviceRows(sourceMetrics, deviceSorting)
-	decorateSourceDeviceRows(sourceDevices, refreshBase, deviceSorting, selectedAddress, pgnSorting)
 	return overviewLiveData{
-		DOMID:              "source-overview-live",
-		RefreshHref:        sourceDeviceSortURL(refreshBase, deviceSorting, selectedAddress, pgnSorting),
+		DOMID:             "source-overview-live",
+		RefreshHref:       "/frag/sources/" + s.ID + "/overview?summary=1",
+		Kind:              "source",
+		ID:                s.ID,
+		State:             state,
+		Err:               errText,
+		Logs:              overviewLogs("source", state, errText),
+		Snapshot:          snap,
+		BytesPerSecText:   humanizeBytes(snap.BytesPerSec, "/s"),
+		QueueBytesText:    humanizeBytes(float64(snap.QueueBytes), ""),
+		RetainedBytesText: humanizeBytes(float64(snap.RetainedBytes), ""),
+	}
+}
+
+func sourceDeviceLiveData(
+	sourceID string,
+	reg *stats.Registry,
+	deviceSorting sourceDeviceSort,
+	selectedAddress *uint8,
+	pgnSorting sourceDevicePGNSort,
+) overviewLiveData {
+	refreshBase := "/frag/sources/" + sourceID + "/overview"
+	sourceSummaries := reg.SourcePGNSummaries(sourceID)
+	sourceDevices := sourceDeviceRows(sourceSummaries, deviceSorting)
+	decorateSourceDeviceRows(sourceDevices, refreshBase, deviceSorting, selectedAddress, pgnSorting)
+	var detailMetrics []stats.SourcePGNMetric
+	if selectedAddress != nil {
+		detailMetrics = reg.SourcePGNMetricsForAddress(sourceID, *selectedAddress)
+	}
+	return overviewLiveData{
 		Kind:               "source",
-		ID:                 s.ID,
-		State:              state,
-		Err:                errText,
-		Logs:               overviewLogs("source", state, errText),
-		Snapshot:           snap,
-		BytesPerSecText:    humanizeBytes(snap.BytesPerSec, "/s"),
-		QueueBytesText:     humanizeBytes(float64(snap.QueueBytes), ""),
-		RetainedBytesText:  humanizeBytes(float64(snap.RetainedBytes), ""),
+		ID:                 sourceID,
 		SourceDevices:      sourceDevices,
 		SourceDeviceSort:   sourceDeviceSortControls(refreshBase, deviceSorting, selectedAddress, pgnSorting),
-		SourceDeviceDetail: sourceDeviceDetail(sourceMetrics, sourceDevices, selectedAddress, refreshBase, deviceSorting, pgnSorting),
+		SourceDeviceDetail: sourceDeviceDetail(detailMetrics, sourceDevices, selectedAddress, refreshBase, deviceSorting, pgnSorting),
 		SourceDeviceRowsRefreshHref: sourceDeviceSortURL(
-			"/frag/sources/"+s.ID+"/device-rows",
+			"/frag/sources/"+sourceID+"/device-rows",
 			deviceSorting,
 			selectedAddress,
 			pgnSorting,
 		),
+	}
+}
+
+func sourceDeviceDetailLiveData(
+	sourceID string,
+	reg *stats.Registry,
+	deviceSorting sourceDeviceSort,
+	selectedAddress *uint8,
+	pgnSorting sourceDevicePGNSort,
+) overviewLiveData {
+	if selectedAddress == nil {
+		return overviewLiveData{Kind: "source", ID: sourceID}
+	}
+	refreshBase := "/frag/sources/" + sourceID + "/overview"
+	metrics := reg.SourcePGNMetricsForAddress(sourceID, *selectedAddress)
+	devices := sourceDeviceRows(metrics, deviceSorting)
+	decorateSourceDeviceRows(devices, refreshBase, deviceSorting, selectedAddress, pgnSorting)
+	return overviewLiveData{
+		Kind:               "source",
+		ID:                 sourceID,
+		SourceDeviceDetail: sourceDeviceDetail(metrics, devices, selectedAddress, refreshBase, deviceSorting, pgnSorting),
 	}
 }
 
@@ -305,7 +356,7 @@ func sinkOverviewLiveData(s model.Sink, reg *stats.Registry, statuses []supervis
 	state, errText := overviewStatus(statuses, "sink", s.ID, s.Enabled)
 	return overviewLiveData{
 		DOMID:             "sink-overview-live",
-		RefreshHref:       "/frag/sinks/" + s.ID + "/overview",
+		RefreshHref:       "/frag/sinks/" + s.ID + "/overview?summary=1",
 		Kind:              "sink",
 		ID:                s.ID,
 		State:             state,
@@ -323,7 +374,7 @@ func connectorOverviewLiveData(c model.Connector, reg *stats.Registry, statuses 
 	state, errText := overviewStatus(statuses, "connector", c.ID, c.Enabled)
 	return overviewLiveData{
 		DOMID:             "connector-overview-live",
-		RefreshHref:       "/frag/connectors/" + c.ID + "/overview",
+		RefreshHref:       "/frag/connectors/" + c.ID + "/overview?summary=1",
 		Kind:              "connector",
 		ID:                c.ID,
 		State:             state,
@@ -400,7 +451,17 @@ func handleSourceOverviewFrag(svc *config.Service, reg *stats.Registry, statuses
 		sorting := sourceDeviceSortFromQuery(r.URL.Query().Get("sort"), r.URL.Query().Get("dir"))
 		selectedAddress := sourceDeviceAddressFromQuery(r.URL.Query().Get("device"))
 		pgnSorting := sourceDevicePGNSortFromQuery(r.URL.Query().Get("pgn_sort"), r.URL.Query().Get("pgn_dir"))
-		renderFragment(w, log, "overview-live", sourceOverviewLiveData(source, reg, statuses(), sorting, selectedAddress, pgnSorting))
+		if r.URL.Query().Get("detail") == "1" {
+			data := sourceDeviceDetailLiveData(source.ID, reg, sorting, selectedAddress, pgnSorting)
+			renderFragment(w, log, "source-device-pgn-rows", data)
+			return
+		}
+		if r.URL.Query().Get("summary") == "1" {
+			renderFragment(w, log, "overview-summary-live", sourceOverviewSummaryData(source, reg, statuses()))
+			return
+		}
+		data := sourceOverviewLiveData(source, reg, statuses(), sorting, selectedAddress, pgnSorting)
+		renderFragment(w, log, "overview-live", data)
 	}
 }
 
@@ -414,7 +475,7 @@ func handleSourceDeviceRowsFrag(svc *config.Service, reg *stats.Registry, status
 		sorting := sourceDeviceSortFromQuery(r.URL.Query().Get("sort"), r.URL.Query().Get("dir"))
 		selectedAddress := sourceDeviceAddressFromQuery(r.URL.Query().Get("device"))
 		pgnSorting := sourceDevicePGNSortFromQuery(r.URL.Query().Get("pgn_sort"), r.URL.Query().Get("pgn_dir"))
-		data := sourceOverviewLiveData(source, reg, statuses(), sorting, selectedAddress, pgnSorting)
+		data := sourceDeviceLiveData(source.ID, reg, sorting, selectedAddress, pgnSorting)
 		renderFragment(w, log, "source-device-row-snapshot", data)
 	}
 }
@@ -426,7 +487,12 @@ func handleSinkOverviewFrag(svc *config.Service, reg *stats.Registry, statuses f
 			renderOverviewFragErr(w, log, err)
 			return
 		}
-		renderFragment(w, log, "overview-live", sinkOverviewLiveData(sink, reg, statuses()))
+		data := sinkOverviewLiveData(sink, reg, statuses())
+		if r.URL.Query().Get("summary") == "1" {
+			renderFragment(w, log, "overview-summary-live", data)
+			return
+		}
+		renderFragment(w, log, "overview-live", data)
 	}
 }
 
@@ -437,7 +503,12 @@ func handleConnectorOverviewFrag(svc *config.Service, reg *stats.Registry, statu
 			renderOverviewFragErr(w, log, err)
 			return
 		}
-		renderFragment(w, log, "overview-live", connectorOverviewLiveData(connector, reg, statuses()))
+		data := connectorOverviewLiveData(connector, reg, statuses())
+		if r.URL.Query().Get("summary") == "1" {
+			renderFragment(w, log, "overview-summary-live", data)
+			return
+		}
+		renderFragment(w, log, "overview-live", data)
 	}
 }
 

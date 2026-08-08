@@ -146,6 +146,13 @@ func (e *Envelope) UnmarshalJSON(data []byte) error {
 // producer can emit a payload that consumers cannot deserialize as an n2k
 // struct.
 func (e *Envelope) consumerPayload() (json.RawMessage, error) {
+	e.consumerOnce.Do(func() {
+		e.consumerPayloadCache, e.consumerPayloadErr = e.buildConsumerPayload()
+	})
+	return e.consumerPayloadCache, e.consumerPayloadErr
+}
+
+func (e *Envelope) buildConsumerPayload() (json.RawMessage, error) {
 	var fields map[string]json.RawMessage
 	if len(e.Payload) != 0 {
 		if err := json.Unmarshal(e.Payload, &fields); err != nil {
@@ -163,5 +170,5 @@ func (e *Envelope) consumerPayload() (json.RawMessage, error) {
 		fields["info"] = rawInfo
 		return json.Marshal(fields)
 	}
-	return bytes.Clone(e.Payload), nil
+	return e.Payload, nil
 }

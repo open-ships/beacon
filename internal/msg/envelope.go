@@ -42,8 +42,13 @@ type Envelope struct {
 	Payload          json.RawMessage                     `json:"payload"`
 	Raw              []byte                              `json:"raw,omitempty"`
 
-	payloadOnce sync.Once
-	payloadMap  map[string]any // lazy cache for CEL
+	payloadOnce          sync.Once
+	payloadMap           map[string]any // lazy cache for CEL
+	sizeOnce             sync.Once
+	sizeBytes            int
+	consumerOnce         sync.Once
+	consumerPayloadCache json.RawMessage
+	consumerPayloadErr   error
 }
 
 const (
@@ -164,10 +169,16 @@ func (e *Envelope) PayloadMap() map[string]any {
 }
 
 // SizeBytes approximates the stored size for buffer byte-limit accounting.
+// Envelopes are immutable after publication, so the result can be shared by
+// every connector and statistics consumer that sees the envelope.
 func (e *Envelope) SizeBytes() int {
-	doc, err := json.Marshal(e)
-	if err != nil {
-		return len(e.Payload) + len(e.Raw) + 64
-	}
-	return len(doc)
+	e.sizeOnce.Do(func() {
+		doc, err := json.Marshal(e)
+		if err != nil {
+			e.sizeBytes = len(e.Payload) + len(e.Raw) + 64
+			return
+		}
+		e.sizeBytes = len(doc)
+	})
+	return e.sizeBytes
 }

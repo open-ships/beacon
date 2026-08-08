@@ -304,7 +304,8 @@ func TestSourceOverviewPageRendersConfigAndLiveFragment(t *testing.T) {
 		`data-overview-summary-row`, `data-overview-configuration`, "Edit source", `href="/sources/mqtt-in/edit"`, `hx-get="/sources/mqtt-in/edit"`,
 		`hx-post="/sources/mqtt-in/delete?context=overview"`, `hx-target="#overview-delete-feedback"`, "Delete",
 		`aria-label="Breadcrumb"`, `href="/sources"`, `aria-current="page">MQTT input</span>`,
-		`hx-get="/frag/sources/mqtt-in/overview"`, `hx-trigger="load, every 500ms"`,
+		`hx-get="/frag/sources/mqtt-in/overview?summary=1"`, `hx-trigger="load"`,
+		`hx-get="/frag/sources/mqtt-in/overview"`,
 		`data-stream-url="/ui/streams/sources/mqtt-in"`, "Stream contents",
 		`data-stream-filter`, `aria-label="CEL stream filter"`,
 		`data-stream-start`, `data-stream-stop`, "JSONL", "CAN bytes",
@@ -483,7 +484,7 @@ func TestSinkOverviewPageRendersConfigAndLiveFragment(t *testing.T) {
 		`data-overview-summary-row`, `data-overview-configuration`, "Edit sink", `href="/sinks/mqtt-out/edit"`, `hx-get="/sinks/mqtt-out/edit"`,
 		`hx-post="/sinks/mqtt-out/delete?context=overview"`, `hx-target="#overview-delete-feedback"`, "Delete",
 		`aria-label="Breadcrumb"`, `href="/sinks"`, `aria-current="page">MQTT output</span>`,
-		`hx-get="/frag/sinks/mqtt-out/overview"`, `hx-trigger="load, every 500ms"`,
+		`hx-get="/frag/sinks/mqtt-out/overview?summary=1"`, `hx-trigger="load"`,
 		`data-stream-url="/ui/streams/sinks/mqtt-out"`, "Stream contents",
 		`data-stream-filter`, `aria-label="CEL stream filter"`,
 		`data-stream-start`, `data-stream-stop`, "JSONL", "CAN bytes",
@@ -1575,6 +1576,10 @@ func TestConnectorNewPageOpensCreateForm(t *testing.T) {
 		`aria-autocomplete="list"`,
 		`role="listbox"`,
 		`aria-keyshortcuts="Control+Space"`,
+		`id="conn-max-messages" name="max_messages" value="10000"`,
+		`10,000 is the default when no other limit is set`,
+		`placeholder="No age limit (for example, 24h)"`,
+		`placeholder="No byte limit"`,
 		`aria-label="Breadcrumb"`,
 		`href="/connectors"`,
 		`aria-current="page">Add connector</span>`,
@@ -1608,6 +1613,37 @@ func TestConnectorNewPageOpensCreateForm(t *testing.T) {
 	generatedFormID(t, modal)
 	if strings.Contains(modal, "<!doctype html>") {
 		t.Fatalf("connector modal request returned a full page:\n%s", modal)
+	}
+}
+
+func TestConnectorFormMakesEffectiveRetentionDefaultVisible(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	seedSourceSink(t, svc)
+	must(t, svc.PutConnector(context.Background(), model.Connector{
+		ID: "legacy", SourceID: "src1", SinkID: "sink1",
+	}, true))
+	must(t, svc.PutConnector(context.Background(), model.Connector{
+		ID: "age-only", SourceID: "src1", SinkID: "sink1",
+		Buffer: model.BufferLimits{MaxAge: model.Duration(time.Hour)},
+	}, true))
+
+	for _, tc := range []struct {
+		path string
+		want string
+	}{
+		{"/connectors/legacy/edit", `id="conn-max-messages" name="max_messages" value="10000"`},
+		{"/connectors/age-only/edit", `id="conn-max-messages" name="max_messages" value="0"`},
+		{"/connectors/legacy", `<dt>Max messages</dt>`},
+		{"/connectors/legacy", `<dd>10000</dd>`},
+	} {
+		resp, err := http.Get(srv.URL + tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := mustBody(t, resp)
+		if !strings.Contains(body, tc.want) {
+			t.Fatalf("%s missing %q:\n%s", tc.path, tc.want, body)
+		}
 	}
 }
 
@@ -2229,9 +2265,9 @@ func TestOverviewFragmentsRenderConsistentLiveMetrics(t *testing.T) {
 	commonWants := []string{
 		"Status",
 		"<span>Msg/s</span>", "<span>Bytes/s</span>",
-		`hx-trigger="every 500ms"`,
+		`hx-trigger="every 2s"`, `data-live-poll`,
 	}
-	commonNotWants := []string{"Total messages", "Total bytes", "Message stream", `every 2s`}
+	commonNotWants := []string{"Total messages", "Total bytes", "Message stream", `every 500ms`}
 
 	for _, tc := range []struct {
 		path     string
@@ -2339,7 +2375,7 @@ func TestSourceDeviceSortStatePersistsInLiveRefresh(t *testing.T) {
 
 	for _, want := range []string{
 		`aria-label="Sort by bytes per second ascending"`,
-		`hx-get="/frag/sources/src1/overview?dir=desc&amp;sort=bytes"`,
+		`hx-get="/frag/sources/src1/overview?summary=1"`,
 		`hx-get="/frag/sources/src1/device-rows?dir=desc&amp;sort=bytes"`,
 		`data-source-device-row-refresh`,
 	} {
@@ -2425,7 +2461,7 @@ func TestSourceDeviceRowOpensLivePGNStatisticsPanel(t *testing.T) {
 		`hx-select="#source-device-pgn-rows"`,
 		`hx-sync="#source-device-pgn-table:replace"`,
 		`hx-sync="#source-device-pgn-table:drop"`,
-		`hx-trigger="every 500ms"`,
+		`hx-trigger="every 2s"`, `data-live-poll`,
 		`href="https://openships.ai/nmea-2000/pgn/?id=127250"`,
 		`target="_blank" rel="noopener noreferrer"`,
 	} {
@@ -2450,6 +2486,40 @@ func TestSourceDeviceRowOpensLivePGNStatisticsPanel(t *testing.T) {
 	}
 }
 
+func TestSourceDevicePGNPollReturnsOnlySelectedDeviceRows(t *testing.T) {
+	srv, svc, reg := newUIServerWithServiceAndRegistry(t)
+	must(t, svc.PutSource(context.Background(), model.Source{
+		ID: "src1", Name: "Source One", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0",
+	}, true))
+	for _, address := range []uint8{12, 44} {
+		reg.RecordSource("src1", &msg.Envelope{
+			PGN: 127250, PGNName: "Vessel Heading", Source: address,
+			Raw: []byte{1, 2, 3, 4, 5, 6, 7, 8},
+		})
+	}
+
+	resp, err := http.Get(srv.URL + "/frag/sources/src1/overview?detail=1&device=12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	for _, want := range []string{
+		`<tbody id="source-device-pgn-rows"`,
+		`hx-get="/frag/sources/src1/overview?detail=1&amp;device=12`,
+		"Vessel Heading",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("PGN row poll missing %q:\n%s", want, body)
+		}
+	}
+	for _, notWant := range []string{`id="source-overview-live"`, `id="source-devices-panel"`, `source-device-row-44`} {
+		if strings.Contains(body, notWant) {
+			t.Fatalf("PGN row poll unexpectedly contains %q:\n%s", notWant, body)
+		}
+	}
+}
+
 func TestSourceDevicePGNSortStatePersistsInLiveRefresh(t *testing.T) {
 	srv, svc, reg := newUIServerWithServiceAndRegistry(t)
 	must(t, svc.PutSource(context.Background(), model.Source{
@@ -2469,7 +2539,7 @@ func TestSourceDevicePGNSortStatePersistsInLiveRefresh(t *testing.T) {
 
 	for _, want := range []string{
 		`aria-label="Sort by mean payload size ascending"`,
-		`hx-get="/frag/sources/src1/overview?device=12&amp;dir=desc&amp;pgn_dir=desc&amp;pgn_sort=payload&amp;sort=bytes"`,
+		`hx-get="/frag/sources/src1/overview?detail=1&amp;device=12&amp;dir=desc&amp;pgn_dir=desc&amp;pgn_sort=payload&amp;sort=bytes"`,
 		`data-source-device-pgn-sort-control="payload"`,
 		`hx-target="#source-device-pgn-rows"`,
 		`hx-select="#source-device-pgn-rows"`,
@@ -2518,7 +2588,7 @@ func TestConnectorOverviewPageRendersConfigSummary(t *testing.T) {
 		`data-overview-summary-row`, `data-overview-configuration`, "Edit connector", `href="/connectors/conn1/edit"`, `hx-get="/connectors/conn1/edit"`,
 		`hx-post="/connectors/conn1/delete?context=overview"`, `hx-target="#overview-delete-feedback"`, "Delete",
 		`aria-label="Breadcrumb"`, `href="/connectors"`, `aria-current="page">NMEA Bridge</span>`,
-		`hx-get="/frag/connectors/conn1/overview"`, `hx-trigger="load, every 500ms"`,
+		`hx-get="/frag/connectors/conn1/overview?summary=1"`, `hx-trigger="load"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("connector detail page missing %q:\n%s", want, body)

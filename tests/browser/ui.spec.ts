@@ -104,7 +104,10 @@ test('operator can create and visually trace a pipeline', async ({ page }) => {
     const opacities: number[] = [];
     let missingFrames = 0;
     let replacementSeen = false;
-    const stopAt = performance.now() + 2600;
+    // Dashboard polling intentionally runs every five seconds to keep idle CPU
+    // and allocation pressure low. Observe through one complete refresh so the
+    // edge replacement and animation-stability assertions remain meaningful.
+    const stopAt = performance.now() + 6200;
 
     while (performance.now() < stopAt) {
       const edges = selectors.map((selector) => document.querySelector(selector));

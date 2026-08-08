@@ -116,10 +116,10 @@ func (c *Connector) Start(ctx context.Context) {
 	// waiting for the first prune tick (up to pruneInterval later).
 	// Deliberately zero-valued, with NO queue read here: Start runs while the
 	// supervisor holds reconcileMu, on a store limited to a single shared
-	// SQLite connection — a synchronous q.Stats (COUNT/SUM over this
-	// connector's queue rows) would add a large backlog's scan latency to any
-	// config write that restarts this connector and stall every other DB op
-	// for the duration. The prune goroutine refreshes the real depth/bytes
+	// SQLite connection. Queue statistics are now a compact aggregate read,
+	// but keeping all database work outside that lock also prevents config
+	// writes from waiting behind unrelated I/O. The prune goroutine refreshes
+	// the real depth/bytes
 	// immediately on entry (before its first tick), so a restarted
 	// connector's true backlog appears within milliseconds, asynchronously,
 	// outside the lock.
@@ -280,32 +280,28 @@ func (c *Connector) deliver(ctx context.Context) {
 	}
 	lastAck := time.Now()
 	dirty := false
-	poll := time.NewTicker(250 * time.Millisecond)
-	defer poll.Stop()
 
-	ack := func(force bool) {
+	ack := func(force bool) bool {
 		if !dirty || (!force && time.Since(lastAck) < ackInterval) {
-			return
+			return true
 		}
 		// use Background: final ack must survive ctx cancellation
 		if err := c.q.Ack(context.Background(), cursor); err == nil {
 			dirty = false
 			lastAck = time.Now()
 			c.setIssue("checkpoint", nil)
+			return true
 		} else {
+			lastAck = time.Now() // throttle retry without an idle queue poll
 			c.setIssue("checkpoint", err)
 			c.st.RecordStage(c.cfg.ID, "ack_error", 1)
+			return false
 		}
 	}
 	defer ack(true)
 
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-c.notify:
-		case <-poll.C:
-		}
+		readFailed := false
 		for {
 			entries, err := c.q.Read(ctx, cursor, readLimit)
 			if err != nil {
@@ -314,6 +310,7 @@ func (c *Connector) deliver(ctx context.Context) {
 					c.setIssue("queue_read", err)
 					c.st.RecordStage(c.cfg.ID, "read_error", 1)
 				}
+				readFailed = true
 				break
 			}
 			c.setIssue("queue_read", nil)
@@ -389,6 +386,41 @@ func (c *Connector) deliver(ctx context.Context) {
 			}
 			ack(false)
 		}
+
+		// Appends wake the loop through c.notify. With no backlog and no dirty
+		// checkpoint there is no database polling at all. Timers exist only to
+		// retry an actual read failure or flush a short batch's checkpoint.
+		var wait time.Duration
+		switch {
+		case readFailed:
+			wait = time.Second
+		case dirty:
+			wait = ackInterval - time.Since(lastAck)
+			if wait <= 0 {
+				ack(true)
+				continue
+			}
+		default:
+			select {
+			case <-ctx.Done():
+				return
+			case <-c.notify:
+				continue
+			}
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		case <-c.notify:
+			if !timer.Stop() {
+				<-timer.C
+			}
+		case <-timer.C:
+		}
 	}
 }
 
@@ -462,7 +494,7 @@ func (c *Connector) prune(ctx context.Context) {
 	// it must not touch the DB itself), so a restarted connector with a
 	// backlog would otherwise report depth 0 for up to pruneInterval. This
 	// read runs on the prune goroutine — outside the supervisor's
-	// reconcileMu — so a slow COUNT/SUM never extends a config write.
+	// reconcileMu — so queue I/O never extends a config write.
 	refreshStats := func() {
 		if st, err := c.q.Stats(ctx); err == nil {
 			c.met.SetQueueDepth(c.cfg.ID, st.Depth, st.Bytes)

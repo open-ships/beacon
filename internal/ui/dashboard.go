@@ -1,7 +1,7 @@
 // dashboard.go implements beacon's live home view: the source -> connector
 // -> sink DAG templates/frag_dashboard.html renders, and the GET
-// /frag/dashboard handler templates/dashboard.html polls every 2s
-// (hx-trigger="load, every 2s") — see dashboard.html's comment for why it
+// /frag/dashboard handler templates/dashboard.html polls every 5s
+// (hx-trigger="load, every 5s") — see dashboard.html's comment for why it
 // ships an empty container rather than rendering this fragment inline, the
 // same "ships empty, fetches client-side" shape the overview pages use.
 package ui
@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/open-ships/beacon/internal/bus"
@@ -301,7 +302,7 @@ func dashboardEmptyState() (title, message, cta, href string) {
 }
 
 // handleDashboardFrag serves GET /frag/dashboard: the dashboard page's
-// hx-trigger="load, every 2s" polling target (see templates/dashboard.html).
+// hx-trigger="load, every 5s" polling target (see templates/dashboard.html).
 // Lists every configured source/sink/connector fresh on every poll — a
 // source/sink/connector created or deleted elsewhere in the UI must show up
 // on the dashboard within one poll interval, the same freshness every other
@@ -310,25 +311,30 @@ func dashboardEmptyState() (title, message, cta, href string) {
 // badges, so both reflect the exact same instant) and reg's live
 // per-connector counters.
 func handleDashboardFrag(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, devices func() []bus.DeviceInfo, runtime RuntimeInfo, log *slog.Logger) http.HandlerFunc {
+	var canDetailsMu sync.Mutex
+	var canDetails []sysinfo.CANInterface
+	var canDetailsExpires time.Time
+	loadCANDetails := func() []sysinfo.CANInterface {
+		if runtime.CANDetails == nil {
+			return nil
+		}
+		canDetailsMu.Lock()
+		defer canDetailsMu.Unlock()
+		if time.Now().Before(canDetailsExpires) {
+			return append([]sysinfo.CANInterface(nil), canDetails...)
+		}
+		canDetails = runtime.CANDetails()
+		canDetailsExpires = time.Now().Add(10 * time.Second)
+		return append([]sysinfo.CANInterface(nil), canDetails...)
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		sources, err := svc.ListSources(r.Context())
+		cfg, err := svc.Export(r.Context())
 		if err != nil {
-			log.Error("ui: list sources failed", "err", err)
+			log.Error("ui: load dashboard config failed", "err", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		sinks, err := svc.ListSinks(r.Context())
-		if err != nil {
-			log.Error("ui: list sinks failed", "err", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		connectors, err := svc.ListConnectors(r.Context())
-		if err != nil {
-			log.Error("ui: list connectors failed", "err", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
+		sources, sinks, connectors := cfg.Sources, cfg.Sinks, cfg.Connectors
 
 		live := statuses()
 		sourceConnectorCounts, sinkConnectorCounts := endpointConnectorCounts(connectors)
@@ -362,9 +368,7 @@ func handleDashboardFrag(svc *config.Service, reg *stats.Registry, statuses func
 			data.Devices = inventoryDeviceRows(runtime.Inventory.Records())
 			data.CanCommitBaseline = true
 		}
-		if runtime.CANDetails != nil {
-			data.CANInterfaces = runtime.CANDetails()
-		}
+		data.CANInterfaces = loadCANDetails()
 		renderFragment(w, log, "dashboard-content", data)
 	}
 }

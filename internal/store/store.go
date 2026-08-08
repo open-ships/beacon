@@ -69,6 +69,39 @@ var migrations = []string{
 	 );
 	 CREATE INDEX IF NOT EXISTS source_metric_events_source_ts ON source_metric_events(source_id, ts DESC);`,
 	`DROP TABLE IF EXISTS source_metric_baselines;`,
+	`CREATE TABLE IF NOT EXISTS queue_aggregates (
+	   connector_id TEXT PRIMARY KEY,
+	   pending_count INTEGER NOT NULL DEFAULT 0,
+	   pending_bytes INTEGER NOT NULL DEFAULT 0,
+	   oldest_pending_ts INTEGER,
+	   retained_count INTEGER NOT NULL DEFAULT 0,
+	   retained_bytes INTEGER NOT NULL DEFAULT 0,
+	   oldest_retained_ts INTEGER,
+	   tail_id INTEGER NOT NULL DEFAULT 0
+	 );
+	 INSERT INTO queue_aggregates (
+	   connector_id, pending_count, pending_bytes, oldest_pending_ts,
+	   retained_count, retained_bytes, oldest_retained_ts, tail_id
+	 )
+	 SELECT ids.connector_id,
+	   COALESCE(SUM(CASE WHEN q.id > COALESCE(c.last_seq, 0) THEN 1 ELSE 0 END), 0),
+	   COALESCE(SUM(CASE WHEN q.id > COALESCE(c.last_seq, 0) THEN q.bytes ELSE 0 END), 0),
+	   (SELECT pending.ts FROM queue pending
+	    WHERE pending.connector_id = ids.connector_id AND pending.id > COALESCE(c.last_seq, 0)
+	    ORDER BY pending.id LIMIT 1),
+	   COUNT(q.id), COALESCE(SUM(q.bytes), 0),
+	   (SELECT retained.ts FROM queue retained
+	    WHERE retained.connector_id = ids.connector_id ORDER BY retained.id LIMIT 1),
+	   COALESCE(MAX(q.id), 0)
+	 FROM (
+	   SELECT connector_id FROM queue
+	   UNION
+	   SELECT connector_id FROM checkpoints
+	 ) AS ids
+	 LEFT JOIN checkpoints c ON c.connector_id = ids.connector_id
+	 LEFT JOIN queue q ON q.connector_id = ids.connector_id
+	 GROUP BY ids.connector_id
+	 ON CONFLICT(connector_id) DO NOTHING;`,
 }
 
 func Open(path string) (*Store, error) {
@@ -151,6 +184,43 @@ func list[T any](ctx context.Context, db *sql.DB, table string) ([]T, error) {
 	return out, rows.Err()
 }
 
+func get[T any](ctx context.Context, db *sql.DB, table, id string) (T, error) {
+	var out T
+	var doc string
+	if err := db.QueryRowContext(ctx,
+		`SELECT doc FROM `+table+` WHERE id = ?`, id).Scan(&doc); err != nil { // #nosec G202 -- table is selected only by typed methods below.
+		return out, err
+	}
+	if err := json.Unmarshal([]byte(doc), &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (s *Store) ListSources(ctx context.Context) ([]model.Source, error) {
+	return list[model.Source](ctx, s.db, "sources")
+}
+
+func (s *Store) ListSinks(ctx context.Context) ([]model.Sink, error) {
+	return list[model.Sink](ctx, s.db, "sinks")
+}
+
+func (s *Store) ListConnectors(ctx context.Context) ([]model.Connector, error) {
+	return list[model.Connector](ctx, s.db, "connectors")
+}
+
+func (s *Store) GetSource(ctx context.Context, id string) (model.Source, error) {
+	return get[model.Source](ctx, s.db, "sources", id)
+}
+
+func (s *Store) GetSink(ctx context.Context, id string) (model.Sink, error) {
+	return get[model.Sink](ctx, s.db, "sinks", id)
+}
+
+func (s *Store) GetConnector(ctx context.Context, id string) (model.Connector, error) {
+	return get[model.Connector](ctx, s.db, "connectors", id)
+}
+
 func (s *Store) PutSource(ctx context.Context, v model.Source) error {
 	return put(ctx, s.db, "sources", v.ID, v)
 }
@@ -175,23 +245,25 @@ func (s *Store) del(ctx context.Context, table, id string) error {
 func (s *Store) LoadConfig(ctx context.Context) (model.Config, error) {
 	var cfg model.Config
 	var err error
-	if cfg.Sources, err = list[model.Source](ctx, s.db, "sources"); err != nil {
+	if cfg.Sources, err = s.ListSources(ctx); err != nil {
 		return cfg, err
 	}
-	if cfg.Sinks, err = list[model.Sink](ctx, s.db, "sinks"); err != nil {
+	if cfg.Sinks, err = s.ListSinks(ctx); err != nil {
 		return cfg, err
 	}
-	if cfg.Connectors, err = list[model.Connector](ctx, s.db, "connectors"); err != nil {
+	if cfg.Connectors, err = s.ListConnectors(ctx); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
 }
 
-// KnownConnectorIDs returns every connector id that has queue or checkpoint
-// rows — used to purge storage of connectors deleted from config.
+// KnownConnectorIDs returns every connector id that has aggregate or checkpoint
+// state. Append maintains the aggregate transactionally, so this lookup never
+// scans the retained-envelope table.
 func (s *Store) KnownConnectorIDs(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT connector_id FROM queue UNION SELECT connector_id FROM checkpoints`)
+		`SELECT connector_id FROM queue_aggregates
+		 UNION SELECT connector_id FROM checkpoints`)
 	if err != nil {
 		return nil, err
 	}

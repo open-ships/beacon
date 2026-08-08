@@ -17,7 +17,7 @@ import (
 	"github.com/open-ships/beacon/internal/queue"
 )
 
-const clientBuf = 256
+const clientBuf = 64
 
 type client struct {
 	ch   chan queue.Entry

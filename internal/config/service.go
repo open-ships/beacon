@@ -8,6 +8,7 @@ package config
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"sync"
@@ -87,60 +88,39 @@ func NewService(st *store.Store, rec Reconciler, log *slog.Logger) *Service {
 // --- Reads ---
 
 func (s *Service) ListSources(ctx context.Context) ([]model.Source, error) {
-	cfg, err := s.st.LoadConfig(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return cfg.Sources, nil
+	return s.st.ListSources(ctx)
 }
 
 func (s *Service) ListSinks(ctx context.Context) ([]model.Sink, error) {
-	cfg, err := s.st.LoadConfig(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return cfg.Sinks, nil
+	return s.st.ListSinks(ctx)
 }
 
 func (s *Service) ListConnectors(ctx context.Context) ([]model.Connector, error) {
-	cfg, err := s.st.LoadConfig(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return cfg.Connectors, nil
+	return s.st.ListConnectors(ctx)
 }
 
 func (s *Service) GetSource(ctx context.Context, id string) (model.Source, error) {
-	cfg, err := s.st.LoadConfig(ctx)
-	if err != nil {
-		return model.Source{}, err
+	out, err := s.st.GetSource(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.Source{}, ErrNotFound
 	}
-	if i := indexOf(cfg.Sources, id, func(v model.Source) string { return v.ID }); i >= 0 {
-		return cfg.Sources[i], nil
-	}
-	return model.Source{}, ErrNotFound
+	return out, err
 }
 
 func (s *Service) GetSink(ctx context.Context, id string) (model.Sink, error) {
-	cfg, err := s.st.LoadConfig(ctx)
-	if err != nil {
-		return model.Sink{}, err
+	out, err := s.st.GetSink(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.Sink{}, ErrNotFound
 	}
-	if i := indexOf(cfg.Sinks, id, func(v model.Sink) string { return v.ID }); i >= 0 {
-		return cfg.Sinks[i], nil
-	}
-	return model.Sink{}, ErrNotFound
+	return out, err
 }
 
 func (s *Service) GetConnector(ctx context.Context, id string) (model.Connector, error) {
-	cfg, err := s.st.LoadConfig(ctx)
-	if err != nil {
-		return model.Connector{}, err
+	out, err := s.st.GetConnector(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.Connector{}, ErrNotFound
 	}
-	if i := indexOf(cfg.Connectors, id, func(v model.Connector) string { return v.ID }); i >= 0 {
-		return cfg.Connectors[i], nil
-	}
-	return model.Connector{}, ErrNotFound
+	return out, err
 }
 
 // Export returns the whole current configuration (used by the CLI/UI export

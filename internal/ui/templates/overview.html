@@ -36,7 +36,7 @@
     </section>
 
     <div id="{{.LiveDOMID}}" class="overview-live overview-live-loading"
-         hx-get="{{.LiveHref}}" hx-trigger="load, every 500ms"
+         hx-get="{{.LiveHref}}" hx-trigger="load"
          hx-select="#{{.LiveDOMID}}" hx-swap="outerHTML"
          aria-live="polite" aria-busy="true">
       <section class="overview-card overview-summary-panel overview-status-loading" aria-label="Status">
@@ -52,7 +52,7 @@
   {{if eq .Kind "source"}}
   <section id="source-devices-panel" class="overview-card overview-devices-loading"
            aria-label="Source devices" aria-busy="true"
-           hx-get="{{.LiveHref}}" hx-trigger="load"
+           hx-get="{{.DevicesHref}}" hx-trigger="load"
            hx-select="#source-devices-panel" hx-swap="outerHTML">
     <div class="section-heading">
       <h3>Source devices</h3>

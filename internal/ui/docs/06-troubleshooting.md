@@ -79,7 +79,10 @@ with `GET /api/v1/connectors/{id}/metrics` — sustained growth up against
 `max_messages` (or the age/byte equivalent) means deliveries aren't
 keeping up with intake and old data is now being pruned to make room, not
 retained indefinitely. If no limit at all is configured, `max_messages`
-defaults to 100000.
+defaults to 10000.
+That cap applies to retained rows whether acknowledged or still pending. If a
+sink may be unavailable long enough to exceed 10000 messages, configure a
+larger explicit count, age, or byte budget for that connector.
 
 ## Health states
 

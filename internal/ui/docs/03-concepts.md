@@ -125,9 +125,12 @@ are configured per connector:
 | `max_bytes` | keep at most this many bytes of payload+raw data |
 
 Any combination can be set; if none are set at all, `max_messages` defaults
-to 100000. Pruning runs periodically per connector, deleting whatever each
+to 10000. Pruning runs periodically per connector, deleting whatever each
 configured limit says to drop; if more than one limit is set, all of them
-are enforced.
+are enforced. The live queue totals are maintained separately from retained
+envelope rows, so UI and metrics reads do not continuously aggregate the full
+history. Retention pruning can remove pending delivery when a sink falls behind;
+set a larger explicit cap when the route must survive a longer outage.
 
 `queue_depth` and `queue_bytes` mean **pending delivery after the connector
 checkpoint**. `retained_depth` and `retained_bytes` include acknowledged rows
@@ -136,6 +139,12 @@ pending time, configured storage headroom, delivery class, route state/error,
 drops, and per-stage totals. If retention pruning removes a message that was
 still pending delivery, `pending_pruned` records that loss separately from
 ordinary retained-history pruning.
+
+Per-source traffic, decode, addressing, and timing counters include every
+message. The more expensive decoded-field and raw-byte distributions are
+bounded diagnostics sampled at most once per second for each source, PGN, and
+address stream; their sample counts and availability percentages use that
+diagnostic sample set.
 
 ## Replay
 

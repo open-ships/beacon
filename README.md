@@ -193,8 +193,12 @@ A slow or disconnected sink does not block another route using the same source.
 
 Each route can bound retained data with any combination of `max_messages`,
 `max_age`, and `max_bytes`. With no limits set, `max_messages` defaults to
-100,000. Metrics distinguish **pending delivery** after the checkpoint from
+10,000. Metrics distinguish **pending delivery** after the checkpoint from
 **retained history** that has already been acknowledged but remains replayable.
+Queue totals are maintained in a separate aggregate row, so reading live
+metrics does not repeatedly scan or deserialize retained envelopes. A retention
+cap can prune pending delivery when a sink falls behind; raise it explicitly
+for routes that need a larger outage window.
 
 SSE clients resume with `Last-Event-ID`; SSE and WebSocket clients can also use
 `?after=<connector>:<sequence>`. A sink shared by multiple routes accepts a
@@ -296,7 +300,7 @@ The entire desired state is one JSON document:
       "sink_id": "events",
       "mode": "semantic",
       "filters": ["msg.pgn in [127250, 129025, 129026, 129029]"],
-      "buffer": {"max_messages": 100000},
+      "buffer": {"max_messages": 10000},
       "enabled": true
     }
   ]
@@ -365,8 +369,10 @@ An MCP client can connect without a cloud relay or companion process:
 
 The MCP server exposes tools to read the complete configuration, create or
 update sources, sinks, and connector routes, delete each entity type, and read
-health, delivery metrics, or per-source PGN traffic metrics. It uses the same
-validation, SQLite persistence, and hot reconciliation as the UI and REST API.
+health, delivery metrics, per-source PGN traffic metrics, or the exact latest
+decoded payload for every sensor/PGN stream. Connector responses expose both
+authored and effective retention limits. It uses the same validation, SQLite
+persistence, and hot reconciliation as the UI and REST API.
 The server, tool schemas, and reference page are all embedded in the Beacon
 binary; no internet connection, remote schema, CDN, or hosted MCP service is
 required.
@@ -380,6 +386,11 @@ baselines make missing streams, frequency drift, payload/decode changes, address
 moves, and out-of-range values visible after a restart. The scrape-safe subset
 is exported as `beacon_source_pgn_*` at `/metrics`; raw payloads and fingerprint
 identifiers stay in the UI/MCP response to avoid unbounded Prometheus labels.
+Traffic, decode, addressing, and timing counters are exact for every message;
+decoded-field and raw-byte distributions are diagnostic samples taken at most
+once per second per source/PGN/address stream. MCP latest-payload reads are not
+sampled: Beacon retains exactly one current payload per bounded stream and
+overwrites it on every message.
 
 Every source and sink overview also has a stopped-by-default stream inspector.
 Start captures future source-received or sink-sent messages without consuming
