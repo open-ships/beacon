@@ -17,7 +17,10 @@ import (
 	"github.com/open-ships/beacon/internal/queue"
 )
 
-const postgresInitializeRetry = 5 * time.Second
+const (
+	postgresInitializeRetry = 5 * time.Second
+	postgresMaxPGN          = 262143
+)
 
 // postgresDB is the small pgxpool surface the sink needs. Keeping this seam
 // narrow makes delivery and schema behavior testable without a live server.
@@ -251,6 +254,9 @@ func postgresInsert(table string, entries []queue.Entry) (string, []any, error) 
 			return "", nil, fmt.Errorf("encode PostgreSQL batch entry %d: nil envelope", i)
 		}
 		e := entry.Env
+		if e.PGN > postgresMaxPGN {
+			return "", nil, fmt.Errorf("encode PostgreSQL batch entry %d: PGN %d exceeds NMEA 2000 maximum %d", i, e.PGN, postgresMaxPGN)
+		}
 		observedAt := e.ObservedAt
 		if observedAt.IsZero() {
 			observedAt = e.Timestamp
@@ -297,7 +303,7 @@ func postgresInsert(table string, entries []queue.Entry) (string, []any, error) 
 		statement.WriteByte(')')
 		args = append(args,
 			observedAt.UTC(), messageTime.UTC(), e.ConnectorID, entry.Seq,
-			int32(e.PGN), int16(e.Source), int16(e.Dest), int16(e.Priority),
+			int64(e.PGN), int16(e.Source), int16(e.Dest), int16(e.Priority),
 			deviceName, e.Ingress, payload, string(envelope),
 		)
 	}

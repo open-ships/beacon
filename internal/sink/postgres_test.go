@@ -156,6 +156,24 @@ func TestPostgresPushBatchWritesQueryableAndCanonicalData(t *testing.T) {
 	}
 }
 
+func TestPostgresPushBatchRejectsOutOfRangePGN(t *testing.T) {
+	db := &fakePostgresDB{}
+	s := &postgresSink{id: "db", db: db, table: "public.beacon_envelopes", timeout: time.Second}
+	s.setState(true, nil)
+	entry := queue.Entry{Seq: 1, Env: &msg.Envelope{
+		ConnectorID: "route", PGN: postgresMaxPGN + 1,
+		Timestamp: time.Now(), ObservedAt: time.Now(), Payload: json.RawMessage(`{}`),
+	}}
+
+	err := s.PushBatch(context.Background(), []queue.Entry{entry})
+	if err == nil || !strings.Contains(err.Error(), "exceeds NMEA 2000 maximum") {
+		t.Fatalf("PushBatch() error = %v, want out-of-range PGN error", err)
+	}
+	if calls := db.snapshot(); len(calls) != 0 {
+		t.Fatalf("database calls = %d, want none", len(calls))
+	}
+}
+
 func TestPostgresPushFailureDegradesAndReinitializes(t *testing.T) {
 	db := &fakePostgresDB{err: errors.New("connection reset")}
 	s := &postgresSink{id: "db", db: db, table: "public.beacon_envelopes", timeout: time.Second}
