@@ -177,8 +177,8 @@ holds, ask for everything after sequence zero: `?after=<connector>:0`.
 Delivery guarantees differ by sink kind:
 
 - **Confirmed** routes advance after a successful CAN/file/raw-wire write, a
-  complete `http_post` batch receives a 2xx response, or acceptance by a
-  `null` sink.
+  complete `http_post` batch receives a 2xx response, a `postgres` batch is
+  committed, or a `null` sink accepts the message.
 - **Resumable** SSE/WS routes advance after the entry is available through
   their retained replay stream.
 - **Best-effort** TCP/MQTT routes advance after dispatch; downstream receipt
@@ -216,6 +216,15 @@ Delivery guarantees differ by sink kind:
   Optional `gzip` compression sets `Content-Encoding: gzip` without changing
   the envelope-count meaning of `batch_size`.
   HTTPS uses the host trust store and verifies certificates normally.
+- **PostgreSQL sinks** (`postgres`) insert query-friendly columns and the full
+  canonical envelope into PostgreSQL in atomic batches. A successful statement
+  confirms the batch. Retries use the primary key
+  `(observed_at, connector_id, sequence)` with `ON CONFLICT DO NOTHING`, so a
+  lost acknowledgement does not duplicate committed rows. The same schema is
+  valid as a TimescaleDB hypertable partitioned on `observed_at`. Beacon can
+  create the table and indexes automatically; when automatic creation is off,
+  the sink editor shows copy-ready PostgreSQL or TimescaleDB DDL and Beacon
+  keeps verifying until the operator-created table appears.
 - **HTTP/TCP/MQTT streaming sinks** (`http_sse`, `http_ws`, `tcp`, `mqtt`) broadcast to whichever
   clients happen to be connected at the moment, with no per-message
   confirmation. SSE/WS clients can recover anything they missed via replay

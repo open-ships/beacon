@@ -9,6 +9,7 @@ require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/google/cel-go v0.29.2
+	github.com/jackc/pgx/v5 v5.10.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/open-ships/n2k v1.0.0
 	github.com/prometheus/client_golang v1.23.2
@@ -34,6 +35,9 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/mattn/go-isatty v0.0.21 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
@@ -58,6 +62,7 @@ require (
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/text v0.36.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20240826202546-f6391c0de4c7 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240826202546-f6391c0de4c7 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect

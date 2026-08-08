@@ -1,7 +1,7 @@
 // Package sink runs configured sinks. CAN/file/null sinks push-confirm each
-// message, HTTP POST sinks confirm batches, and serve-mode HTTP/TCP sinks
-// broadcast to connected clients, with replay served straight from connector
-// queues (SSE/WS only).
+// message, HTTP POST and PostgreSQL sinks confirm batches, and serve-mode
+// HTTP/TCP sinks broadcast to connected clients, with replay served straight
+// from connector queues (SSE/WS only).
 package sink
 
 import (
@@ -138,6 +138,8 @@ func New(ctx context.Context, cfg model.Sink, mgr *bus.Manager, ds *DataServer, 
 		return newFileSink(cfg, log)
 	case model.SinkMQTT:
 		return newMQTTSink(ctx, cfg, log, met)
+	case model.SinkPostgres:
+		return newPostgresSink(ctx, cfg)
 	case model.SinkTCPGateway:
 		return newGatewaySink(ctx, cfg, mgr)
 	case model.SinkNull:

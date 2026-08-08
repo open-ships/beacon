@@ -64,6 +64,19 @@ its current connector backoff. Inspect `beacon_sink_http_requests_total` by
 histograms, to separate receiver rejection, network slowness, and oversized
 batches. With gzip enabled, compare on-wire and uncompressed size histograms.
 
+## PostgreSQL sink not writing
+
+A `postgres` sink stays degraded while it cannot connect to or verify its
+destination table, and its connector keeps the batch pending for retry. Check
+the connection URL, TLS mode, database permissions, and the sink's live error.
+If **Automatically create and verify the table** is off, edit the sink and use
+**Copy DDL**, run that exact schema in the target database, and leave Beacon
+running; its background verification recovers automatically. For TimescaleDB,
+install the extension in that database before running the generated
+`create_hypertable` statement. A table created with different columns is not
+silently accepted: schema verification or the first insert reports the
+database error while preserving the pending batch.
+
 ## File sink not writing
 
 1. **Is `file_path` absolute?** A file sink rejects a relative path at

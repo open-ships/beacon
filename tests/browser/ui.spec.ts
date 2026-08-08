@@ -255,6 +255,80 @@ test('operator can configure a confirmed authenticated HTTP POST sink', async ({
   await expect(page.locator('#sink-headers')).toHaveValue('Authorization: Bearer token\nX-API-Key: secret');
 });
 
+test('operator can configure PostgreSQL and copy TimescaleDB DDL', async ({ page }) => {
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], {
+    origin: 'http://127.0.0.1:32112',
+  });
+  await page.goto('/sinks');
+  await page.getByRole('link', { name: 'Add sink', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Add sink' });
+  await expect(dialog).toBeVisible();
+  const sinkID = await dialog.locator('input[name="id"]').inputValue();
+
+  await dialog.locator('#sink-name').fill('TimescaleDB telemetry');
+  await dialog.locator('#sink-type').selectOption('postgres');
+  const autoCreate = dialog.getByRole('checkbox', { name: 'Automatically create and verify the table' });
+  const timescale = dialog.getByRole('checkbox', { name: 'Use a TimescaleDB hypertable' });
+  await expect(autoCreate).toBeChecked();
+  await expect(timescale).not.toBeChecked();
+  await expect(dialog.locator('#sink-postgres-ddl')).toBeHidden();
+  await expect(dialog.locator('#sink-postgres-table')).toHaveAttribute('placeholder', 'public.beacon_envelopes');
+  await expect(dialog.locator('#sink-postgres-batch-size')).toHaveAttribute('placeholder', '100');
+  await expect(dialog.locator('#sink-postgres-write-timeout')).toHaveAttribute('placeholder', '10s');
+
+  await dialog.locator('#sink-url').fill('postgresql://beacon:super-secret@db.local:5432/vessel');
+  await dialog.locator('#sink-postgres-table').fill('telemetry.envelopes');
+  await dialog.locator('#sink-postgres-batch-size').fill('250');
+  await dialog.locator('#sink-postgres-write-timeout').fill('15s');
+  // Let the table input's delayed DDL refresh settle before toggling the two
+  // immediate-refresh options, so this test exercises each HTMX state change.
+  await page.waitForTimeout(300);
+  await autoCreate.uncheck();
+
+  const ddl = dialog.locator('#sink-postgres-ddl-code');
+  await expect(ddl).toBeVisible();
+  await expect(ddl).toContainText('CREATE TABLE IF NOT EXISTS "telemetry"."envelopes"');
+  await expect(ddl).not.toContainText('create_hypertable');
+  await timescale.check();
+  await expect(ddl).toContainText("by_range('observed_at')");
+  await dialog.getByRole('button', { name: 'Copy DDL', exact: true }).click();
+  await expect(dialog.getByRole('status')).toHaveText('DDL copied.');
+  const copiedDDL = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copiedDDL).toContain('PRIMARY KEY (observed_at, connector_id, sequence)');
+  expect(copiedDDL).toContain("create_hypertable");
+
+  const dialogPanel = dialog.locator(':scope > *');
+  const desktopBounds = await dialogPanel.boundingBox();
+  expect(desktopBounds).not.toBeNull();
+  expect(desktopBounds!.x).toBeGreaterThanOrEqual(0);
+  expect(desktopBounds!.x + desktopBounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+
+  await dialog.getByRole('checkbox', { name: 'Enabled' }).uncheck();
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  await expect(page).toHaveURL(/\/dashboard$/);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/sinks/${sinkID}/`);
+  await page.getByRole('link', { name: 'Edit sink', exact: true }).click();
+  const mobileDialog = page.getByRole('dialog', { name: `Edit sink ${sinkID}` });
+  await expect(mobileDialog).toBeVisible();
+  const mobileDDL = mobileDialog.locator('#sink-postgres-ddl-code');
+  await expect(mobileDDL).toContainText("by_range('observed_at')");
+  const mobileLayout = await mobileDialog.locator(':scope > *').evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    return { x: bounds.x, width: bounds.width };
+  });
+  expect(mobileLayout.x).toBeGreaterThanOrEqual(0);
+  expect(mobileLayout.x + mobileLayout.width).toBeLessThanOrEqual(390);
+  await expect(mobileDialog.getByRole('button', { name: 'Copy DDL', exact: true })).toBeVisible();
+  expect(await mobileDDL.evaluate((element) => element.scrollWidth >= element.clientWidth)).toBe(true);
+
+  await mobileDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page.getByText('telemetry.envelopes', { exact: true })).toBeVisible();
+  await expect(page.getByText('redacted', { exact: false })).toBeVisible();
+  await expect(page.getByText('super-secret', { exact: false })).toHaveCount(0);
+});
+
 test('connector CEL editor provides autocomplete and live diagnostics', async ({ page }) => {
   await page.goto('/connectors/new');
   await expect(page.locator('#conn-id')).toHaveCount(0);

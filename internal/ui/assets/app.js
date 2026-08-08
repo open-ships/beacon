@@ -1308,6 +1308,32 @@
     });
   }
 
+  function initCopyControls(root) {
+    if (document.documentElement.dataset.copyControlsReady === "true") return;
+    document.documentElement.dataset.copyControlsReady = "true";
+    var feedbackTimers = new WeakMap();
+    document.addEventListener("click", function (event) {
+      var button = event.target.closest && event.target.closest("[data-copy-target]");
+      if (!button) return;
+      var source = document.querySelector(button.dataset.copyTarget);
+      var container = button.closest(".postgres-ddl") || button.parentElement;
+      var feedback = container && container.querySelector("[data-copy-feedback]");
+      if (!source) {
+        if (feedback) feedback.textContent = "DDL unavailable.";
+        return;
+      }
+      writeClipboard(source.textContent).then(function () {
+        window.clearTimeout(feedbackTimers.get(button));
+        if (feedback) feedback.textContent = button.dataset.copySuccess || "Copied.";
+        feedbackTimers.set(button, window.setTimeout(function () {
+          if (feedback) feedback.textContent = "";
+        }, 2500));
+      }).catch(function () {
+        if (feedback) feedback.textContent = "Copy failed.";
+      });
+    });
+  }
+
   function exportStream(entries, format, kind, id) {
     var chronological = entries.slice().reverse();
     var body;
@@ -1574,6 +1600,7 @@
       initEntityCreateDialogs(document);
       initSourceDeviceDialog(document);
       initStreamPanels(document);
+      initCopyControls(document);
       initDAGs(document);
     });
   } else {
@@ -1581,6 +1608,7 @@
     initEntityCreateDialogs(document);
     initSourceDeviceDialog(document);
     initStreamPanels(document);
+    initCopyControls(document);
     initDAGs(document);
   }
   document.addEventListener("htmx:beforeRequest", function (event) {
@@ -1603,6 +1631,7 @@
     initEntityCreateDialogs(root);
     initSourceDeviceDialog(root);
     initStreamPanels(root);
+    initCopyControls(root);
     initDAGs(root);
   });
   document.addEventListener("htmx:beforeCleanupElement", function (event) {

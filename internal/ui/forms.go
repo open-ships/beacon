@@ -34,6 +34,7 @@ import (
 
 	"github.com/open-ships/beacon/internal/config"
 	"github.com/open-ships/beacon/internal/model"
+	sinkruntime "github.com/open-ships/beacon/internal/sink"
 	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/supervisor"
 	"github.com/open-ships/beacon/internal/sysinfo"
@@ -719,6 +720,8 @@ func sinkDetail(s model.Sink) string {
 		return s.FilePath
 	case model.SinkMQTT:
 		return mqttDetail(s.URL, s.Topic)
+	case model.SinkPostgres:
+		return s.EffectivePostgresTable()
 	case model.SinkTCPGateway:
 		return s.Address
 	case model.SinkNull:
@@ -785,6 +788,15 @@ type sinkTypeFieldsData struct {
 	MaxFiles                 string
 	DefaultMaxFileBytes      string
 	DefaultMaxFiles          string
+	Table                    string
+	AutoCreateTable          bool
+	TimescaleDB              bool
+	WriteTimeout             string
+	DefaultPostgresTable     string
+	DefaultPostgresBatchSize string
+	MaxPostgresBatchSize     string
+	DefaultPostgresTimeout   string
+	PostgresDDL              string
 	CANInterfaces            []string
 	SerialPorts              []string
 }
@@ -804,6 +816,22 @@ func httpPostSinkDefaults() (batchSize, maxBatchSize, requestTimeout string) {
 		time.Duration(model.DefaultHTTPPostRequestTimeout).String()
 }
 
+func postgresSinkDefaults() (table, batchSize, maxBatchSize, writeTimeout string) {
+	return model.DefaultPostgresTable, strconv.Itoa(model.DefaultPostgresBatchSize),
+		strconv.Itoa(model.MaxPostgresBatchSize), time.Duration(model.DefaultPostgresWriteTimeout).String()
+}
+
+func postgresDDLForForm(table string, timescaleDB bool) string {
+	if strings.TrimSpace(table) == "" {
+		table = model.DefaultPostgresTable
+	}
+	probe := model.Sink{ID: "ddl", Type: model.SinkPostgres, URL: "postgres://localhost/beacon", Table: table}
+	if err := probe.Validate(); err != nil {
+		return "-- Enter a valid table name to generate the DDL."
+	}
+	return sinkruntime.PostgresDDL(table, timescaleDB)
+}
+
 // sinkFormViewData is frag_sink_form.html's data.
 type sinkFormViewData struct {
 	IsEdit     bool
@@ -818,6 +846,7 @@ type sinkFormViewData struct {
 func sinkFormViewFromModel(v model.Sink, can, serial []string) sinkFormViewData {
 	defMaxFileBytes, defMaxFiles := fileSinkDefaults()
 	defBatchSize, maxBatchSize, defRequestTimeout := httpPostSinkDefaults()
+	defPostgresTable, defPostgresBatch, maxPostgresBatch, defPostgresTimeout := postgresSinkDefaults()
 	return sinkFormViewData{
 		IsEdit:  true,
 		ID:      v.ID,
@@ -844,6 +873,15 @@ func sinkFormViewFromModel(v model.Sink, can, serial []string) sinkFormViewData 
 			MaxFiles:                 formatOptionalInt(v.MaxFiles),
 			DefaultMaxFileBytes:      defMaxFileBytes,
 			DefaultMaxFiles:          defMaxFiles,
+			Table:                    v.Table,
+			AutoCreateTable:          v.AutoCreateTable,
+			TimescaleDB:              v.TimescaleDB,
+			WriteTimeout:             formatMaxAge(v.WriteTimeout),
+			DefaultPostgresTable:     defPostgresTable,
+			DefaultPostgresBatchSize: defPostgresBatch,
+			MaxPostgresBatchSize:     maxPostgresBatch,
+			DefaultPostgresTimeout:   defPostgresTimeout,
+			PostgresDDL:              postgresDDLForForm(v.Table, v.TimescaleDB),
 			CANInterfaces:            can,
 			SerialPorts:              serial,
 		},
@@ -853,6 +891,7 @@ func sinkFormViewFromModel(v model.Sink, can, serial []string) sinkFormViewData 
 func blankSinkFormView(can, serial []string) sinkFormViewData {
 	defMaxFileBytes, defMaxFiles := fileSinkDefaults()
 	defBatchSize, maxBatchSize, defRequestTimeout := httpPostSinkDefaults()
+	defPostgresTable, defPostgresBatch, maxPostgresBatch, defPostgresTimeout := postgresSinkDefaults()
 	return sinkFormViewData{
 		Enabled: true,
 		TypeFields: sinkTypeFieldsData{
@@ -862,6 +901,12 @@ func blankSinkFormView(can, serial []string) sinkFormViewData {
 			DefaultHTTPPostTimeout:   defRequestTimeout,
 			DefaultMaxFileBytes:      defMaxFileBytes,
 			DefaultMaxFiles:          defMaxFiles,
+			AutoCreateTable:          true,
+			DefaultPostgresTable:     defPostgresTable,
+			DefaultPostgresBatchSize: defPostgresBatch,
+			MaxPostgresBatchSize:     maxPostgresBatch,
+			DefaultPostgresTimeout:   defPostgresTimeout,
+			PostgresDDL:              postgresDDLForForm("", false),
 			CANInterfaces:            can,
 			SerialPorts:              serial,
 		},
@@ -871,6 +916,7 @@ func blankSinkFormView(can, serial []string) sinkFormViewData {
 func sinkFormViewFromRequest(r *http.Request, isEdit bool, can, serial []string) sinkFormViewData {
 	defMaxFileBytes, defMaxFiles := fileSinkDefaults()
 	defBatchSize, maxBatchSize, defRequestTimeout := httpPostSinkDefaults()
+	defPostgresTable, defPostgresBatch, maxPostgresBatch, defPostgresTimeout := postgresSinkDefaults()
 	return sinkFormViewData{
 		IsEdit:   isEdit,
 		InDialog: r.PostFormValue("dialog") != "",
@@ -898,8 +944,18 @@ func sinkFormViewFromRequest(r *http.Request, isEdit bool, can, serial []string)
 			MaxFiles:                 r.PostFormValue("max_files"),
 			DefaultMaxFileBytes:      defMaxFileBytes,
 			DefaultMaxFiles:          defMaxFiles,
-			CANInterfaces:            can,
-			SerialPorts:              serial,
+			Table:                    r.PostFormValue("table"),
+			AutoCreateTable:          r.PostFormValue("auto_create_table") != "",
+			TimescaleDB:              r.PostFormValue("timescaledb") != "",
+			WriteTimeout:             r.PostFormValue("write_timeout"),
+			DefaultPostgresTable:     defPostgresTable,
+			DefaultPostgresBatchSize: defPostgresBatch,
+			MaxPostgresBatchSize:     maxPostgresBatch,
+			DefaultPostgresTimeout:   defPostgresTimeout,
+			PostgresDDL: postgresDDLForForm(
+				r.PostFormValue("table"), r.PostFormValue("timescaledb") != ""),
+			CANInterfaces: can,
+			SerialPorts:   serial,
 		},
 	}
 }
@@ -921,6 +977,10 @@ func (f sinkFormViewData) toModel() (model.Sink, error) {
 	if err != nil {
 		return model.Sink{}, err
 	}
+	writeTimeout, err := parseWriteTimeout(f.TypeFields.WriteTimeout)
+	if err != nil {
+		return model.Sink{}, err
+	}
 	maxFileBytes, err := parseOptionalInt64(f.TypeFields.MaxFileBytes)
 	if err != nil {
 		return model.Sink{}, fmt.Errorf("max_file_bytes: %w", err)
@@ -930,24 +990,28 @@ func (f sinkFormViewData) toModel() (model.Sink, error) {
 		return model.Sink{}, fmt.Errorf("max_files: %w", err)
 	}
 	return model.Sink{
-		ID:             f.ID,
-		Name:           f.Name,
-		Type:           model.SinkType(f.TypeFields.Type),
-		Enabled:        f.Enabled,
-		Interface:      f.TypeFields.Interface,
-		Port:           f.TypeFields.Port,
-		Path:           f.TypeFields.Path,
-		Address:        f.TypeFields.Address,
-		URL:            f.TypeFields.URL,
-		Topic:          f.TypeFields.Topic,
-		Headers:        headers,
-		BatchSize:      batchSize,
-		RequestTimeout: requestTimeout,
-		Gzip:           f.TypeFields.Gzip,
-		FilePath:       f.TypeFields.FilePath,
-		Format:         f.TypeFields.Format,
-		MaxFileBytes:   maxFileBytes,
-		MaxFiles:       maxFiles,
+		ID:              f.ID,
+		Name:            f.Name,
+		Type:            model.SinkType(f.TypeFields.Type),
+		Enabled:         f.Enabled,
+		Interface:       f.TypeFields.Interface,
+		Port:            f.TypeFields.Port,
+		Path:            f.TypeFields.Path,
+		Address:         f.TypeFields.Address,
+		URL:             f.TypeFields.URL,
+		Topic:           f.TypeFields.Topic,
+		Headers:         headers,
+		BatchSize:       batchSize,
+		RequestTimeout:  requestTimeout,
+		Gzip:            f.TypeFields.Gzip,
+		FilePath:        f.TypeFields.FilePath,
+		Format:          f.TypeFields.Format,
+		MaxFileBytes:    maxFileBytes,
+		MaxFiles:        maxFiles,
+		Table:           f.TypeFields.Table,
+		AutoCreateTable: f.TypeFields.AutoCreateTable,
+		TimescaleDB:     f.TypeFields.TimescaleDB,
+		WriteTimeout:    writeTimeout,
 	}, nil
 }
 
@@ -1039,7 +1103,12 @@ func handleSinkTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
 		can, serial := discoverHardware()
 		defMaxFileBytes, defMaxFiles := fileSinkDefaults()
 		defBatchSize, maxBatchSize, defRequestTimeout := httpPostSinkDefaults()
+		defPostgresTable, defPostgresBatch, maxPostgresBatch, defPostgresTimeout := postgresSinkDefaults()
 		q := r.URL.Query()
+		autoCreateTable := q.Get("auto_create_table") != ""
+		if q.Get("type") == string(model.SinkPostgres) && !q.Has("auto_create_table") {
+			autoCreateTable = true
+		}
 		data := sinkTypeFieldsData{
 			Type:                     q.Get("type"),
 			Interface:                q.Get("interface"),
@@ -1061,10 +1130,31 @@ func handleSinkTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
 			MaxFiles:                 q.Get("max_files"),
 			DefaultMaxFileBytes:      defMaxFileBytes,
 			DefaultMaxFiles:          defMaxFiles,
+			Table:                    q.Get("table"),
+			AutoCreateTable:          autoCreateTable,
+			TimescaleDB:              q.Get("timescaledb") != "",
+			WriteTimeout:             q.Get("write_timeout"),
+			DefaultPostgresTable:     defPostgresTable,
+			DefaultPostgresBatchSize: defPostgresBatch,
+			MaxPostgresBatchSize:     maxPostgresBatch,
+			DefaultPostgresTimeout:   defPostgresTimeout,
+			PostgresDDL:              postgresDDLForForm(q.Get("table"), q.Get("timescaledb") != ""),
 			CANInterfaces:            can,
 			SerialPorts:              serial,
 		}
 		renderFragment(w, log, "sink-type-fields", data)
+	}
+}
+
+func handleSinkPostgresDDLFrag(log *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		data := sinkTypeFieldsData{
+			AutoCreateTable: q.Get("auto_create_table") != "",
+			TimescaleDB:     q.Get("timescaledb") != "",
+			PostgresDDL:     postgresDDLForForm(q.Get("table"), q.Get("timescaledb") != ""),
+		}
+		renderFragment(w, log, "sink-postgres-ddl", data)
 	}
 }
 
@@ -1384,6 +1474,18 @@ func parseRequestTimeout(s string) (model.Duration, error) {
 	d, err := time.ParseDuration(s)
 	if err != nil {
 		return 0, fmt.Errorf("request_timeout: invalid duration %q (expected a Go duration string like \"10s\")", s)
+	}
+	return model.Duration(d), nil
+}
+
+func parseWriteTimeout(s string) (model.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("write_timeout: invalid duration %q (expected a Go duration string like \"10s\")", s)
 	}
 	return model.Duration(d), nil
 }

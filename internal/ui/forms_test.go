@@ -725,6 +725,7 @@ func TestSinkTypeFieldsFragmentPerType(t *testing.T) {
 		{"tcp", []string{`name="address"`}},
 		{"file", []string{`name="file_path"`, `name="format"`, `name="max_file_bytes"`, `name="max_files"`, "ndjson", "candump"}},
 		{"mqtt", []string{`name="url"`, `name="topic"`, `mqtt://broker.local:1883`}},
+		{"postgres", []string{`name="url"`, `name="table"`, `name="batch_size"`, `name="write_timeout"`, `name="timescaledb"`, `name="auto_create_table"`, `placeholder="public.beacon_envelopes"`, "Automatically create and verify", "TimescaleDB hypertable"}},
 		{"tcp_gateway", []string{`name="address"`, `name="format"`, "ydraw", "actisense"}},
 		{"null", []string{"No endpoint configuration", "accepted, counted, and discarded"}},
 	}
@@ -742,6 +743,37 @@ func TestSinkTypeFieldsFragmentPerType(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPostgresDDLFragment(t *testing.T) {
+	srv, _ := newUIServerWithService(t)
+	resp, err := http.Get(srv.URL + "/frag/sink-postgres-ddl?table=telemetry.envelopes&timescaledb=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	for _, want := range []string{
+		`id="sink-postgres-ddl"`, "Operator-managed table DDL", "Copy DDL",
+		`CREATE TABLE IF NOT EXISTS &#34;telemetry&#34;.&#34;envelopes&#34;`,
+		"create_hypertable", "observed_at", `data-copy-target="#sink-postgres-ddl-code"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("PostgreSQL DDL fragment missing %q:\n%s", want, body)
+		}
+	}
+
+	resp, err = http.Get(srv.URL + "/frag/sink-postgres-ddl?table=telemetry.envelopes&auto_create_table=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = mustBody(t, resp)
+	if !strings.Contains(body, `id="sink-postgres-ddl"`) || !strings.Contains(body, "hidden") {
+		t.Fatalf("auto-create DDL fragment should preserve a hidden replacement target:\n%s", body)
+	}
+	if strings.Contains(body, "Copy DDL") {
+		t.Fatalf("auto-create DDL fragment exposed manual DDL controls:\n%s", body)
 	}
 }
 
@@ -1056,6 +1088,78 @@ func TestHTTPPostSinkFormParseErrorsPreserveValues(t *testing.T) {
 				t.Fatal("invalid HTTP POST sink was persisted")
 			}
 		})
+	}
+}
+
+func TestPostgresSinkCreateRoundTripAndRedactsOverview(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	resp := postForm(t, srv, "/sinks", url.Values{
+		"id": {"telemetry-db"}, "name": {"Telemetry database"}, "type": {"postgres"}, "enabled": {"1"},
+		"url":   {"postgresql://beacon:super-secret@db.local:5432/vessel?sslmode=require"},
+		"table": {"telemetry.envelopes"}, "batch_size": {"250"}, "write_timeout": {"15s"},
+		"timescaledb": {"1"},
+	})
+	assertCreateRedirect(t, resp, `Sink "telemetry-db" created`)
+
+	got, err := svc.GetSink(context.Background(), "telemetry-db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != model.SinkPostgres || got.Table != "telemetry.envelopes" || got.BatchSize != 250 ||
+		time.Duration(got.WriteTimeout) != 15*time.Second || got.AutoCreateTable || !got.TimescaleDB {
+		t.Fatalf("persisted PostgreSQL sink = %+v", got)
+	}
+
+	resp, err = http.Get(srv.URL + "/sinks/telemetry-db/edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit := mustBody(t, resp)
+	for _, want := range []string{
+		`name="url" value="postgresql://beacon:super-secret@db.local:5432/vessel?sslmode=require"`,
+		`name="table" value="telemetry.envelopes"`, `name="batch_size" value="250"`,
+		`name="write_timeout" value="15s"`, `id="sink-timescaledb"`, "Use a TimescaleDB hypertable",
+		"Operator-managed table DDL", "Copy DDL", "create_hypertable",
+	} {
+		if !strings.Contains(edit, want) {
+			t.Fatalf("PostgreSQL edit form missing %q:\n%s", want, edit)
+		}
+	}
+	if strings.Contains(edit, `name="auto_create_table" value="1" class="checkbox" checked`) {
+		t.Fatalf("manual PostgreSQL sink rendered auto-create as checked:\n%s", edit)
+	}
+
+	resp, err = http.Get(srv.URL + "/sinks/telemetry-db/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	overview := mustBody(t, resp)
+	for _, want := range []string{
+		"Telemetry database", "postgres", "telemetry.envelopes", "Batch size", "250",
+		"Write timeout", "15s", "Auto-create table", "false", "TimescaleDB", "true", "redacted",
+	} {
+		if !strings.Contains(overview, want) {
+			t.Fatalf("PostgreSQL overview missing %q:\n%s", want, overview)
+		}
+	}
+	if strings.Contains(overview, "super-secret") {
+		t.Fatalf("PostgreSQL overview leaked connection password:\n%s", overview)
+	}
+}
+
+func TestPostgresSinkFormParseErrorPreservesWriteTimeout(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	resp := postForm(t, srv, "/sinks", url.Values{
+		"id": {"telemetry-db"}, "name": {"Telemetry database"}, "type": {"postgres"},
+		"url": {"postgres://db.local/vessel"}, "write_timeout": {"soon"},
+	})
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	if !strings.Contains(body, "alert-error") || !strings.Contains(body, "soon") || !strings.Contains(body, "write_timeout") {
+		t.Fatalf("write timeout parse error did not preserve the value:\n%s", body)
+	}
+	if _, err := svc.GetSink(context.Background(), "telemetry-db"); err == nil {
+		t.Fatal("invalid PostgreSQL sink was persisted")
 	}
 }
 

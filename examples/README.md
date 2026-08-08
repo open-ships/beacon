@@ -27,6 +27,10 @@ stops validating, that test fails.
 - **`http-post.json`** — a disabled-by-default confirmed HTTP(S) POST route
   showing batch size, timeout, gzip, bearer/API-key headers, and durable
   buffering.
+- **`postgres.json`** — a disabled-by-default confirmed TimescaleDB route
+  showing connection URL, table, batch size, write timeout, and
+  operator-managed schema creation. Import it, edit the sink, and use
+  **Copy DDL** before enabling it; clear `timescaledb` for ordinary PostgreSQL.
 - **`beacon-chain.json`** — an `http_sse` *source* pointed at another
   beacon's SSE sink (`http://upstream-beacon.local:8080/events`), feeding
   a local `socketcan` sink. Chains two beacons together: this instance
