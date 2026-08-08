@@ -93,6 +93,60 @@ func TestValidateNullSinkOK(t *testing.T) {
 	}
 }
 
+func TestValidateHTTPPostSink(t *testing.T) {
+	for _, endpoint := range []string{"http://collector.local/v1/envelopes", "https://collector.local/v1/envelopes?vessel=main"} {
+		t.Run(endpoint, func(t *testing.T) {
+			s := Sink{
+				ID: "webhook", Name: "Webhook", Type: SinkHTTPPost, Enabled: true,
+				URL: endpoint, BatchSize: 250, RequestTimeout: Duration(15 * time.Second),
+				Headers: map[string]string{"Authorization": "Bearer token", "X-API-Key": "secret"}, Gzip: true,
+			}
+			if err := s.Validate(); err != nil {
+				t.Fatalf("valid HTTP POST sink rejected: %v", err)
+			}
+		})
+	}
+
+	base := Sink{ID: "webhook", Type: SinkHTTPPost, URL: "https://collector.local/events"}
+	cases := []struct {
+		name   string
+		mutate func(*Sink)
+	}{
+		{"missing host", func(s *Sink) { s.URL = "https:///events" }},
+		{"unsupported scheme", func(s *Sink) { s.URL = "ftp://collector.local/events" }},
+		{"fragment", func(s *Sink) { s.URL += "#ignored" }},
+		{"url credentials", func(s *Sink) { s.URL = "https://user:pass@collector.local/events" }},
+		{"negative batch", func(s *Sink) { s.BatchSize = -1 }},
+		{"oversize batch", func(s *Sink) { s.BatchSize = MaxHTTPPostBatchSize + 1 }},
+		{"negative timeout", func(s *Sink) { s.RequestTimeout = -1 }},
+		{"invalid header name", func(s *Sink) { s.Headers = map[string]string{"Bad Header": "value"} }},
+		{"padded header name", func(s *Sink) { s.Headers = map[string]string{" Authorization ": "value"} }},
+		{"duplicate header", func(s *Sink) { s.Headers = map[string]string{"X-API-Key": "one", "x-api-key": "two"} }},
+		{"header newline", func(s *Sink) { s.Headers = map[string]string{"Authorization": "Bearer ok\r\nX-Bad: yes"} }},
+		{"managed header", func(s *Sink) { s.Headers = map[string]string{"Idempotency-Key": "fixed"} }},
+		{"managed encoding header", func(s *Sink) { s.Headers = map[string]string{"Content-Encoding": "br"} }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := base
+			tc.mutate(&s)
+			if err := s.Validate(); err == nil {
+				t.Fatal("invalid HTTP POST sink accepted")
+			}
+		})
+	}
+}
+
+func TestHTTPPostDefaults(t *testing.T) {
+	s := Sink{Type: SinkHTTPPost}
+	if got := s.EffectiveHTTPPostBatchSize(); got != DefaultHTTPPostBatchSize {
+		t.Fatalf("effective batch size = %d, want %d", got, DefaultHTTPPostBatchSize)
+	}
+	if got := s.EffectiveHTTPPostRequestTimeout(); got != time.Duration(DefaultHTTPPostRequestTimeout) {
+		t.Fatalf("effective request timeout = %v, want %v", got, time.Duration(DefaultHTTPPostRequestTimeout))
+	}
+}
+
 func TestValidateFileAndGatewaySourcesOK(t *testing.T) {
 	cfg := validConfig()
 	cfg.Sources = append(cfg.Sources,

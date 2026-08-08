@@ -1,0 +1,41 @@
+{
+  "sources": [
+    {
+      "id": "can0",
+      "name": "CAN bus",
+      "type": "socketcan",
+      "enabled": false,
+      "interface": "can0"
+    }
+  ],
+  "sinks": [
+    {
+      "id": "telemetry-api",
+      "name": "Telemetry API",
+      "type": "http_post",
+      "enabled": false,
+      "url": "https://api.example.com/v1/envelopes",
+      "batch_size": 250,
+      "request_timeout": "15s",
+      "gzip": true,
+      "headers": {
+        "Authorization": "Bearer replace-me",
+        "X-API-Key": "replace-me"
+      }
+    }
+  ],
+  "connectors": [
+    {
+      "id": "telemetry",
+      "name": "CAN to telemetry API",
+      "source_id": "can0",
+      "sink_id": "telemetry-api",
+      "enabled": false,
+      "filters": [],
+      "buffer": {
+        "max_messages": 50000,
+        "max_age": "24h"
+      }
+    }
+  ]
+}

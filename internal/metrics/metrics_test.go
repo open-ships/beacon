@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/open-ships/beacon/internal/msg"
 	"github.com/open-ships/beacon/internal/n2kcatalog"
@@ -22,8 +23,37 @@ func TestNilSetIsSafe(t *testing.T) {
 	s.SourceMessages(context.Background(), "can0", 1)
 	s.SourceDrops(context.Background(), "can0", 1)
 	s.SinkClients("sse", 1)
+	s.SinkHTTPRequest(context.Background(), "webhook", "202", "gzip", 2, 100, 250, 10*time.Millisecond)
+	s.SinkHTTPRetryAfter(context.Background(), "webhook", "503", 2*time.Second)
 	s.RemoveComponent("source", "can0")
 	s.RemoveConnector("c")
+}
+
+func TestPrometheusExposesHTTPSinkMetrics(t *testing.T) {
+	s, handler, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SinkHTTPRequest(context.Background(), "webhook", "429", "gzip", 3, 120, 420, 25*time.Millisecond)
+	s.SinkHTTPRetryAfter(context.Background(), "webhook", "429", 2*time.Second)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body := rec.Body.String()
+	for _, want := range []string{
+		"beacon_sink_http_requests_total",
+		"beacon_sink_http_payload_envelopes_total",
+		"beacon_sink_http_payload_size_bytes_bucket",
+		"beacon_sink_http_payload_uncompressed_size_bytes_bucket",
+		"beacon_sink_http_request_latency_seconds_bucket",
+		"beacon_sink_http_retry_after_seconds_bucket",
+		`le="0.005"`, `le="0.25"`, `le="512"`,
+		`encoding="gzip"`, `sink="webhook"`, `status="429"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("HTTP sink exposition missing %q:\n%s", want, body)
+		}
+	}
 }
 
 func TestRemoveComponentAndConnectorDropMapEntries(t *testing.T) {

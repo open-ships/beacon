@@ -220,6 +220,41 @@ test('operator can create and visually trace a pipeline', async ({ page }) => {
   await expect(sinkEditLink).toBeFocused();
 });
 
+test('operator can configure a confirmed authenticated HTTP POST sink', async ({ page }) => {
+  await page.goto('/sinks');
+  await page.getByRole('link', { name: 'Add sink', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Add sink' });
+  await expect(dialog).toBeVisible();
+  const sinkID = await dialog.locator('input[name="id"]').inputValue();
+
+  await dialog.locator('#sink-name').fill('Telemetry API');
+  await dialog.locator('#sink-type').selectOption('http_post');
+  await expect(dialog.locator('#sink-url')).toBeVisible();
+  await expect(dialog.locator('#sink-batch-size')).toHaveAttribute('placeholder', '100');
+  await expect(dialog.locator('#sink-batch-size')).toHaveAttribute('max', '1000');
+  await expect(dialog.locator('#sink-request-timeout')).toHaveAttribute('placeholder', '10s');
+  await expect(dialog.getByRole('checkbox', { name: 'Compress request payloads with gzip' })).not.toBeChecked();
+  await expect(dialog.getByText('Short batches send immediately')).toBeVisible();
+  await expect(dialog.getByText('Redirects are not followed')).toBeVisible();
+
+  await dialog.locator('#sink-url').fill('https://api.example.com/v1/envelopes');
+  await dialog.locator('#sink-batch-size').fill('250');
+  await dialog.locator('#sink-request-timeout').fill('15s');
+  await dialog.getByRole('checkbox', { name: 'Compress request payloads with gzip' }).check();
+  await dialog.locator('#sink-headers').fill('Authorization: Bearer token\nX-API-Key: secret');
+  await dialog.getByRole('button', { name: 'Save' }).click();
+
+  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page.getByRole('status')).toContainText(`Sink "${sinkID}" created`);
+  await page.goto(`/sinks/${sinkID}/edit`);
+  await expect(page.locator('#sink-type')).toHaveValue('http_post');
+  await expect(page.locator('#sink-url')).toHaveValue('https://api.example.com/v1/envelopes');
+  await expect(page.locator('#sink-batch-size')).toHaveValue('250');
+  await expect(page.locator('#sink-request-timeout')).toHaveValue('15s');
+  await expect(page.getByRole('checkbox', { name: 'Compress request payloads with gzip' })).toBeChecked();
+  await expect(page.locator('#sink-headers')).toHaveValue('Authorization: Bearer token\nX-API-Key: secret');
+});
+
 test('connector CEL editor provides autocomplete and live diagnostics', async ({ page }) => {
   await page.goto('/connectors/new');
   await expect(page.locator('#conn-id')).toHaveCount(0);

@@ -199,7 +199,7 @@ func (c *Connector) intake(ctx context.Context, in <-chan *msg.Envelope, unsub f
 			case <-time.After(backoff):
 			}
 			if backoff < maxBackoff {
-				backoff *= 2
+				backoff = min(backoff*2, maxBackoff)
 			}
 		}
 	}
@@ -280,6 +280,10 @@ func (c *Connector) deliver(ctx context.Context) {
 	}
 	lastAck := time.Now()
 	dirty := false
+	deliveryReadLimit := readLimit
+	if p, ok := c.snk.(sink.BatchPusher); ok && p.BatchSize() > deliveryReadLimit {
+		deliveryReadLimit = p.BatchSize()
+	}
 
 	ack := func(force bool) bool {
 		if !dirty || (!force && time.Since(lastAck) < ackInterval) {
@@ -303,7 +307,7 @@ func (c *Connector) deliver(ctx context.Context) {
 	for {
 		readFailed := false
 		for {
-			entries, err := c.q.Read(ctx, cursor, readLimit)
+			entries, err := c.q.Read(ctx, cursor, deliveryReadLimit)
 			if err != nil {
 				if ctx.Err() == nil {
 					c.log.Error("queue read failed", "err", err)
@@ -344,6 +348,10 @@ func (c *Connector) deliver(ctx context.Context) {
 				continue
 			}
 			switch snk := c.snk.(type) {
+			case sink.BatchPusher:
+				if !c.pushBatchAll(ctx, snk, entries, &cursor, &dirty) {
+					return // ctx cancelled mid-retry
+				}
 			case sink.Pusher:
 				// pushAll marks dirty per delivered entry so the deferred
 				// final ack checkpoints partial progress even when we are
@@ -435,6 +443,67 @@ func (c *Connector) pushWireAll(ctx context.Context, p sink.WirePusher, entries 
 	return c.pushEntries(ctx, p.PushWire, "forwarded", entries, cursor, dirty)
 }
 
+// pushBatchAll delivers ordered chunks using the sink's configured maximum.
+// Cursor advancement happens only after a whole chunk succeeds, so a failed
+// HTTP request leaves every entry in that request pending for the retry.
+func (c *Connector) pushBatchAll(ctx context.Context, p sink.BatchPusher, entries []queue.Entry, cursor *int64, dirty *bool) bool {
+	size := p.BatchSize()
+	if size <= 0 {
+		size = len(entries)
+	}
+	for start := 0; start < len(entries); start += size {
+		end := min(start+size, len(entries))
+		batch := entries[start:end]
+		backoff := 250 * time.Millisecond
+		for {
+			err := p.PushBatch(ctx, batch)
+			if err == nil {
+				for _, e := range batch {
+					c.recordPushSuccess(ctx, "confirmed", e)
+				}
+				c.setIssue("delivery", nil)
+				*cursor = batch[len(batch)-1].Seq
+				*dirty = true
+				break
+			}
+			retryIn := retryDelay(err, backoff)
+			lastSeq := batch[len(batch)-1].Seq
+			if c.lastWarnSeq != lastSeq {
+				c.log.Warn("batch push failed; retrying", "err", err, "retry_in", retryIn,
+					"first_seq", batch[0].Seq, "last_seq", lastSeq, "batch_size", len(batch))
+				c.lastWarnSeq = lastSeq
+			} else {
+				c.log.Debug("batch push failed; retrying", "err", err, "retry_in", retryIn,
+					"first_seq", batch[0].Seq, "last_seq", lastSeq, "batch_size", len(batch))
+			}
+			c.setIssue("delivery", err)
+			c.st.RecordStage(c.cfg.ID, "retry", 1)
+			c.met.ConnectorMessages(ctx, c.cfg.ID, "retry", 1)
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(retryIn):
+			}
+			if backoff < maxBackoff {
+				backoff = min(backoff*2, maxBackoff)
+			}
+		}
+	}
+	return true
+}
+
+func (c *Connector) recordPushSuccess(ctx context.Context, successStage string, e queue.Entry) {
+	c.met.ConnectorMessages(ctx, c.cfg.ID, successStage, 1)
+	// Keep the original metric stage as a compatibility alias; route-runtime
+	// consumers should prefer "confirmed".
+	c.met.ConnectorMessages(ctx, c.cfg.ID, "delivered", 1)
+	c.met.ConnectorBytes(ctx, c.cfg.ID, int64(e.Env.SizeBytes()))
+	c.st.RecordSink(c.cfg.SinkID, c.cfg.ID, e.Env)
+	c.st.RecordConnectorEvent(c.cfg.ID, successStage, e.Env)
+	c.st.RecordStage(c.cfg.ID, successStage, 1)
+	c.st.Record(c.cfg.ID, 1, int64(e.Env.SizeBytes()))
+}
+
 func (c *Connector) pushEntries(ctx context.Context, push func(context.Context, *msg.Envelope) error, successStage string, entries []queue.Entry, cursor *int64, dirty *bool) bool {
 	for _, e := range entries {
 		backoff := 250 * time.Millisecond
@@ -446,30 +515,23 @@ func (c *Connector) pushEntries(ctx context.Context, push func(context.Context, 
 					c.met.ConnectorMessages(ctx, c.cfg.ID, "skipped", 1)
 					c.st.RecordStage(c.cfg.ID, "skipped", 1)
 				} else {
-					c.met.ConnectorMessages(ctx, c.cfg.ID, successStage, 1)
-					// Keep the original metric stage as a compatibility alias;
-					// route-runtime consumers should prefer "confirmed".
-					c.met.ConnectorMessages(ctx, c.cfg.ID, "delivered", 1)
-					c.met.ConnectorBytes(ctx, c.cfg.ID, int64(e.Env.SizeBytes()))
-					c.st.RecordSink(c.cfg.SinkID, c.cfg.ID, e.Env)
-					c.st.RecordConnectorEvent(c.cfg.ID, successStage, e.Env)
-					c.st.RecordStage(c.cfg.ID, successStage, 1)
-					c.st.Record(c.cfg.ID, 1, int64(e.Env.SizeBytes()))
+					c.recordPushSuccess(ctx, successStage, e)
 				}
 				c.setIssue("delivery", nil)
 				*cursor = e.Seq
 				*dirty = true
 				break
 			}
+			retryIn := retryDelay(err, backoff)
 			// Log the first failure of a retry sequence at Warn (an operator
 			// watching logs should see a wedged sink), then drop to Debug for
 			// the rest of that entry's retries so a persistently stuck sink
 			// doesn't spam the log at Warn every backoff cycle.
 			if c.lastWarnSeq != e.Seq {
-				c.log.Warn("push failed; retrying", "err", err, "backoff", backoff, "pgn", e.Env.PGN)
+				c.log.Warn("push failed; retrying", "err", err, "retry_in", retryIn, "pgn", e.Env.PGN)
 				c.lastWarnSeq = e.Seq
 			} else {
-				c.log.Debug("push failed; retrying", "err", err, "backoff", backoff)
+				c.log.Debug("push failed; retrying", "err", err, "retry_in", retryIn)
 			}
 			c.setIssue("delivery", err)
 			c.st.RecordStage(c.cfg.ID, "retry", 1)
@@ -477,14 +539,21 @@ func (c *Connector) pushEntries(ctx context.Context, push func(context.Context, 
 			select {
 			case <-ctx.Done():
 				return false
-			case <-time.After(backoff):
+			case <-time.After(retryIn):
 			}
 			if backoff < maxBackoff {
-				backoff *= 2
+				backoff = min(backoff*2, maxBackoff)
 			}
 		}
 	}
 	return true
+}
+
+func retryDelay(err error, backoff time.Duration) time.Duration {
+	if requested, ok := sink.RetryAfter(err); ok && requested > backoff {
+		return requested
+	}
+	return backoff
 }
 
 func (c *Connector) prune(ctx context.Context) {

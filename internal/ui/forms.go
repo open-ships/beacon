@@ -676,8 +676,9 @@ func handleSourceDelete(svc *config.Service, log *slog.Logger) http.HandlerFunc 
 // Exactly parallel to the Sources section above; see its comments for
 // rationale not repeated here. The only structural differences: sinks have
 // tcp/tcp_gateway (Address), file (FilePath/Format/MaxFileBytes/MaxFiles),
-// mqtt (URL/Topic), and null (no endpoint fields) sink types; their
-// http_sse/http_ws type carries a Path rather than a URL+Headers pair.
+// mqtt (URL/Topic), http_post (URL/Headers/BatchSize/RequestTimeout/Gzip), and
+// null (no endpoint fields) sink types; their http_sse/http_ws type carries
+// a Path rather than a URL+Headers pair.
 
 // sinkRow is one row of the sinks table (frag_sink_table.html):
 // model.Sink plus its live supervisor state and its type-specific Detail
@@ -701,7 +702,7 @@ func sinkRows(sinks []model.Sink, statuses []supervisor.Status) []sinkRow {
 // whichever field frag_sink_type_fields.html shows as that sink's primary
 // input for its type — Interface for socketcan, Port for usbcan, Path for
 // http_sse/http_ws, Address for tcp, FilePath for file, broker/topic for
-// mqtt, or its intentional-discard behavior for null.
+// mqtt, URL for http_post, or its intentional-discard behavior for null.
 func sinkDetail(s model.Sink) string {
 	switch s.Type {
 	case model.SinkSocketCAN:
@@ -710,6 +711,8 @@ func sinkDetail(s model.Sink) string {
 		return s.Port
 	case model.SinkHTTPSSE, model.SinkHTTPWS:
 		return s.Path
+	case model.SinkHTTPPost:
+		return s.URL
 	case model.SinkTCP:
 		return s.Address
 	case model.SinkFile:
@@ -762,21 +765,28 @@ type sinksPageData struct {
 // so the actual numbers live in the model package, not hardcoded here or in
 // the template.
 type sinkTypeFieldsData struct {
-	Type                string
-	Interface           string
-	Port                string
-	Path                string
-	Address             string
-	URL                 string
-	Topic               string
-	FilePath            string
-	Format              string
-	MaxFileBytes        string
-	MaxFiles            string
-	DefaultMaxFileBytes string
-	DefaultMaxFiles     string
-	CANInterfaces       []string
-	SerialPorts         []string
+	Type                     string
+	Interface                string
+	Port                     string
+	Path                     string
+	Address                  string
+	URL                      string
+	Topic                    string
+	HeadersText              string
+	BatchSize                string
+	RequestTimeout           string
+	Gzip                     bool
+	DefaultHTTPPostBatchSize string
+	MaxHTTPPostBatchSize     string
+	DefaultHTTPPostTimeout   string
+	FilePath                 string
+	Format                   string
+	MaxFileBytes             string
+	MaxFiles                 string
+	DefaultMaxFileBytes      string
+	DefaultMaxFiles          string
+	CANInterfaces            []string
+	SerialPorts              []string
 }
 
 // fileSinkDefaults returns model.DefaultMaxFileBytes/DefaultMaxFiles as
@@ -787,6 +797,11 @@ type sinkTypeFieldsData struct {
 // package's actual defaults.
 func fileSinkDefaults() (maxFileBytes, maxFiles string) {
 	return strconv.FormatInt(model.DefaultMaxFileBytes, 10), strconv.Itoa(model.DefaultMaxFiles)
+}
+
+func httpPostSinkDefaults() (batchSize, maxBatchSize, requestTimeout string) {
+	return strconv.Itoa(model.DefaultHTTPPostBatchSize), strconv.Itoa(model.MaxHTTPPostBatchSize),
+		time.Duration(model.DefaultHTTPPostRequestTimeout).String()
 }
 
 // sinkFormViewData is frag_sink_form.html's data.
@@ -802,47 +817,60 @@ type sinkFormViewData struct {
 
 func sinkFormViewFromModel(v model.Sink, can, serial []string) sinkFormViewData {
 	defMaxFileBytes, defMaxFiles := fileSinkDefaults()
+	defBatchSize, maxBatchSize, defRequestTimeout := httpPostSinkDefaults()
 	return sinkFormViewData{
 		IsEdit:  true,
 		ID:      v.ID,
 		Name:    v.Name,
 		Enabled: v.Enabled,
 		TypeFields: sinkTypeFieldsData{
-			Type:                string(v.Type),
-			Interface:           v.Interface,
-			Port:                v.Port,
-			Path:                v.Path,
-			Address:             v.Address,
-			URL:                 v.URL,
-			Topic:               v.Topic,
-			FilePath:            v.FilePath,
-			Format:              v.Format,
-			MaxFileBytes:        formatOptionalInt64(v.MaxFileBytes),
-			MaxFiles:            formatOptionalInt(v.MaxFiles),
-			DefaultMaxFileBytes: defMaxFileBytes,
-			DefaultMaxFiles:     defMaxFiles,
-			CANInterfaces:       can,
-			SerialPorts:         serial,
+			Type:                     string(v.Type),
+			Interface:                v.Interface,
+			Port:                     v.Port,
+			Path:                     v.Path,
+			Address:                  v.Address,
+			URL:                      v.URL,
+			Topic:                    v.Topic,
+			HeadersText:              formatHeaders(v.Headers),
+			BatchSize:                formatOptionalInt(v.BatchSize),
+			RequestTimeout:           formatMaxAge(v.RequestTimeout),
+			Gzip:                     v.Gzip,
+			DefaultHTTPPostBatchSize: defBatchSize,
+			MaxHTTPPostBatchSize:     maxBatchSize,
+			DefaultHTTPPostTimeout:   defRequestTimeout,
+			FilePath:                 v.FilePath,
+			Format:                   v.Format,
+			MaxFileBytes:             formatOptionalInt64(v.MaxFileBytes),
+			MaxFiles:                 formatOptionalInt(v.MaxFiles),
+			DefaultMaxFileBytes:      defMaxFileBytes,
+			DefaultMaxFiles:          defMaxFiles,
+			CANInterfaces:            can,
+			SerialPorts:              serial,
 		},
 	}
 }
 
 func blankSinkFormView(can, serial []string) sinkFormViewData {
 	defMaxFileBytes, defMaxFiles := fileSinkDefaults()
+	defBatchSize, maxBatchSize, defRequestTimeout := httpPostSinkDefaults()
 	return sinkFormViewData{
 		Enabled: true,
 		TypeFields: sinkTypeFieldsData{
-			Type:                string(model.SinkSocketCAN),
-			DefaultMaxFileBytes: defMaxFileBytes,
-			DefaultMaxFiles:     defMaxFiles,
-			CANInterfaces:       can,
-			SerialPorts:         serial,
+			Type:                     string(model.SinkSocketCAN),
+			DefaultHTTPPostBatchSize: defBatchSize,
+			MaxHTTPPostBatchSize:     maxBatchSize,
+			DefaultHTTPPostTimeout:   defRequestTimeout,
+			DefaultMaxFileBytes:      defMaxFileBytes,
+			DefaultMaxFiles:          defMaxFiles,
+			CANInterfaces:            can,
+			SerialPorts:              serial,
 		},
 	}
 }
 
 func sinkFormViewFromRequest(r *http.Request, isEdit bool, can, serial []string) sinkFormViewData {
 	defMaxFileBytes, defMaxFiles := fileSinkDefaults()
+	defBatchSize, maxBatchSize, defRequestTimeout := httpPostSinkDefaults()
 	return sinkFormViewData{
 		IsEdit:   isEdit,
 		InDialog: r.PostFormValue("dialog") != "",
@@ -850,35 +878,49 @@ func sinkFormViewFromRequest(r *http.Request, isEdit bool, can, serial []string)
 		Name:     r.PostFormValue("name"),
 		Enabled:  r.PostFormValue("enabled") != "",
 		TypeFields: sinkTypeFieldsData{
-			Type:                r.PostFormValue("type"),
-			Interface:           r.PostFormValue("interface"),
-			Port:                r.PostFormValue("port"),
-			Path:                r.PostFormValue("path"),
-			Address:             r.PostFormValue("address"),
-			URL:                 r.PostFormValue("url"),
-			Topic:               r.PostFormValue("topic"),
-			FilePath:            r.PostFormValue("file_path"),
-			Format:              r.PostFormValue("format"),
-			MaxFileBytes:        r.PostFormValue("max_file_bytes"),
-			MaxFiles:            r.PostFormValue("max_files"),
-			DefaultMaxFileBytes: defMaxFileBytes,
-			DefaultMaxFiles:     defMaxFiles,
-			CANInterfaces:       can,
-			SerialPorts:         serial,
+			Type:                     r.PostFormValue("type"),
+			Interface:                r.PostFormValue("interface"),
+			Port:                     r.PostFormValue("port"),
+			Path:                     r.PostFormValue("path"),
+			Address:                  r.PostFormValue("address"),
+			URL:                      r.PostFormValue("url"),
+			Topic:                    r.PostFormValue("topic"),
+			HeadersText:              r.PostFormValue("headers"),
+			BatchSize:                r.PostFormValue("batch_size"),
+			RequestTimeout:           r.PostFormValue("request_timeout"),
+			Gzip:                     r.PostFormValue("gzip") != "",
+			DefaultHTTPPostBatchSize: defBatchSize,
+			MaxHTTPPostBatchSize:     maxBatchSize,
+			DefaultHTTPPostTimeout:   defRequestTimeout,
+			FilePath:                 r.PostFormValue("file_path"),
+			Format:                   r.PostFormValue("format"),
+			MaxFileBytes:             r.PostFormValue("max_file_bytes"),
+			MaxFiles:                 r.PostFormValue("max_files"),
+			DefaultMaxFileBytes:      defMaxFileBytes,
+			DefaultMaxFiles:          defMaxFiles,
+			CANInterfaces:            can,
+			SerialPorts:              serial,
 		},
 	}
 }
 
-// toModel converts a submitted form view into a model.Sink. The two file
-// sink number fields (MaxFileBytes/MaxFiles) are the only parse steps that
-// can fail here, the same "" -> 0 -> default / non-numeric -> validation
-// alert contract as connectorFormViewData.toModel's buffer fields (see
-// parseOptionalInt64/parseOptionalInt) — everything else (missing/invalid
-// type-specific field for the selected type, an unknown type, ...) is left
-// for config.Service's own structural validation to catch and report as a
-// *config.ValidationError, so this package doesn't duplicate model
-// validation rules.
+// toModel converts a submitted form view into a model.Sink. HTTP POST
+// headers, batch size, request timeout, and gzip setting plus the file sink's two numeric
+// limits are parsed here so malformed form text can render as an inline
+// validation alert. Structural rules remain centralized in model.Sink.
 func (f sinkFormViewData) toModel() (model.Sink, error) {
+	headers, err := parseHeaders(f.TypeFields.HeadersText)
+	if err != nil {
+		return model.Sink{}, err
+	}
+	batchSize, err := parseOptionalInt(f.TypeFields.BatchSize)
+	if err != nil {
+		return model.Sink{}, fmt.Errorf("batch_size: %w", err)
+	}
+	requestTimeout, err := parseRequestTimeout(f.TypeFields.RequestTimeout)
+	if err != nil {
+		return model.Sink{}, err
+	}
 	maxFileBytes, err := parseOptionalInt64(f.TypeFields.MaxFileBytes)
 	if err != nil {
 		return model.Sink{}, fmt.Errorf("max_file_bytes: %w", err)
@@ -888,20 +930,24 @@ func (f sinkFormViewData) toModel() (model.Sink, error) {
 		return model.Sink{}, fmt.Errorf("max_files: %w", err)
 	}
 	return model.Sink{
-		ID:           f.ID,
-		Name:         f.Name,
-		Type:         model.SinkType(f.TypeFields.Type),
-		Enabled:      f.Enabled,
-		Interface:    f.TypeFields.Interface,
-		Port:         f.TypeFields.Port,
-		Path:         f.TypeFields.Path,
-		Address:      f.TypeFields.Address,
-		URL:          f.TypeFields.URL,
-		Topic:        f.TypeFields.Topic,
-		FilePath:     f.TypeFields.FilePath,
-		Format:       f.TypeFields.Format,
-		MaxFileBytes: maxFileBytes,
-		MaxFiles:     maxFiles,
+		ID:             f.ID,
+		Name:           f.Name,
+		Type:           model.SinkType(f.TypeFields.Type),
+		Enabled:        f.Enabled,
+		Interface:      f.TypeFields.Interface,
+		Port:           f.TypeFields.Port,
+		Path:           f.TypeFields.Path,
+		Address:        f.TypeFields.Address,
+		URL:            f.TypeFields.URL,
+		Topic:          f.TypeFields.Topic,
+		Headers:        headers,
+		BatchSize:      batchSize,
+		RequestTimeout: requestTimeout,
+		Gzip:           f.TypeFields.Gzip,
+		FilePath:       f.TypeFields.FilePath,
+		Format:         f.TypeFields.Format,
+		MaxFileBytes:   maxFileBytes,
+		MaxFiles:       maxFiles,
 	}, nil
 }
 
@@ -992,23 +1038,31 @@ func handleSinkTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		can, serial := discoverHardware()
 		defMaxFileBytes, defMaxFiles := fileSinkDefaults()
+		defBatchSize, maxBatchSize, defRequestTimeout := httpPostSinkDefaults()
 		q := r.URL.Query()
 		data := sinkTypeFieldsData{
-			Type:                q.Get("type"),
-			Interface:           q.Get("interface"),
-			Port:                q.Get("port"),
-			Path:                q.Get("path"),
-			Address:             q.Get("address"),
-			URL:                 q.Get("url"),
-			Topic:               q.Get("topic"),
-			FilePath:            q.Get("file_path"),
-			Format:              q.Get("format"),
-			MaxFileBytes:        q.Get("max_file_bytes"),
-			MaxFiles:            q.Get("max_files"),
-			DefaultMaxFileBytes: defMaxFileBytes,
-			DefaultMaxFiles:     defMaxFiles,
-			CANInterfaces:       can,
-			SerialPorts:         serial,
+			Type:                     q.Get("type"),
+			Interface:                q.Get("interface"),
+			Port:                     q.Get("port"),
+			Path:                     q.Get("path"),
+			Address:                  q.Get("address"),
+			URL:                      q.Get("url"),
+			Topic:                    q.Get("topic"),
+			HeadersText:              q.Get("headers"),
+			BatchSize:                q.Get("batch_size"),
+			RequestTimeout:           q.Get("request_timeout"),
+			Gzip:                     q.Get("gzip") != "",
+			DefaultHTTPPostBatchSize: defBatchSize,
+			MaxHTTPPostBatchSize:     maxBatchSize,
+			DefaultHTTPPostTimeout:   defRequestTimeout,
+			FilePath:                 q.Get("file_path"),
+			Format:                   q.Get("format"),
+			MaxFileBytes:             q.Get("max_file_bytes"),
+			MaxFiles:                 q.Get("max_files"),
+			DefaultMaxFileBytes:      defMaxFileBytes,
+			DefaultMaxFiles:          defMaxFiles,
+			CANInterfaces:            can,
+			SerialPorts:              serial,
 		}
 		renderFragment(w, log, "sink-type-fields", data)
 	}
@@ -1318,6 +1372,18 @@ func parseMaxAge(s string) (model.Duration, error) {
 	d, err := time.ParseDuration(s)
 	if err != nil {
 		return 0, fmt.Errorf("max_age: invalid duration %q (expected a Go duration string like \"24h\")", s)
+	}
+	return model.Duration(d), nil
+}
+
+func parseRequestTimeout(s string) (model.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("request_timeout: invalid duration %q (expected a Go duration string like \"10s\")", s)
 	}
 	return model.Duration(d), nil
 }

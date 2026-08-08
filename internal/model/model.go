@@ -35,7 +35,8 @@ const (
 	SinkUSBCAN     SinkType = "usbcan"
 	SinkHTTPSSE    SinkType = "http_sse"
 	SinkHTTPWS     SinkType = "http_ws"
-	SinkTCP        SinkType = "tcp" // TCP listener serving NDJSON to connecting clients
+	SinkHTTPPost   SinkType = "http_post" // POST confirmed JSON envelope batches to an HTTP(S) endpoint
+	SinkTCP        SinkType = "tcp"       // TCP listener serving NDJSON to connecting clients
 	SinkFile       SinkType = "file"
 	SinkMQTT       SinkType = "mqtt"
 	SinkTCPGateway SinkType = "tcp_gateway" // transmit onto an NMEA-2000 bus via a TCP gateway (YD / Actisense)
@@ -54,6 +55,14 @@ const (
 const (
 	DefaultMaxFileBytes int64 = 100 << 20 // 100 MiB
 	DefaultMaxFiles           = 5
+)
+
+// HTTP POST sink defaults and bounds. BatchSize is a maximum: a route sends
+// a smaller batch immediately when fewer pending envelopes are available.
+const (
+	DefaultHTTPPostBatchSize      = 100
+	MaxHTTPPostBatchSize          = 1000
+	DefaultHTTPPostRequestTimeout = Duration(10 * time.Second)
 )
 
 // ReservedPathPrefixes cannot be used by HTTP sink paths.
@@ -99,20 +108,38 @@ type Source struct {
 }
 
 type Sink struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name"`
-	Type         SinkType `json:"type"`
-	Enabled      bool     `json:"enabled"`
-	Interface    string   `json:"interface,omitempty"`      // socketcan
-	Port         string   `json:"port,omitempty"`           // usbcan
-	Path         string   `json:"path,omitempty"`           // http_sse / http_ws (served on data server)
-	Address      string   `json:"address,omitempty"`        // tcp listen address; tcp_gateway: gateway host:port
-	URL          string   `json:"url,omitempty"`            // mqtt broker
-	Topic        string   `json:"topic,omitempty"`          // mqtt
-	FilePath     string   `json:"file_path,omitempty"`      // file: absolute output path
-	Format       string   `json:"format,omitempty"`         // file: "ndjson"/"candump"; tcp_gateway: "ydraw"/"actisense"
-	MaxFileBytes int64    `json:"max_file_bytes,omitempty"` // file: rotate threshold, 0 = default
-	MaxFiles     int      `json:"max_files,omitempty"`      // file: total files kept, 0 = default
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	Type           SinkType          `json:"type"`
+	Enabled        bool              `json:"enabled"`
+	Interface      string            `json:"interface,omitempty"`       // socketcan
+	Port           string            `json:"port,omitempty"`            // usbcan
+	Path           string            `json:"path,omitempty"`            // http_sse / http_ws (served on data server)
+	Address        string            `json:"address,omitempty"`         // tcp listen address; tcp_gateway: gateway host:port
+	URL            string            `json:"url,omitempty"`             // mqtt broker or http_post endpoint
+	Topic          string            `json:"topic,omitempty"`           // mqtt
+	Headers        map[string]string `json:"headers,omitempty"`         // http_post authentication and custom headers
+	BatchSize      int               `json:"batch_size,omitempty"`      // http_post maximum envelopes per request, 0 = default
+	RequestTimeout Duration          `json:"request_timeout,omitempty"` // http_post request timeout, 0 = default
+	Gzip           bool              `json:"gzip,omitempty"`            // http_post compress request bodies with gzip
+	FilePath       string            `json:"file_path,omitempty"`       // file: absolute output path
+	Format         string            `json:"format,omitempty"`          // file: "ndjson"/"candump"; tcp_gateway: "ydraw"/"actisense"
+	MaxFileBytes   int64             `json:"max_file_bytes,omitempty"`  // file: rotate threshold, 0 = default
+	MaxFiles       int               `json:"max_files,omitempty"`       // file: total files kept, 0 = default
+}
+
+func (s Sink) EffectiveHTTPPostBatchSize() int {
+	if s.BatchSize == 0 {
+		return DefaultHTTPPostBatchSize
+	}
+	return s.BatchSize
+}
+
+func (s Sink) EffectiveHTTPPostRequestTimeout() time.Duration {
+	if s.RequestTimeout == 0 {
+		return time.Duration(DefaultHTTPPostRequestTimeout)
+	}
+	return time.Duration(s.RequestTimeout)
 }
 
 type BufferLimits struct {

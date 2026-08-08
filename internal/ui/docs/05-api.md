@@ -162,6 +162,12 @@ A known-but-idle connector reports a zero snapshot rather than 404 —
 exposition at `/metrics` (admin port) for the same data in a form built
 for scraping/alerting rather than point queries.
 
+HTTP POST sink attempts are exported there under `beacon_sink_http_*`, labeled
+by sink id, HTTP status, and payload encoding. The families cover request and
+envelope counts, on-wire and uncompressed payload-size histograms, request
+latency, and valid `Retry-After` delays. Attempt metrics include failed and
+retried requests; connector delivery metrics count only confirmed 2xx batches.
+
 Source overview pages show one row for each `(source, source address, PGN)`
 stream. The same process-local store is available to agents through
 `get_source_metrics` and at `/metrics` under the

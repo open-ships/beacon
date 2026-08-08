@@ -10,7 +10,7 @@ Beacon serves onboard and field operators managing vessel data routing in real s
 
 ## Product Purpose
 
-Beacon is a ship-board NMEA 2000 gateway that makes vessel data routing observable, configurable, and resilient. It lets operators and integrators connect CAN, USB-CAN, HTTP, WebSocket, SSE, TCP, and MQTT endpoints; route messages through explicit connectors; filter traffic with CEL; and keep delivery robust through durable buffering and replay.
+Beacon is a ship-board NMEA 2000 gateway that makes vessel data routing observable, configurable, and resilient. It lets operators and integrators connect CAN, USB-CAN, HTTP streams and POST APIs, WebSocket, SSE, TCP, and MQTT endpoints; route messages through explicit connectors; filter traffic with CEL; and keep delivery robust through durable buffering and replay.
 
 Success means a user can understand what is connected, what is moving, what is degraded, and what to change without restarting the system or losing trust in the gateway while underway.
 

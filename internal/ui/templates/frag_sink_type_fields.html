@@ -31,6 +31,40 @@
   <input type="text" id="sink-path" name="path" value="{{.Path}}"
          placeholder="/nmea/out" class="input w-full" required>
 </fieldset>
+{{else if eq .Type "http_post"}}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Endpoint URL</legend>
+  <input type="url" id="sink-url" name="url" value="{{.URL}}"
+         placeholder="https://api.example.com/v1/envelopes" class="input w-full" required>
+  <p class="text-xs opacity-70">Beacon sends each available batch as a JSON array and confirms it after a 2xx response. Redirects are not followed; valid Retry-After responses extend the retry delay.</p>
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Maximum envelopes per request</legend>
+  <input type="number" id="sink-batch-size" name="batch_size" value="{{.BatchSize}}"
+         placeholder="{{.DefaultHTTPPostBatchSize}}" class="input w-full" min="1" max="{{.MaxHTTPPostBatchSize}}">
+  <p class="text-xs opacity-70">Blank = {{.DefaultHTTPPostBatchSize}}. Short batches send immediately; Beacon does not wait to fill a request.</p>
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Request timeout</legend>
+  <input type="text" id="sink-request-timeout" name="request_timeout" value="{{.RequestTimeout}}"
+         placeholder="{{.DefaultHTTPPostTimeout}}" class="input w-full">
+  <p class="text-xs opacity-70">Go duration such as 5s or 1m. Blank = {{.DefaultHTTPPostTimeout}}.</p>
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Payload encoding</legend>
+  <label class="label cursor-pointer justify-start gap-2">
+    <input type="checkbox" id="sink-gzip" name="gzip" value="1" class="checkbox" {{if .Gzip}}checked{{end}}>
+    <span>Compress request payloads with gzip</span>
+  </label>
+  <p class="text-xs opacity-70">Adds <code>Content-Encoding: gzip</code>. Batch size still counts envelopes, not bytes.</p>
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">Authentication and custom headers</legend>
+  <textarea id="sink-headers" name="headers" rows="4" class="textarea w-full"
+            autocomplete="off" spellcheck="false"
+            placeholder="Authorization: Bearer token&#10;X-API-Key: secret">{{.HeadersText}}</textarea>
+  <p class="text-xs opacity-70">One “Header-Name: value” per line. Values are stored in Beacon configuration; protect its database and exports. Overviews show only the header count.</p>
+</fieldset>
 {{else if eq .Type "tcp"}}
 <fieldset class="fieldset">
   <legend class="fieldset-legend">Listen address</legend>

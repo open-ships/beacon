@@ -721,6 +721,7 @@ func TestSinkTypeFieldsFragmentPerType(t *testing.T) {
 		{"usbcan", []string{`name="port"`, "<datalist"}},
 		{"http_sse", []string{`name="path"`}},
 		{"http_ws", []string{`name="path"`}},
+		{"http_post", []string{`name="url"`, `name="batch_size"`, `name="request_timeout"`, `name="gzip"`, `name="headers"`, "JSON array", "2xx response", "Content-Encoding: gzip", `placeholder="100"`, `placeholder="10s"`}},
 		{"tcp", []string{`name="address"`}},
 		{"file", []string{`name="file_path"`, `name="format"`, `name="max_file_bytes"`, `name="max_files"`, "ndjson", "candump"}},
 		{"mqtt", []string{`name="url"`, `name="topic"`, `mqtt://broker.local:1883`}},
@@ -973,6 +974,88 @@ func TestNullSinkCreateRoundTrip(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sinks page missing %q:\n%s", want, body)
 		}
+	}
+}
+
+func TestHTTPPostSinkCreateRoundTrip(t *testing.T) {
+	srv, svc := newUIServerWithService(t)
+	resp := postForm(t, srv, "/sinks", url.Values{
+		"id": {"webhook"}, "name": {"Telemetry API"}, "type": {"http_post"}, "enabled": {"1"},
+		"url": {"https://api.example.com/v1/envelopes"}, "batch_size": {"250"},
+		"request_timeout": {"15s"},
+		"gzip":            {"1"},
+		"headers":         {"Authorization: Bearer token\nX-API-Key: secret"},
+	})
+	assertCreateRedirect(t, resp, `Sink "webhook" created`)
+
+	got, err := svc.GetSink(context.Background(), "webhook")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != model.SinkHTTPPost || got.URL != "https://api.example.com/v1/envelopes" ||
+		got.BatchSize != 250 || time.Duration(got.RequestTimeout) != 15*time.Second || !got.Gzip ||
+		got.Headers["Authorization"] != "Bearer token" || got.Headers["X-API-Key"] != "secret" {
+		t.Fatalf("persisted HTTP POST sink = %+v", got)
+	}
+
+	resp, err = http.Get(srv.URL + "/sinks/webhook/edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := mustBody(t, resp)
+	for _, want := range []string{
+		`name="url" value="https://api.example.com/v1/envelopes"`,
+		`name="batch_size" value="250"`, `name="request_timeout" value="15s"`,
+		`name="gzip" value="1" class="checkbox" checked`,
+		"Authorization: Bearer token", "X-API-Key: secret",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("HTTP POST edit form missing %q:\n%s", want, body)
+		}
+	}
+
+	resp, err = http.Get(srv.URL + "/sinks/webhook/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	overview := mustBody(t, resp)
+	for _, want := range []string{"Telemetry API", "http_post", "Batch size", "250", "Request timeout", "15s", "Compression", "gzip", "Headers"} {
+		if !strings.Contains(overview, want) {
+			t.Fatalf("HTTP POST overview missing %q:\n%s", want, overview)
+		}
+	}
+	for _, secret := range []string{"Bearer token", "X-API-Key", "secret"} {
+		if strings.Contains(overview, secret) {
+			t.Fatalf("HTTP POST overview leaked header value %q:\n%s", secret, overview)
+		}
+	}
+}
+
+func TestHTTPPostSinkFormParseErrorsPreserveValues(t *testing.T) {
+	for _, tc := range []struct {
+		name, field, value string
+	}{
+		{"batch size", "batch_size", "many"},
+		{"request timeout", "request_timeout", "soon"},
+		{"headers", "headers", "missing separator"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, svc := newUIServerWithService(t)
+			values := url.Values{
+				"id": {"webhook"}, "name": {"Webhook"}, "type": {"http_post"},
+				"url": {"https://api.example.com/events"},
+			}
+			values.Set(tc.field, tc.value)
+			resp := postForm(t, srv, "/sinks", values)
+			mustStatus(t, resp, http.StatusOK)
+			body := mustBody(t, resp)
+			if !strings.Contains(body, "alert-error") || !strings.Contains(body, tc.value) {
+				t.Fatalf("parse error did not preserve %s=%q:\n%s", tc.field, tc.value, body)
+			}
+			if _, err := svc.GetSink(context.Background(), "webhook"); err == nil {
+				t.Fatal("invalid HTTP POST sink was persisted")
+			}
+		})
 	}
 }
 

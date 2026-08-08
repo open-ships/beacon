@@ -161,6 +161,20 @@ func sinkConfigRows(s model.Sink) []configRow {
 	add("Address", s.Address, true)
 	add("URL", s.URL, true)
 	add("Topic", s.Topic, true)
+	if len(s.Headers) > 0 {
+		rows = append(rows, configRow{"Headers", strconv.Itoa(len(s.Headers)), false})
+	}
+	if s.Type == model.SinkHTTPPost {
+		compression := "none"
+		if s.Gzip {
+			compression = "gzip"
+		}
+		rows = append(rows,
+			configRow{"Batch size", strconv.Itoa(s.EffectiveHTTPPostBatchSize()), false},
+			configRow{"Request timeout", s.EffectiveHTTPPostRequestTimeout().String(), false},
+			configRow{"Compression", compression, false},
+		)
+	}
 	add("File path", s.FilePath, true)
 	add("Format", s.Format, true)
 	if s.MaxFileBytes != 0 {

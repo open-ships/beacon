@@ -24,6 +24,9 @@ stops validating, that test fails.
   MQTT source/sink starter endpoints (`mqtt://broker.local:1883`) for broker
   integration. Demonstrates fan-out — multiple connectors sharing one
   source, each with its own filters and buffer.
+- **`http-post.json`** — a disabled-by-default confirmed HTTP(S) POST route
+  showing batch size, timeout, gzip, bearer/API-key headers, and durable
+  buffering.
 - **`beacon-chain.json`** — an `http_sse` *source* pointed at another
   beacon's SSE sink (`http://upstream-beacon.local:8080/events`), feeding
   a local `socketcan` sink. Chains two beacons together: this instance

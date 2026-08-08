@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"net"
+	"net/textproto"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -10,6 +11,7 @@ import (
 )
 
 var slugRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+var httpHeaderNameRE = regexp.MustCompile("^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$")
 
 func validSlug(id string) error {
 	if !slugRE.MatchString(id) {
@@ -81,6 +83,41 @@ func (s Sink) Validate() error {
 		for _, p := range ReservedPathPrefixes {
 			if s.Path == p || strings.HasPrefix(s.Path, p+"/") {
 				return fmt.Errorf("sink %q: path %q is reserved", s.ID, s.Path)
+			}
+		}
+	case SinkHTTPPost:
+		u, err := url.Parse(s.URL)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.Fragment != "" {
+			return fmt.Errorf("sink %q: invalid HTTP POST url %q (expected http:// or https:// with no fragment)", s.ID, s.URL)
+		}
+		if u.User != nil {
+			return fmt.Errorf("sink %q: HTTP POST url must not contain credentials; use headers for authentication", s.ID)
+		}
+		if s.BatchSize < 0 || s.BatchSize > MaxHTTPPostBatchSize {
+			return fmt.Errorf("sink %q: batch_size must be between 1 and %d, or 0 for the default", s.ID, MaxHTTPPostBatchSize)
+		}
+		if s.RequestTimeout < 0 {
+			return fmt.Errorf("sink %q: request_timeout must not be negative", s.ID)
+		}
+		seenHeaders := make(map[string]struct{}, len(s.Headers))
+		for name, value := range s.Headers {
+			trimmedName := strings.TrimSpace(name)
+			if trimmedName != name || !httpHeaderNameRE.MatchString(trimmedName) {
+				return fmt.Errorf("sink %q: invalid HTTP header name %q", s.ID, name)
+			}
+			canonical := textproto.CanonicalMIMEHeaderKey(trimmedName)
+			if _, duplicate := seenHeaders[canonical]; duplicate {
+				return fmt.Errorf("sink %q: duplicate HTTP header %q", s.ID, canonical)
+			}
+			seenHeaders[canonical] = struct{}{}
+			switch canonical {
+			case "Host", "Content-Length", "Content-Encoding", "Transfer-Encoding", "Connection", "Idempotency-Key":
+				return fmt.Errorf("sink %q: HTTP header %q is managed by Beacon and cannot be configured", s.ID, canonical)
+			}
+			for _, r := range value {
+				if r == '\r' || r == '\n' || (r < 0x20 && r != '\t') || r == 0x7f {
+					return fmt.Errorf("sink %q: HTTP header %q contains an invalid control character", s.ID, canonical)
+				}
 			}
 		}
 	case SinkTCP:
