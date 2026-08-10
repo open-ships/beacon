@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -27,7 +28,16 @@ import (
 // slow-stopping component deterministically (real component Stop() calls are
 // too fast/network-dependent to reliably exercise the non-blocking-Statuses
 // guarantee). Always zero in production.
-var testStopDelay time.Duration
+var (
+	testStopDelay time.Duration
+
+	// These are variables rather than constants so focused package tests can
+	// exercise convergence without sleeping for production-scale intervals.
+	convergenceInterval       = 30 * time.Second
+	convergenceRetryMin       = time.Second
+	convergenceRetryMax       = time.Minute
+	convergenceAttemptTimeout = 15 * time.Second
+)
 
 type Status struct {
 	Kind  string `json:"kind"`
@@ -75,16 +85,13 @@ type runningConnector struct {
 // overlapping Reconcile calls fully serialize rather than racing a stale
 // read against a newer one. Component constructors (source.New, sink.New,
 // connector.Start) are expected to connect/dial asynchronously and return
-// quickly; Reconcile holding a lock for their duration would otherwise stall
-// Statuses() (/health) for as long as a slow constructor blocks.
+// quickly.
 //
 // Lock discipline: reconcileMu serializes the bodies of Reconcile and Stop
-// (so they never interleave), but it is NOT held across component
-// constructors or Stop() calls — those run unlocked. The sources/sinks/
-// connectors/errored maps are guarded separately by stateMu, held only
-// briefly for the map reads/writes themselves. This means Statuses() (which
-// only needs
-// stateMu) never blocks behind a slow Reconcile teardown or a slow Stop().
+// (so they never interleave), including component construction and teardown.
+// The sources/sinks/connectors/errored maps are guarded separately by stateMu,
+// which is never held across constructors or Stop calls. Statuses() only needs
+// stateMu, so it never blocks behind a slow Reconcile teardown or Stop.
 //
 // Components started by Reconcile run on the Supervisor's own background
 // context (runCtx below), NOT the context passed into Reconcile. runCtx is
@@ -107,8 +114,10 @@ type Supervisor struct {
 	met *metrics.Set
 	reg *stats.Registry
 
-	runCtx    context.Context
-	runCancel context.CancelFunc
+	runCtx     context.Context
+	runCancel  context.CancelFunc
+	converge   chan struct{}
+	convergeWG sync.WaitGroup
 
 	// reconcileMu serializes Reconcile and Stop bodies. It also guards
 	// `stopped`, `needsPurgeSweep`, and the prevConfigured* sets, all of which are
@@ -131,21 +140,114 @@ type Supervisor struct {
 	// stateMu guards sources/sinks/connectors/errored only. Held briefly for
 	// map reads/writes — never across a component constructor or Stop()
 	// call — so Statuses() never blocks behind a slow teardown.
-	stateMu    sync.Mutex
-	sources    map[string]*runningSource
-	sinks      map[string]*runningSink
-	connectors map[string]*runningConnector
-	errored    []Status
+	stateMu      sync.Mutex
+	sources      map[string]*runningSource
+	sinks        map[string]*runningSink
+	connectors   map[string]*runningConnector
+	errored      []Status
+	reconcileErr error
 }
 
 func New(st *store.Store, busMgr *bus.Manager, ds *sink.DataServer, log *slog.Logger, met *metrics.Set, reg *stats.Registry) *Supervisor {
 	runCtx, cancel := context.WithCancel(context.Background())
-	return &Supervisor{st: st, bus: busMgr, ds: ds, log: log, met: met, reg: reg,
+	s := &Supervisor{st: st, bus: busMgr, ds: ds, log: log, met: met, reg: reg,
 		runCtx: runCtx, runCancel: cancel,
+		converge:        make(chan struct{}, 1),
 		needsPurgeSweep: true,
 		sources:         map[string]*runningSource{},
 		sinks:           map[string]*runningSink{},
 		connectors:      map[string]*runningConnector{},
+	}
+	s.convergeWG.Add(1)
+	go s.convergenceLoop()
+	return s
+}
+
+func jitter(d time.Duration) time.Duration {
+	if d <= 1 {
+		return d
+	}
+	// 80-120% prevents multiple appliances or components recovering from a
+	// shared outage from remaining phase-aligned.
+	span := d / 5
+	return d - span + time.Duration(rand.Int64N(int64(2*span+1))) // #nosec G404 -- scheduling jitter is not security-sensitive.
+}
+
+func resetTimer(timer *time.Timer, d time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(d)
+}
+
+func (s *Supervisor) requestConvergence() {
+	if s.runCtx.Err() != nil {
+		return
+	}
+	select {
+	case s.converge <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Supervisor) hasStartFailures() bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return len(s.errored) != 0
+}
+
+// convergenceLoop periodically compares persisted desired state with the
+// actual runtime maps. A failed constructor leaves no runtime map entry, so
+// the next pass retries it without requiring another config write or process
+// restart. Component-reported degraded/error states are deliberately not a
+// restart trigger: network runtimes own their reconnect loops, and readiness
+// must never create a restart storm during an expected connectivity outage.
+func (s *Supervisor) convergenceLoop() {
+	defer s.convergeWG.Done()
+	backoff := convergenceRetryMin
+	failures := 0
+	timer := time.NewTimer(jitter(convergenceInterval))
+	defer timer.Stop()
+	for {
+		select {
+		case <-s.runCtx.Done():
+			return
+		case <-s.converge:
+			resetTimer(timer, jitter(backoff))
+		case <-timer.C:
+			ctx, cancel := context.WithTimeout(s.runCtx, convergenceAttemptTimeout)
+			err := s.Reconcile(ctx)
+			cancel()
+			retry := err != nil || s.hasStartFailures()
+			// Reconcile signals the channel on a retryable result. Consume that
+			// self-signal here so it cannot reset an exponential delay to its
+			// previous value on the next select.
+			select {
+			case <-s.converge:
+			default:
+			}
+			if retry {
+				failures++
+				if err != nil && s.runCtx.Err() == nil {
+					if failures == 1 || failures%60 == 0 {
+						s.log.Warn("runtime convergence failed; retrying", "err", err,
+							"retry_in", backoff, "consecutive_failures", failures)
+					} else {
+						s.log.Debug("runtime convergence still failing", "err", err,
+							"retry_in", backoff, "consecutive_failures", failures)
+					}
+				}
+				resetTimer(timer, jitter(backoff))
+				backoff = min(backoff*2, convergenceRetryMax)
+				continue
+			}
+			failures = 0
+			backoff = convergenceRetryMin
+			resetTimer(timer, jitter(convergenceInterval))
+		}
 	}
 }
 
@@ -168,19 +270,48 @@ type stopItem struct {
 }
 
 // Reconcile diffs desired config (the store) against running components and
-// converges: stop-then-start whatever changed. It returns an error only when
-// the store read itself fails; individual component failures are recorded as
-// error statuses (see Statuses) and never abort or crash the reconcile.
-func (s *Supervisor) Reconcile(ctx context.Context) error {
+// converges: stop-then-start whatever changed. It returns an error when desired
+// state cannot be loaded, fully validated, or have its process-wide resource
+// budget applied; individual component failures are recorded as error statuses
+// (see Statuses) and never abort or crash the reconcile.
+func (s *Supervisor) Reconcile(ctx context.Context) (retErr error) {
+	defer func() {
+		s.stateMu.Lock()
+		s.reconcileErr = retErr
+		s.stateMu.Unlock()
+		if retErr != nil || s.hasStartFailures() {
+			s.requestConvergence()
+		}
+	}()
 	s.reconcileMu.Lock()
 	defer s.reconcileMu.Unlock()
 	if s.stopped {
 		return nil
 	}
+	// Rich source exposition is fail-closed. A corrupt persisted document, a
+	// cancelled store read, or a physical-budget failure must not leave a
+	// previously enabled high-cardinality surface running while convergence
+	// retries. It is re-enabled below only after the whole desired config and
+	// its resource policy have applied successfully.
+	s.met.SetPrometheusSourceDetails(false)
 	cfg, err := s.st.LoadConfig(ctx)
 	if err != nil {
 		return err
 	}
+	compiledFilters, err := validatePersistedConfig(cfg)
+	if err != nil {
+		return err
+	}
+	// Resource budgets are desired state too. Apply them before constructing
+	// runtimes so startup and hot config imports use the same convergence seam,
+	// and return failures so the bounded convergence loop retries them.
+	if err := s.st.ConfigureResources(ctx, cfg.EffectiveResources()); err != nil {
+		return fmt.Errorf("configure resource budgets: %w", err)
+	}
+	// The rich per-PGN Prometheus surface is process-wide, but its desired state
+	// lives with the rest of the persisted configuration. Reach this enablement
+	// only after validation and resource application succeed.
+	s.met.SetPrometheusSourceDetails(cfg.PrometheusSourceDetailsEnabled())
 
 	desiredSources := map[string]model.Source{}
 	for _, v := range cfg.Sources {
@@ -354,7 +485,7 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 					continue
 				}
 				q := queue.NewSQLite(s.st, id, model.BufferLimits{})
-				if err := q.Purge(context.Background()); err != nil {
+				if err := q.Purge(ctx); err != nil {
 					s.log.Error("purge deleted connector queue failed", "id", id, "err", err)
 					swept = false
 					continue
@@ -430,13 +561,8 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 			s.fail("connector", id, unavailableErr(want, src == nil, snk == nil))
 			continue
 		}
-		chain, err := filter.Compile(want.Filters)
-		if err != nil {
-			s.fail("connector", id, err)
-			continue
-		}
 		q := queue.NewSQLite(s.st, id, want.Buffer)
-		c := connector.New(want, src.rt, snk.rt, q, chain, s.log, s.met, s.reg)
+		c := connector.New(want, src.rt, snk.rt, q, compiledFilters[id], s.log, s.met, s.reg)
 		c.Start(s.runCtx)
 		s.log.Info("started connector", "id", id)
 		s.met.SetComponentState("connector", id, 2)
@@ -445,6 +571,26 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 		s.stateMu.Unlock()
 	}
 	return nil
+}
+
+// validatePersistedConfig repeats the same whole-document guarantees enforced
+// by config.Service before a write. Store rows can predate current validation
+// or be edited outside Beacon, so Reconcile must reject the entire document
+// before starting only a valid subset. Returning compiled chains also avoids
+// compiling enabled connectors a second time during construction.
+func validatePersistedConfig(cfg model.Config) (map[string]*filter.Chain, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("validate persisted config: %w", err)
+	}
+	compiled := make(map[string]*filter.Chain, len(cfg.Connectors))
+	for _, connector := range cfg.Connectors {
+		chain, err := filter.Compile(connector.Filters)
+		if err != nil {
+			return nil, fmt.Errorf("validate persisted connector %q filters: %w", connector.ID, err)
+		}
+		compiled[connector.ID] = chain
+	}
+	return compiled, nil
 }
 
 // needsBus reports whether a source/sink type requires a *bus.Manager.
@@ -480,38 +626,73 @@ func (s *Supervisor) fail(kind, id string, err error) {
 }
 
 // Statuses reports the current state of every running or errored component,
-// for /health. It only ever takes stateMu — never reconcileMu — so it
-// returns promptly even while a Reconcile (or Stop) is mid-teardown of a
-// slow component.
+// for /health. It snapshots runtime references and stored errors under stateMu,
+// then releases the lock before invoking component State methods. State may
+// need an implementation-local lock (for example a file sink can be flushing),
+// and that work must not prevent Reconcile or Stop from updating the supervisor
+// maps. Runtime implementations support State racing with Stop.
 func (s *Supervisor) Statuses() []Status {
+	type sourceRef struct {
+		id string
+		rt source.Runtime
+	}
+	type sinkRef struct {
+		id string
+		rt sink.Runtime
+	}
+	type connectorRef struct {
+		id string
+		rt *connector.Connector
+	}
+
 	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
-	var out []Status
-	for id, r := range s.sources {
-		state, err := r.rt.State()
-		st := Status{Kind: "source", ID: id, State: state}
+	sources := make([]sourceRef, 0, len(s.sources))
+	for id, running := range s.sources {
+		sources = append(sources, sourceRef{id: id, rt: running.rt})
+	}
+	sinks := make([]sinkRef, 0, len(s.sinks))
+	for id, running := range s.sinks {
+		sinks = append(sinks, sinkRef{id: id, rt: running.rt})
+	}
+	connectors := make([]connectorRef, 0, len(s.connectors))
+	for id, running := range s.connectors {
+		connectors = append(connectors, connectorRef{id: id, rt: running.c})
+	}
+	errored := append([]Status(nil), s.errored...)
+	reconcileErr := s.reconcileErr
+	s.stateMu.Unlock()
+
+	out := make([]Status, 0, len(sources)+len(sinks)+len(connectors)+len(errored)+1)
+	for _, ref := range sources {
+		state, err := ref.rt.State()
+		st := Status{Kind: "source", ID: ref.id, State: state}
 		if err != nil {
 			st.Err = err.Error()
 		}
 		out = append(out, st)
 	}
-	for id, r := range s.sinks {
-		state, err := r.rt.State()
-		st := Status{Kind: "sink", ID: id, State: state}
+	for _, ref := range sinks {
+		state, err := ref.rt.State()
+		st := Status{Kind: "sink", ID: ref.id, State: state}
 		if err != nil {
 			st.Err = err.Error()
 		}
 		out = append(out, st)
 	}
-	for id, r := range s.connectors {
-		state, err := r.c.State()
-		st := Status{Kind: "connector", ID: id, State: state}
+	for _, ref := range connectors {
+		state, err := ref.rt.State()
+		st := Status{Kind: "connector", ID: ref.id, State: state}
 		if err != nil {
 			st.Err = err.Error()
 		}
 		out = append(out, st)
 	}
-	out = append(out, s.errored...)
+	out = append(out, errored...)
+	if reconcileErr != nil {
+		out = append(out, Status{
+			Kind: "system", ID: "desired_state", State: "error", Err: reconcileErr.Error(),
+		})
+	}
 	return out
 }
 
@@ -539,12 +720,17 @@ func (s *Supervisor) BusStatuses() []bus.EndpointStatus {
 // and cancels the Supervisor's background context. Safe to call more than
 // once. After Stop, Reconcile becomes a permanent no-op (see the Supervisor
 // doc comment). Like Reconcile, the map mutation is done under stateMu but
-// the actual (potentially slow) Stop() calls run unlocked so Statuses()
+// the actual (potentially slow) Stop() calls run outside stateMu so Statuses()
 // never blocks behind shutdown either.
 func (s *Supervisor) Stop() {
+	// Cancel first so an in-flight convergence pass and every component's
+	// lifecycle operation receive cancellation while Stop waits for the
+	// reconcile serialization lock.
+	s.runCancel()
 	s.reconcileMu.Lock()
-	defer s.reconcileMu.Unlock()
 	if s.stopped {
+		s.reconcileMu.Unlock()
+		s.convergeWG.Wait()
 		return
 	}
 	s.stopped = true
@@ -567,5 +753,6 @@ func (s *Supervisor) Stop() {
 	for _, rs := range sources {
 		rs.rt.Stop()
 	}
-	s.runCancel()
+	s.reconcileMu.Unlock()
+	s.convergeWG.Wait()
 }

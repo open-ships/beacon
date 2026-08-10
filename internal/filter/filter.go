@@ -29,6 +29,9 @@ func Compile(exprs []string) (*Chain, error) {
 		if issues != nil && issues.Err() != nil {
 			return nil, fmt.Errorf("filter %q: %w", expr, issues.Err())
 		}
+		if err := requireBooleanOutput(ast); err != nil {
+			return nil, fmt.Errorf("filter %q: %w", expr, err)
+		}
 		prg, err := env.Program(ast)
 		if err != nil {
 			return nil, fmt.Errorf("filter %q: %w", expr, err)
@@ -36,6 +39,13 @@ func Compile(exprs []string) (*Chain, error) {
 		c.progs = append(c.progs, prg)
 	}
 	return c, nil
+}
+
+func requireBooleanOutput(ast *cel.Ast) error {
+	if ast.OutputType() != cel.BoolType {
+		return fmt.Errorf("expression must return bool, got %s", ast.OutputType())
+	}
+	return nil
 }
 
 func newEnvironment() (*cel.Env, error) {

@@ -1391,9 +1391,9 @@ func formatFilters(filters []string) string {
 	return strings.Join(filters, "\n")
 }
 
-// formatOptionalInt64 renders an optional limit as its decimal string, or ""
-// for 0. Connector max_messages uses formatMaxMessages instead so its effective
-// default is visible in the editor.
+// formatOptionalInt64 renders an optional authored value as its decimal
+// string, or "" for 0. Connector count/byte limits instead use the effective
+// helpers below so both independent safety defaults are visible in the editor.
 func formatOptionalInt64(v int64) string {
 	if v == 0 {
 		return ""
@@ -1403,6 +1403,10 @@ func formatOptionalInt64(v int64) string {
 
 func formatMaxMessages(limits model.BufferLimits) string {
 	return strconv.FormatInt(limits.ApplyDefaults().MaxMessages, 10)
+}
+
+func formatMaxBytes(limits model.BufferLimits) string {
+	return strconv.FormatInt(limits.ApplyDefaults().MaxBytes, 10)
 }
 
 // parseOptionalInt64 is formatOptionalInt64's inverse: "" parses to 0
@@ -1505,7 +1509,7 @@ func connectorFormViewFromModel(v model.Connector, sources []model.Source, sinks
 		FiltersText:       formatFilters(v.Filters),
 		MaxMessages:       formatMaxMessages(v.Buffer),
 		MaxAge:            formatMaxAge(v.Buffer.MaxAge),
-		MaxBytes:          formatOptionalInt64(v.Buffer.MaxBytes),
+		MaxBytes:          formatMaxBytes(v.Buffer),
 		Sources:           sources,
 		Sinks:             sinks,
 	}
@@ -1520,6 +1524,7 @@ func blankConnectorFormView(sources []model.Source, sinks []model.Sink) connecto
 		Sinks:       sinks,
 		Mode:        string(model.BridgeSemantic),
 		MaxMessages: strconv.FormatInt(model.DefaultMaxMessages, 10),
+		MaxBytes:    strconv.FormatInt(model.DefaultBufferMaxBytes, 10),
 	}
 }
 

@@ -12,9 +12,20 @@ import (
 )
 
 const (
-	maxSourceMetricEvents       = 200
-	maxPersistedMetricEvents    = 2000
-	sourceMetricEventBufferSize = 256
+	maxSourceMetricEvents       = 100
+	maxPersistedMetricEvents    = 1000
+	sourceMetricEventBufferSize = 128
+	sourceMetricPersistBatch    = 32
+	sourceMetricPersistDelay    = 250 * time.Millisecond
+
+	// Lifecycle events are diagnostic summaries. Bound both persisted input and
+	// every retained string/map so a malformed historical row cannot inflate the
+	// in-process event rings on restart.
+	maxSourceMetricEventDocumentBytes = 4 << 10
+	maxSourceMetricEventDetails       = 8
+	maxSourceMetricEventKindBytes     = 64
+	maxSourceMetricEventSummaryBytes  = 512
+	maxSourceMetricEventDetailBytes   = 256
 )
 
 type SourceMetricEvent struct {
@@ -44,6 +55,8 @@ func (r *sourceMetricEventRing) add(event SourceMetricEvent) {
 
 type sourceMetricPersistence struct {
 	db     *sql.DB
+	ctx    context.Context
+	cancel context.CancelFunc
 	events chan SourceMetricEvent
 	done   chan struct{}
 	mu     sync.Mutex
@@ -61,12 +74,15 @@ func (r *Registry) AttachSourceMetricPersistence(ctx context.Context, db *sql.DB
 	if err != nil {
 		return err
 	}
+	writerCtx, cancel := context.WithCancel(context.Background())
 	persistence := &sourceMetricPersistence{
-		db: db, events: make(chan SourceMetricEvent, sourceMetricEventBufferSize), done: make(chan struct{}),
+		db: db, ctx: writerCtx, cancel: cancel,
+		events: make(chan SourceMetricEvent, sourceMetricEventBufferSize), done: make(chan struct{}),
 	}
 	r.mu.Lock()
 	if r.sourcePersistence != nil {
 		r.mu.Unlock()
+		cancel()
 		return errors.New("source metric persistence already attached")
 	}
 	for _, event := range events {
@@ -85,8 +101,11 @@ func (r *Registry) AttachSourceMetricPersistence(ctx context.Context, db *sql.DB
 
 func loadSourceMetricEvents(ctx context.Context, db *sql.DB) ([]SourceMetricEvent, error) {
 	rows, err := db.QueryContext(ctx, `SELECT id, doc FROM (
-		SELECT id, doc FROM source_metric_events ORDER BY id DESC LIMIT ?
-	) ORDER BY id`, maxPersistedMetricEvents)
+		SELECT e.id, e.doc FROM source_metric_events e
+		WHERE length(CAST(e.doc AS BLOB)) <= ?
+		  AND EXISTS (SELECT 1 FROM sources s WHERE s.id = e.source_id)
+		ORDER BY e.id DESC LIMIT ?
+	) ORDER BY id`, maxSourceMetricEventDocumentBytes, maxPersistedMetricEvents)
 	if err != nil {
 		return nil, err
 	}
@@ -103,6 +122,7 @@ func loadSourceMetricEvents(ctx context.Context, db *sql.DB) ([]SourceMetricEven
 			return nil, err
 		}
 		event.ID = id
+		event = boundedSourceMetricEvent(event)
 		out = append(out, event)
 	}
 	return out, rows.Err()
@@ -110,25 +130,83 @@ func loadSourceMetricEvents(ctx context.Context, db *sql.DB) ([]SourceMetricEven
 
 func (p *sourceMetricPersistence) run() {
 	defer close(p.done)
-	for event := range p.events {
-		doc, err := json.Marshal(event)
-		if err == nil {
-			_, err = p.db.Exec(`INSERT INTO source_metric_events
-				(ts, source_id, pgn, source_address, kind, severity, doc)
-				VALUES (?, ?, ?, ?, ?, ?, ?)`, event.Time.UnixNano(), event.SourceID,
-				event.PGN, event.SourceAddress, event.Kind, event.Severity, string(doc))
+	defer p.cancel()
+	for {
+		first, ok := <-p.events
+		if !ok {
+			return
 		}
-		if err == nil {
-			_, err = p.db.Exec(`DELETE FROM source_metric_events WHERE id NOT IN (
-				SELECT id FROM source_metric_events ORDER BY id DESC LIMIT ?
-			)`, maxPersistedMetricEvents)
+		batch := make([]SourceMetricEvent, 0, sourceMetricPersistBatch)
+		batch = append(batch, first)
+		timer := time.NewTimer(sourceMetricPersistDelay)
+		closed := false
+	collect:
+		for len(batch) < sourceMetricPersistBatch {
+			select {
+			case event, ok := <-p.events:
+				if !ok {
+					closed = true
+					break collect
+				}
+				batch = append(batch, event)
+			case <-timer.C:
+				break collect
+			case <-p.ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return
+			}
 		}
-		if err != nil {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		if err := p.persistBatch(batch); err != nil {
 			p.mu.Lock()
-			p.errors++
+			p.errors += int64(len(batch))
 			p.mu.Unlock()
 		}
+		if closed {
+			return
+		}
 	}
+}
+
+func (p *sourceMetricPersistence) persistBatch(events []SourceMetricEvent) error {
+	tx, err := p.db.BeginTx(p.ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	insert, err := tx.PrepareContext(p.ctx, `INSERT INTO source_metric_events
+		(ts, source_id, pgn, source_address, kind, severity, doc)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = insert.Close() }()
+	for _, event := range events {
+		doc, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		if _, err := insert.ExecContext(p.ctx, event.Time.UnixNano(), event.SourceID,
+			event.PGN, event.SourceAddress, event.Kind, event.Severity, string(doc)); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(p.ctx, `DELETE FROM source_metric_events WHERE id NOT IN (
+		SELECT id FROM source_metric_events ORDER BY id DESC LIMIT ?
+	)`, maxPersistedMetricEvents); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (r *Registry) recordSourceMetricEvent(event SourceMetricEvent) {
@@ -138,6 +216,7 @@ func (r *Registry) recordSourceMetricEvent(event SourceMetricEvent) {
 	if event.Time.IsZero() {
 		event.Time = r.now().UTC()
 	}
+	event = boundedSourceMetricEvent(event)
 	r.mu.Lock()
 	ring := r.sourceMetricEvents[event.SourceID]
 	if ring == nil {
@@ -175,7 +254,10 @@ func (r *Registry) SourceMetricEvents(source string, limit int) []SourceMetricEv
 		r.mu.Unlock()
 		return []SourceMetricEvent{}
 	}
-	items := append([]SourceMetricEvent(nil), ring.items...)
+	items := make([]SourceMetricEvent, len(ring.items))
+	for i := range ring.items {
+		items[i] = cloneSourceMetricEvent(ring.items[i])
+	}
 	r.mu.Unlock()
 	if limit <= 0 || limit > len(items) {
 		limit = len(items)
@@ -183,6 +265,46 @@ func (r *Registry) SourceMetricEvents(source string, limit int) []SourceMetricEv
 	out := append([]SourceMetricEvent(nil), items[len(items)-limit:]...)
 	sort.Slice(out, func(i, j int) bool { return out[i].Time.After(out[j].Time) })
 	return out
+}
+
+func boundedSourceMetricEvent(event SourceMetricEvent) SourceMetricEvent {
+	event.SourceID, _ = boundedDiagnosticText(event.SourceID, maxDiagnosticLabelBytes)
+	event.DeviceNameHex, _ = boundedDiagnosticText(event.DeviceNameHex, 32)
+	event.Kind, _ = boundedDiagnosticText(event.Kind, maxSourceMetricEventKindBytes)
+	event.Severity, _ = boundedDiagnosticText(event.Severity, maxSourceMetricEventKindBytes)
+	event.Summary, _ = boundedDiagnosticText(event.Summary, maxSourceMetricEventSummaryBytes)
+	if len(event.Details) == 0 {
+		event.Details = nil
+		return event
+	}
+	keys := make([]string, 0, len(event.Details))
+	for key := range event.Details {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	bounded := make(map[string]string, min(len(keys), maxSourceMetricEventDetails))
+	for _, key := range keys {
+		if len(bounded) >= maxSourceMetricEventDetails {
+			break
+		}
+		boundedKey, _ := boundedDiagnosticText(key, maxSourceMetricEventKindBytes)
+		boundedValue, _ := boundedDiagnosticText(event.Details[key], maxSourceMetricEventDetailBytes)
+		bounded[boundedKey] = boundedValue
+	}
+	event.Details = bounded
+	return event
+}
+
+func cloneSourceMetricEvent(event SourceMetricEvent) SourceMetricEvent {
+	if len(event.Details) == 0 {
+		return event
+	}
+	details := make(map[string]string, len(event.Details))
+	for key, value := range event.Details {
+		details[key] = value
+	}
+	event.Details = details
+	return event
 }
 
 func (r *Registry) CloseSourceMetricPersistence(ctx context.Context) error {
@@ -212,6 +334,17 @@ func (r *Registry) CloseSourceMetricPersistence(ctx context.Context) error {
 		}
 		return nil
 	case <-ctx.Done():
+		// Cancel any SQLite work before the Store is closed. modernc.org/sqlite
+		// honors ExecContext cancellation, so App.Close cannot strand this
+		// writer on a context-free operation while tearing the database down.
+		persistence.cancel()
+		<-persistence.done
+		persistence.mu.Lock()
+		errorsCount := persistence.errors
+		persistence.mu.Unlock()
+		if errorsCount > 0 {
+			return errors.Join(ctx.Err(), fmt.Errorf("source metric persistence encountered %d write errors", errorsCount))
+		}
 		return ctx.Err()
 	}
 }

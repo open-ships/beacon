@@ -15,20 +15,34 @@ import (
 	"github.com/open-ships/beacon/internal/msg"
 	"github.com/open-ships/beacon/internal/n2kwire"
 	"github.com/open-ships/beacon/internal/queue"
+	"github.com/open-ships/beacon/internal/retry"
 	"github.com/open-ships/beacon/internal/sink"
 	"github.com/open-ships/beacon/internal/source"
 	"github.com/open-ships/beacon/internal/stats"
 )
 
 const (
-	batchSize     = 64
-	batchInterval = 50 * time.Millisecond
-	readLimit     = 256
-	ackInterval   = 500 * time.Millisecond
+	batchSize = 64
+	// Coalesce low-rate bus traffic into ten SQLite transactions/second at
+	// most. This halves the prior WAL/fsync churn while keeping bridge latency
+	// within a tenth of a second for navigation data.
+	batchInterval = 100 * time.Millisecond
+	readLimit     = 64
+	// Checkpoint coalescing trades at most two seconds of duplicate replay
+	// after abrupt power loss for substantially fewer steady-state writes.
+	ackInterval   = 2 * time.Second
 	pruneInterval = 5 * time.Second
-	maxBackoff    = 5 * time.Second
 	appendTimeout = 5 * time.Second
+	// Retry-After is remote input. Honor a server's pacing request only up to
+	// the connector's own maximum retry window so a bad or stale HTTP date
+	// cannot park desired delivery for hours without another config change.
+	maxRetryAfterDelay = time.Minute
 )
+
+// finalAckTimeout is a variable so the shutdown regression test can use a
+// short deadline. A checkpoint is important, but it must not make appliance
+// shutdown wait forever behind a wedged store connection.
+var finalAckTimeout = 2 * time.Second
 
 type Connector struct {
 	cfg   model.Connector
@@ -176,15 +190,17 @@ func (c *Connector) intake(ctx context.Context, in <-chan *msg.Envelope, unsub f
 		if len(batch) == 0 {
 			return true
 		}
-		backoff := 100 * time.Millisecond
+		backoff := retry.NewBackoff(100*time.Millisecond, time.Minute)
+		failures := 0
 		for {
 			appendCtx, cancel := context.WithTimeout(flushCtx, appendTimeout)
-			err := c.q.Append(appendCtx, batch)
+			pruned, err := c.q.Append(appendCtx, batch)
 			cancel()
 			if err == nil {
 				c.setIssue("intake", nil)
 				c.st.RecordStage(c.cfg.ID, "queued", int64(len(batch)))
 				c.met.ConnectorMessages(context.Background(), c.cfg.ID, "queued", int64(len(batch)))
+				c.recordPrune(context.Background(), pruned)
 				batch = batch[:0]
 				c.wake()
 				return true
@@ -192,14 +208,17 @@ func (c *Connector) intake(ctx context.Context, in <-chan *msg.Envelope, unsub f
 			c.setIssue("intake", err)
 			c.st.RecordStage(c.cfg.ID, "append_error", 1)
 			c.met.ConnectorMessages(context.Background(), c.cfg.ID, "append_error", 1)
-			c.log.Warn("queue append failed; retrying", "err", err, "pending_batch", len(batch), "backoff", backoff)
-			select {
-			case <-flushCtx.Done():
-				return false
-			case <-time.After(backoff):
+			retryIn := backoff.Next()
+			failures++
+			if failures == 1 || failures%60 == 0 {
+				c.log.Warn("queue append failed; retrying", "err", err, "pending_batch", len(batch),
+					"retry_in", retryIn, "consecutive_failures", failures)
+			} else {
+				c.log.Debug("queue append still failing", "err", err, "pending_batch", len(batch),
+					"retry_in", retryIn, "consecutive_failures", failures)
 			}
-			if backoff < maxBackoff {
-				backoff = min(backoff*2, maxBackoff)
+			if !retry.Sleep(flushCtx, retryIn) {
+				return false
 			}
 		}
 	}
@@ -281,16 +300,20 @@ func (c *Connector) deliver(ctx context.Context) {
 	lastAck := time.Now()
 	dirty := false
 	deliveryReadLimit := readLimit
-	if p, ok := c.snk.(sink.BatchPusher); ok && p.BatchSize() > deliveryReadLimit {
-		deliveryReadLimit = p.BatchSize()
-	}
 
 	ack := func(force bool) bool {
 		if !dirty || (!force && time.Since(lastAck) < ackInterval) {
 			return true
 		}
-		// use Background: final ack must survive ctx cancellation
-		if err := c.q.Ack(context.Background(), cursor); err == nil {
+		ackCtx := ctx
+		cancel := func() {}
+		if force {
+			// The final checkpoint survives pipeline cancellation, but remains
+			// bounded so Connector.Stop cannot wedge shutdown indefinitely.
+			ackCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), finalAckTimeout)
+		}
+		defer cancel()
+		if err := c.q.Ack(ackCtx, cursor); err == nil {
 			dirty = false
 			lastAck = time.Now()
 			c.setIssue("checkpoint", nil)
@@ -348,6 +371,10 @@ func (c *Connector) deliver(ctx context.Context) {
 				continue
 			}
 			switch snk := c.snk.(type) {
+			case sink.SelectiveBatchPusher:
+				if !c.pushSelectiveBatchAll(ctx, snk, entries, &cursor, &dirty) {
+					return
+				}
 			case sink.BatchPusher:
 				if !c.pushBatchAll(ctx, snk, entries, &cursor, &dirty) {
 					return // ctx cancelled mid-retry
@@ -451,10 +478,13 @@ func (c *Connector) pushBatchAll(ctx context.Context, p sink.BatchPusher, entrie
 	if size <= 0 {
 		size = len(entries)
 	}
-	for start := 0; start < len(entries); start += size {
+	for start := 0; start < len(entries); {
 		end := min(start+size, len(entries))
+		if limiter, ok := p.(sink.BatchByteLimiter); ok {
+			end = batchEndByBytes(entries, start, end, limiter.BatchMaxBytes())
+		}
 		batch := entries[start:end]
-		backoff := 250 * time.Millisecond
+		backoff := retry.NewBackoff(250*time.Millisecond, time.Minute)
 		for {
 			err := p.PushBatch(ctx, batch)
 			if err == nil {
@@ -466,7 +496,7 @@ func (c *Connector) pushBatchAll(ctx context.Context, p sink.BatchPusher, entrie
 				*dirty = true
 				break
 			}
-			retryIn := retryDelay(err, backoff)
+			retryIn := retryDelay(err, backoff.Next())
 			lastSeq := batch[len(batch)-1].Seq
 			if c.lastWarnSeq != lastSeq {
 				c.log.Warn("batch push failed; retrying", "err", err, "retry_in", retryIn,
@@ -479,13 +509,73 @@ func (c *Connector) pushBatchAll(ctx context.Context, p sink.BatchPusher, entrie
 			c.setIssue("delivery", err)
 			c.st.RecordStage(c.cfg.ID, "retry", 1)
 			c.met.ConnectorMessages(ctx, c.cfg.ID, "retry", 1)
-			select {
-			case <-ctx.Done():
+			if !retry.Sleep(ctx, retryIn) {
 				return false
-			case <-time.After(retryIn):
 			}
-			if backoff < maxBackoff {
-				backoff = min(backoff*2, maxBackoff)
+		}
+		start = end
+	}
+	return true
+}
+
+func batchEndByBytes(entries []queue.Entry, start, end int, maxBytes int64) int {
+	if maxBytes <= 0 || start >= end {
+		return end
+	}
+	var total int64
+	for i := start; i < end; i++ {
+		size := int64(entries[i].Env.SizeBytes())
+		if i > start && total+size > maxBytes {
+			return i
+		}
+		total += size
+	}
+	return end
+}
+
+func (c *Connector) pushSelectiveBatchAll(ctx context.Context, p sink.SelectiveBatchPusher, entries []queue.Entry, cursor *int64, dirty *bool) bool {
+	size := p.BatchSize()
+	if size <= 0 {
+		size = len(entries)
+	}
+	for start := 0; start < len(entries); start += size {
+		end := min(start+size, len(entries))
+		batch := entries[start:end]
+		backoff := retry.NewBackoff(250*time.Millisecond, time.Minute)
+		for {
+			report, err := p.PushBatchSelective(ctx, batch)
+			if err == nil && len(report.Skipped) != len(batch) {
+				err = errors.New("selective batch sink returned an invalid report")
+			}
+			if err == nil {
+				for i, entry := range batch {
+					if report.Skipped[i] {
+						c.met.ConnectorMessages(ctx, c.cfg.ID, "skipped", 1)
+						c.st.RecordStage(c.cfg.ID, "skipped", 1)
+					} else {
+						c.recordPushSuccess(ctx, "confirmed", entry)
+					}
+				}
+				c.setIssue("delivery", nil)
+				*cursor = batch[len(batch)-1].Seq
+				*dirty = true
+				break
+			}
+			retryIn := retryDelay(err, backoff.Next())
+			lastSeq := batch[len(batch)-1].Seq
+			if c.lastWarnSeq != lastSeq {
+				c.log.Warn("batch push failed; retrying", "err", err, "retry_in", retryIn,
+					"first_seq", batch[0].Seq, "last_seq", lastSeq, "batch_size", len(batch))
+				c.lastWarnSeq = lastSeq
+			} else {
+				c.log.Debug("batch push failed; retrying", "err", err, "retry_in", retryIn,
+					"first_seq", batch[0].Seq, "last_seq", lastSeq, "batch_size", len(batch))
+			}
+			c.setIssue("delivery", err)
+			c.st.RecordStage(c.cfg.ID, "retry", 1)
+			c.met.ConnectorMessages(ctx, c.cfg.ID, "retry", 1)
+			if !retry.Sleep(ctx, retryIn) {
+				return false
 			}
 		}
 	}
@@ -506,7 +596,7 @@ func (c *Connector) recordPushSuccess(ctx context.Context, successStage string, 
 
 func (c *Connector) pushEntries(ctx context.Context, push func(context.Context, *msg.Envelope) error, successStage string, entries []queue.Entry, cursor *int64, dirty *bool) bool {
 	for _, e := range entries {
-		backoff := 250 * time.Millisecond
+		backoff := retry.NewBackoff(250*time.Millisecond, time.Minute)
 		for {
 			err := push(ctx, e.Env)
 			if err == nil || errors.Is(err, sink.ErrSkip) {
@@ -522,7 +612,7 @@ func (c *Connector) pushEntries(ctx context.Context, push func(context.Context, 
 				*dirty = true
 				break
 			}
-			retryIn := retryDelay(err, backoff)
+			retryIn := retryDelay(err, backoff.Next())
 			// Log the first failure of a retry sequence at Warn (an operator
 			// watching logs should see a wedged sink), then drop to Debug for
 			// the rest of that entry's retries so a persistently stuck sink
@@ -536,13 +626,8 @@ func (c *Connector) pushEntries(ctx context.Context, push func(context.Context, 
 			c.setIssue("delivery", err)
 			c.st.RecordStage(c.cfg.ID, "retry", 1)
 			c.met.ConnectorMessages(ctx, c.cfg.ID, "retry", 1)
-			select {
-			case <-ctx.Done():
+			if !retry.Sleep(ctx, retryIn) {
 				return false
-			case <-time.After(retryIn):
-			}
-			if backoff < maxBackoff {
-				backoff = min(backoff*2, maxBackoff)
 			}
 		}
 	}
@@ -550,8 +635,11 @@ func (c *Connector) pushEntries(ctx context.Context, push func(context.Context, 
 }
 
 func retryDelay(err error, backoff time.Duration) time.Duration {
-	if requested, ok := sink.RetryAfter(err); ok && requested > backoff {
-		return requested
+	if requested, ok := sink.RetryAfter(err); ok {
+		requested = min(requested, maxRetryAfterDelay)
+		if requested > backoff {
+			return requested
+		}
 	}
 	return backoff
 }
@@ -584,19 +672,25 @@ func (c *Connector) prune(ctx context.Context) {
 		case <-t.C:
 			if pruned, err := c.q.Prune(ctx); err == nil {
 				c.setIssue("prune", nil)
-				if pruned.Total > 0 {
-					c.met.ConnectorMessages(ctx, c.cfg.ID, "pruned", pruned.Total)
-					c.st.RecordStage(c.cfg.ID, "pruned", pruned.Total)
-				}
-				if pruned.Pending > 0 {
-					c.met.ConnectorMessages(ctx, c.cfg.ID, "pending_pruned", pruned.Pending)
-					c.st.RecordStage(c.cfg.ID, "pending_pruned", pruned.Pending)
-				}
+				c.recordPrune(ctx, pruned)
 			} else {
 				c.setIssue("prune", err)
 				c.st.RecordStage(c.cfg.ID, "prune_error", 1)
 			}
 			refreshStats()
 		}
+	}
+}
+
+func (c *Connector) recordPrune(ctx context.Context, pruned queue.PruneResult) {
+	if pruned.Total > 0 {
+		c.met.ConnectorMessages(ctx, c.cfg.ID, "pruned", pruned.Total)
+		c.st.RecordStage(c.cfg.ID, "pruned", pruned.Total)
+	}
+	if pruned.Pending > 0 {
+		c.met.ConnectorMessages(ctx, c.cfg.ID, "pending_pruned", pruned.Pending)
+		c.st.RecordStage(c.cfg.ID, "pending_pruned", pruned.Pending)
+		c.log.Error("retention limit removed pending delivery",
+			"messages", pruned.Pending, "bytes", pruned.PendingBytes)
 	}
 }

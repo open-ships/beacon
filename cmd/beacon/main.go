@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -40,10 +41,125 @@ func main() {
 	root.Flags().StringVar(&adminAddr, "admin-address", "0.0.0.0:2112", "admin server bind address (UI, API, MCP, health, metrics)")
 	root.Flags().StringVar(&seedPath, "seed", "", "JSON config to seed an empty database")
 	root.Flags().StringVar(&logLevel, "log-level", "info", "debug | info | warn | error")
-	root.AddCommand(newExportCmd(), newImportCmd())
+	root.AddCommand(newExportCmd(), newImportCmd(), newCompactCmd(), newSizeBufferCmd())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+type outagePlan struct {
+	MaxMessages int64
+	MaxBytes    int64
+	MaxAge      time.Duration
+}
+
+// sizeOutageBuffer turns an observed route rate and average canonical
+// Envelope size into independent count, byte, and age guards. The reserve is
+// deliberately applied to all three dimensions: a route that is exactly at
+// its average should not start pruning at the instant the planned outage
+// ends.
+func sizeOutageBuffer(rate float64, averageBytes int64, outage time.Duration, reservePercent float64) (outagePlan, error) {
+	if math.IsNaN(rate) || math.IsInf(rate, 0) || rate <= 0 {
+		return outagePlan{}, fmt.Errorf("message rate must be a finite value greater than zero")
+	}
+	if averageBytes <= 0 {
+		return outagePlan{}, fmt.Errorf("average envelope bytes must be greater than zero")
+	}
+	if outage <= 0 {
+		return outagePlan{}, fmt.Errorf("outage duration must be greater than zero")
+	}
+	if math.IsNaN(reservePercent) || math.IsInf(reservePercent, 0) || reservePercent < 0 || reservePercent > 1000 {
+		return outagePlan{}, fmt.Errorf("reserve percent must be between 0 and 1000")
+	}
+
+	factor := 1 + reservePercent/100
+	messages := math.Ceil(rate * outage.Seconds() * factor)
+	bytes := messages * float64(averageBytes)
+	age := float64(outage) * factor
+	if messages > math.MaxInt64 || bytes > math.MaxInt64 || age > math.MaxInt64 {
+		return outagePlan{}, fmt.Errorf("outage plan exceeds supported limits")
+	}
+	return outagePlan{
+		MaxMessages: int64(messages),
+		MaxBytes:    int64(math.Ceil(bytes)),
+		MaxAge:      time.Duration(math.Ceil(age)),
+	}, nil
+}
+
+func newSizeBufferCmd() *cobra.Command {
+	var (
+		rate           float64
+		averageBytes   int64
+		outage         time.Duration
+		reservePercent float64
+	)
+	cmd := &cobra.Command{
+		Use:   "size-buffer",
+		Short: "Size one connector buffer for a planned offline interval",
+		Long: "Calculate independent message, logical-byte, and age limits from an " +
+			"observed Envelope rate and average canonical JSON size. Physical SQLite " +
+			"capacity also needs the configured database reserve and filesystem headroom.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			plan, err := sizeOutageBuffer(rate, averageBytes, outage, reservePercent)
+			if err != nil {
+				return err
+			}
+			if plan.MaxMessages > model.MaxBufferMessages || plan.MaxBytes > model.MaxBufferBytes || plan.MaxAge > time.Duration(model.MaxBufferAge) {
+				return fmt.Errorf("planned outage needs max_messages=%d, max_bytes=%d, max_age=%s; this exceeds Beacon's per-route safety bounds",
+					plan.MaxMessages, plan.MaxBytes, plan.MaxAge)
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+				"planned buffer (%.1f%% reserve):\n  max_messages: %d\n  max_bytes: %d\n  max_age: %s\n",
+				reservePercent, plan.MaxMessages, plan.MaxBytes, plan.MaxAge)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+				"minimum logical queue budget for this route: %d bytes; add SQLite overhead and settings.resources.database_reserve_bytes to size the physical database\n",
+				plan.MaxBytes)
+			return nil
+		},
+	}
+	cmd.Flags().Float64Var(&rate, "rate", 0, "observed peak Envelope rate in messages/second")
+	cmd.Flags().Int64Var(&averageBytes, "average-bytes", 0, "observed average canonical Envelope JSON size")
+	cmd.Flags().DurationVar(&outage, "outage", 0, "longest planned disconnected interval (for example 168h)")
+	cmd.Flags().Float64Var(&reservePercent, "reserve-percent", 25, "capacity margin applied to count, bytes, and age")
+	_ = cmd.MarkFlagRequired("rate")
+	_ = cmd.MarkFlagRequired("average-bytes")
+	_ = cmd.MarkFlagRequired("outage")
+	return cmd
+}
+
+func newCompactCmd() *cobra.Command {
+	var db string
+	cmd := &cobra.Command{
+		Use:   "compact",
+		Short: "Reclaim SQLite high-water disk space (offline)",
+		Long: "Compact runs SQLite VACUUM and enables incremental page reclamation. " +
+			"Beacon must be stopped, and the volume must have enough temporary free space " +
+			"for approximately one additional database copy.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			st, err := store.Open(db)
+			if err != nil {
+				return fmt.Errorf("open store: %w", err)
+			}
+			defer func() { _ = st.Close() }()
+			before, err := st.StorageStats(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("read storage stats: %w", err)
+			}
+			if err := st.Compact(cmd.Context()); err != nil {
+				return fmt.Errorf("compact store: %w", err)
+			}
+			after, err := st.StorageStats(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("read compacted storage stats: %w", err)
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "compacted database: %d -> %d bytes\n", before.PhysicalBytes, after.PhysicalBytes)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&db, "db", "beacon.db", "SQLite database path (Beacon must be stopped)")
+	return cmd
 }
 
 // newExportCmd builds `beacon export`: an OFFLINE command that opens the

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/store"
@@ -19,15 +20,44 @@ import (
 // and lets tests inject a canned error (returned, not cleared, on every
 // subsequent call) and canned Statuses().
 type fakeReconciler struct {
-	mu       sync.Mutex
-	calls    int
-	err      error
-	statuses []supervisor.Status
-	lastCtx  context.Context
+	mu           sync.Mutex
+	calls        int
+	err          error
+	statuses     []supervisor.Status
+	ctxErrAtCall error
 	// onReconcile, if set, runs synchronously as the first thing Reconcile
-	// does — before lastCtx is captured — so a test can simulate the
+	// does — before ctxErrAtCall is captured — so a test can simulate the
 	// request context being cancelled exactly as reconcile begins.
 	onReconcile func()
+}
+
+type wedgedReconciler struct {
+	mu      sync.Mutex
+	calls   int
+	started chan context.Context
+	release chan struct{}
+}
+
+func (w *wedgedReconciler) Reconcile(ctx context.Context) error {
+	w.mu.Lock()
+	w.calls++
+	w.mu.Unlock()
+	select {
+	case w.started <- ctx:
+	default:
+	}
+	// Deliberately ignore ctx to model a broken implementation. Service must
+	// still bound callers and must not create another stuck goroutine per write.
+	<-w.release
+	return nil
+}
+
+func (w *wedgedReconciler) Statuses() []supervisor.Status { return nil }
+
+func (w *wedgedReconciler) callCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.calls
 }
 
 func (f *fakeReconciler) Reconcile(ctx context.Context) error {
@@ -37,7 +67,7 @@ func (f *fakeReconciler) Reconcile(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	f.lastCtx = ctx
+	f.ctxErrAtCall = ctx.Err()
 	return f.err
 }
 
@@ -53,13 +83,10 @@ func (f *fakeReconciler) callCount() int {
 	return f.calls
 }
 
-func (f *fakeReconciler) lastCtxErr() error {
+func (f *fakeReconciler) contextErrDuringCall() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.lastCtx == nil {
-		return nil
-	}
-	return f.lastCtx.Err()
+	return f.ctxErrAtCall
 }
 
 func newTestService(t *testing.T) (*Service, *store.Store, *fakeReconciler) {
@@ -354,13 +381,14 @@ func TestReconcileFailureNotRolledBack(t *testing.T) {
 // A config write must be applied to the running system even if the request
 // that triggered it goes away mid-write: the config is already durably
 // persisted (PutSource's store write completed) by the time reconcile()
-// invokes the reconciler, and there is no periodic reconcile to pick up the
-// slack later (only the next write triggers another one). So reconcile()
-// must detach from the inbound context's cancellation rather than passing it
-// straight through to Reconcile. Simulated here by cancelling the request
-// context from inside the fake reconciler itself, timed to land exactly as
+// invokes the reconciler. The synchronous fast path should still begin even
+// if the request disconnects; the periodic convergence loop is its fallback,
+// not a reason to add avoidable apply latency. We simulate that by cancelling
+// the request context from inside the fake reconciler, timed to land exactly as
 // Reconcile begins — i.e. strictly after the store write it followed has
-// already succeeded, matching a real client disconnect mid-PUT.
+// already succeeded, matching a real client disconnect mid-PUT. The detached
+// context is bounded and is therefore cancelled after the fast apply returns;
+// this test checks its state while Reconcile is actually running.
 func TestReconcileRunsDespiteCallerContextCancellation(t *testing.T) {
 	svc, _, rec := newTestService(t)
 
@@ -373,7 +401,7 @@ func TestReconcileRunsDespiteCallerContextCancellation(t *testing.T) {
 	if rec.callCount() != 1 {
 		t.Fatalf("reconcile calls = %d, want 1", rec.callCount())
 	}
-	if err := rec.lastCtxErr(); err != nil {
+	if err := rec.contextErrDuringCall(); err != nil {
 		t.Fatalf("reconcile received a cancelled context (err=%v); it must run detached from the caller's ctx", err)
 	}
 	// Store write completed before cancellation landed (it happens inside
@@ -381,6 +409,54 @@ func TestReconcileRunsDespiteCallerContextCancellation(t *testing.T) {
 	// since the caller's ctx above is now cancelled by design.
 	if _, err := svc.GetSource(context.Background(), "s1"); err != nil {
 		t.Fatalf("source not persisted: %v", err)
+	}
+}
+
+func TestReconcileWedgeIsBoundedAndCoalesced(t *testing.T) {
+	oldTimeout := reconcileApplyTimeout
+	reconcileApplyTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { reconcileApplyTimeout = oldTimeout })
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	rec := &wedgedReconciler{started: make(chan context.Context, 1), release: make(chan struct{})}
+	t.Cleanup(func() { close(rec.release) })
+	svc := NewService(st, rec, slog.Default())
+
+	started := time.Now()
+	if err := svc.PutSource(context.Background(), baseSource("s1"), true); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > 300*time.Millisecond {
+		t.Fatalf("first config write blocked %v behind reconcile", elapsed)
+	}
+	var reconcileCtx context.Context
+	select {
+	case reconcileCtx = <-rec.started:
+	default:
+		t.Fatal("reconciler was not started")
+	}
+	if _, ok := reconcileCtx.Deadline(); !ok {
+		t.Fatal("detached reconcile context had no deadline")
+	}
+
+	started = time.Now()
+	if err := svc.PutSource(context.Background(), baseSource("s2"), true); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > 300*time.Millisecond {
+		t.Fatalf("second config write blocked %v behind wedged reconcile", elapsed)
+	}
+	if calls := rec.callCount(); calls != 1 {
+		t.Fatalf("wedged reconciler calls = %d, want one bounded in-flight call", calls)
+	}
+	for _, id := range []string{"s1", "s2"} {
+		if _, err := svc.GetSource(context.Background(), id); err != nil {
+			t.Fatalf("durable source %q missing after bounded reconcile: %v", id, err)
+		}
 	}
 }
 
@@ -440,6 +516,44 @@ func TestImportMerge(t *testing.T) {
 	// Sink x, not mentioned in the import, must survive untouched.
 	if len(got.Sinks) != 1 || got.Sinks[0].ID != "x" {
 		t.Fatalf("unmentioned sink lost during merge: %+v", got.Sinks)
+	}
+}
+
+func TestMergeConfigSettingsPresenceSemantics(t *testing.T) {
+	base := model.Config{Settings: &model.Settings{
+		Observability: &model.ObservabilityConfig{PrometheusSourceDetails: true},
+		Resources: &model.ResourceConfig{
+			MaxDatabaseBytes: 2 << 30, DatabaseReserveBytes: 256 << 20, MaxFileStoreBytes: 3 << 30,
+		},
+	}}
+
+	preserved := MergeConfig(base, model.Config{})
+	if !preserved.PrometheusSourceDetailsEnabled() {
+		t.Fatal("merge with omitted settings did not preserve the base opt-in")
+	}
+
+	incoming := model.Config{Settings: &model.Settings{
+		Observability: &model.ObservabilityConfig{PrometheusSourceDetails: false},
+	}}
+	disabled := MergeConfig(base, incoming)
+	if disabled.PrometheusSourceDetailsEnabled() || disabled.Settings == nil || disabled.Settings.Observability == nil {
+		t.Fatalf("explicit false settings were not applied: %+v", disabled.Settings)
+	}
+	if disabled.Settings.Resources == nil || disabled.Settings.Resources.MaxDatabaseBytes != 2<<30 {
+		t.Fatalf("observability-only merge discarded resources: %+v", disabled.Settings)
+	}
+	resourceOnly := MergeConfig(base, model.Config{Settings: &model.Settings{
+		Resources: &model.ResourceConfig{MaxDatabaseBytes: 4 << 30},
+	}})
+	if !resourceOnly.PrometheusSourceDetailsEnabled() || resourceOnly.Settings.Resources.MaxDatabaseBytes != 4<<30 {
+		t.Fatalf("resource-only merge discarded observability: %+v", resourceOnly.Settings)
+	}
+
+	// MergeConfig owns its returned settings tree; callers can edit the result
+	// without mutating either input configuration.
+	disabled.Settings.Observability.PrometheusSourceDetails = true
+	if incoming.Settings.Observability.PrometheusSourceDetails {
+		t.Fatal("merged settings aliased and mutated the incoming config")
 	}
 }
 

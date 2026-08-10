@@ -16,7 +16,23 @@ import (
 	"github.com/open-ships/beacon/internal/stats"
 )
 
-const streamPreviewBuffer = 16
+const (
+	streamPreviewBuffer    = 8
+	streamClientWriteLimit = 2 * time.Second
+)
+
+// writeStreamChunk gives each SSE write+flush a fresh bounded deadline. The
+// admin server deliberately has no global WriteTimeout because streams are
+// long-lived, so the handler itself must evict a client that stops reading.
+func writeStreamChunk(controller *http.ResponseController, write func() error) error {
+	if err := controller.SetWriteDeadline(time.Now().Add(streamClientWriteLimit)); err != nil {
+		return err
+	}
+	if err := write(); err != nil {
+		return err
+	}
+	return controller.Flush()
+}
 
 // handleComponentStream exposes a future-only, best-effort SSE tap used by
 // source and sink overview pages. The tap is fed by stats.Registry at the
@@ -55,7 +71,7 @@ func handleComponentStream(svc *config.Service, reg *stats.Registry, kind string
 			}
 		}
 
-		flusher, ok := w.(http.Flusher)
+		_, ok := w.(http.Flusher)
 		if !ok {
 			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 			return
@@ -67,11 +83,14 @@ func handleComponentStream(svc *config.Service, reg *stats.Registry, kind string
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Accel-Buffering", "no")
-		w.WriteHeader(http.StatusOK)
-		if _, err := io.WriteString(w, ": connected\n\n"); err != nil {
+		controller := http.NewResponseController(w)
+		if err := writeStreamChunk(controller, func() error {
+			w.WriteHeader(http.StatusOK)
+			_, err := io.WriteString(w, ": connected\n\n")
+			return err
+		}); err != nil {
 			return
 		}
-		flusher.Flush()
 
 		heartbeat := time.NewTicker(15 * time.Second)
 		defer heartbeat.Stop()
@@ -98,15 +117,19 @@ func handleComponentStream(svc *config.Service, reg *stats.Registry, kind string
 						continue
 					}
 				}
-				if _, err := fmt.Fprintf(w, "data: %s\n\n", document); err != nil {
+				if err := writeStreamChunk(controller, func() error {
+					_, err := fmt.Fprintf(w, "data: %s\n\n", document)
+					return err
+				}); err != nil {
 					return
 				}
-				flusher.Flush()
 			case <-heartbeat.C:
-				if _, err := io.WriteString(w, ": keepalive\n\n"); err != nil {
+				if err := writeStreamChunk(controller, func() error {
+					_, err := io.WriteString(w, ": keepalive\n\n")
+					return err
+				}); err != nil {
 					return
 				}
-				flusher.Flush()
 			}
 		}
 	}

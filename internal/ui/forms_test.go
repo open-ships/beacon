@@ -1764,9 +1764,9 @@ func TestConnectorNewPageOpensCreateForm(t *testing.T) {
 		`role="listbox"`,
 		`aria-keyshortcuts="Control+Space"`,
 		`id="conn-max-messages" name="max_messages" value="10000"`,
-		`10,000 is the default when no other limit is set`,
+		`Empty or 0 uses the safe default of 10,000 messages`,
 		`placeholder="No age limit (for example, 24h)"`,
-		`placeholder="No byte limit"`,
+		`placeholder="64 MiB default"`,
 		`aria-label="Breadcrumb"`,
 		`href="/connectors"`,
 		`aria-current="page">Add connector</span>`,
@@ -1819,9 +1819,13 @@ func TestConnectorFormMakesEffectiveRetentionDefaultVisible(t *testing.T) {
 		want string
 	}{
 		{"/connectors/legacy/edit", `id="conn-max-messages" name="max_messages" value="10000"`},
-		{"/connectors/age-only/edit", `id="conn-max-messages" name="max_messages" value="0"`},
+		{"/connectors/age-only/edit", `id="conn-max-messages" name="max_messages" value="10000"`},
+		{"/connectors/legacy/edit", `id="conn-max-bytes" name="max_bytes" value="67108864"`},
+		{"/connectors/age-only/edit", `id="conn-max-bytes" name="max_bytes" value="67108864"`},
 		{"/connectors/legacy", `<dt>Max messages</dt>`},
 		{"/connectors/legacy", `<dd>10000</dd>`},
+		{"/connectors/legacy", `<dt>Max bytes</dt>`},
+		{"/connectors/legacy", `<dd>67108864</dd>`},
 	} {
 		resp, err := http.Get(srv.URL + tc.path)
 		if err != nil {

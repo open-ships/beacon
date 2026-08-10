@@ -234,8 +234,8 @@ func connectorConfigRows(c model.Connector) []configRow {
 	if c.Buffer.MaxAge != 0 {
 		rows = append(rows, configRow{"Max age", time.Duration(c.Buffer.MaxAge).String(), false})
 	}
-	if c.Buffer.MaxBytes != 0 {
-		rows = append(rows, configRow{"Max bytes", strconv.FormatInt(c.Buffer.MaxBytes, 10), false})
+	if effectiveBuffer.MaxBytes != 0 {
+		rows = append(rows, configRow{"Max bytes", strconv.FormatInt(effectiveBuffer.MaxBytes, 10), false})
 	}
 	return rows
 }

@@ -32,7 +32,7 @@ func TestFileSinkDeliversNDJSON(t *testing.T) {
 		SourceID: "up", SinkID: "log", Enabled: true, Buffer: model.BufferLimits{MaxMessages: 10}})
 
 	q := queue.NewSQLite(st, "tolog", model.BufferLimits{MaxMessages: 10})
-	if err := q.Append(ctx, []*msg.Envelope{
+	if _, err := q.Append(ctx, []*msg.Envelope{
 		{PGN: 127250, Source: 12, Dest: 255, Priority: 2, Timestamp: time.Now(),
 			Payload: json.RawMessage(`{"heading":1.5}`)},
 	}); err != nil {

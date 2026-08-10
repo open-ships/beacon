@@ -2,6 +2,7 @@ package stats
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"math"
 	"math/bits"
@@ -11,20 +12,27 @@ import (
 )
 
 const (
-	maxAnalyzedPayloadBytes = 64
-	maxRawSamples           = 8
-	maxTrackedFingerprints  = 256
-	maxReportedFingerprints = 8
-	sourceRateBuckets       = 60
+	// Raw diagnostics retain only a bounded prefix. NMEA 2000 Envelopes remain
+	// canonical and complete elsewhere; these limits affect descriptive UI/MCP
+	// snapshots only.
+	maxAnalyzedPayloadBytes  = 32
+	maxRetainedRawBytes      = 256
+	maxTrackedPayloadLengths = 16
+	maxTrackedByteValues     = 16
+	maxRawSamples            = 4
+	maxTrackedFingerprints   = 32
+	maxReportedFingerprints  = 8
+	sourceRateBuckets        = 60
 )
 
 // RawPayloadSample is a bounded recent wire-payload example. It is exposed in
 // the UI and MCP, but never emitted as a Prometheus label.
 type RawPayloadSample struct {
-	ObservedAt  time.Time `json:"observed_at"`
-	Hex         string    `json:"hex"`
-	Fingerprint string    `json:"fingerprint"`
-	Length      int       `json:"length"`
+	ObservedAt   time.Time `json:"observed_at"`
+	Hex          string    `json:"hex"`
+	Fingerprint  string    `json:"fingerprint"`
+	Length       int       `json:"length"`
+	HexTruncated bool      `json:"hex_truncated,omitempty"`
 }
 
 type PayloadFingerprint struct {
@@ -47,18 +55,25 @@ type ByteDistribution struct {
 	EntropyBits       float64 `json:"entropy_bits"`
 	ChangedShare      float64 `json:"changed_share"`
 	ChangedBitMaskHex string  `json:"changed_bit_mask_hex"`
+	OtherSamples      int64   `json:"other_samples,omitempty"`
 }
 
 type RawPayloadDiagnostics struct {
 	LastHex                 string               `json:"last_hex,omitempty"`
 	LastFingerprint         string               `json:"last_fingerprint,omitempty"`
+	LastLength              int                  `json:"last_length,omitempty"`
+	LastHexTruncated        bool                 `json:"last_hex_truncated,omitempty"`
+	RetainedByteLimit       int                  `json:"retained_byte_limit"`
+	TruncatedSamples        int64                `json:"truncated_samples,omitempty"`
 	LengthCounts            map[string]int64     `json:"length_counts,omitempty"`
+	LengthCountOverflow     int64                `json:"length_count_overflow,omitempty"`
 	DistinctPayloads        int                  `json:"distinct_payloads"`
 	DistinctPayloadOverflow int64                `json:"distinct_payload_overflow,omitempty"`
 	UnchangedSeconds        float64              `json:"unchanged_seconds,omitempty"`
 	HammingDistanceMean     float64              `json:"hamming_distance_mean,omitempty"`
 	HammingDistanceP95      float64              `json:"hamming_distance_p95,omitempty"`
 	LastChangedBytes        []int                `json:"last_changed_bytes,omitempty"`
+	LastChangeOutsidePrefix bool                 `json:"last_change_outside_prefix,omitempty"`
 	Fingerprints            []PayloadFingerprint `json:"top_fingerprints,omitempty"`
 	Bytes                   []ByteDistribution   `json:"byte_distributions,omitempty"`
 	Samples                 []RawPayloadSample   `json:"recent_samples,omitempty"`
@@ -67,6 +82,7 @@ type RawPayloadDiagnostics struct {
 type sourceByteDistribution struct {
 	samples     int64
 	counts      map[uint8]uint32
+	other       uint32
 	minimum     uint8
 	maximum     uint8
 	comparisons int64
@@ -82,26 +98,44 @@ type trackedFingerprint struct {
 }
 
 type sourceWireStats struct {
-	previous            []byte
-	lastChanged         time.Time
-	lastChangedBytes    []int
-	lengths             map[int]int64
-	fingerprints        map[string]*trackedFingerprint
-	fingerprintOverflow int64
-	bytes               []sourceByteDistribution
-	hamming             runningDistribution
-	hammingSamples      [sourceIntervalSamples]float64
-	hammingHead         int
-	hammingLen          int
-	samples             [maxRawSamples]RawPayloadSample
-	sampleHead          int
-	sampleLen           int
-	lastHex             string
-	lastFingerprint     string
+	previous                []byte
+	lastChanged             time.Time
+	lastChangedBytes        []int
+	lengths                 map[int]int64
+	lengthOverflow          int64
+	fingerprints            map[string]*trackedFingerprint
+	fingerprintOverflow     int64
+	bytes                   []sourceByteDistribution
+	hamming                 runningDistribution
+	hammingSamples          [sourceIntervalSamples]float64
+	hammingHead             int
+	hammingLen              int
+	samples                 [maxRawSamples]RawPayloadSample
+	sampleHead              int
+	sampleLen               int
+	lastHex                 string
+	lastFingerprint         string
+	lastLength              int
+	lastHexTruncated        bool
+	truncatedSamples        int64
+	lastChangeOutsidePrefix bool
 }
 
-func payloadFingerprint(raw []byte) string {
-	digest := sha256.Sum256(raw)
+func payloadFingerprint(retained []byte, originalLength int) string {
+	if len(retained) == originalLength {
+		digest := sha256.Sum256(retained)
+		return hex.EncodeToString(digest[:8])
+	}
+	if originalLength < 0 {
+		originalLength = 0
+	}
+	// Include original length when hashing a prefix so different-length
+	// payloads cannot collapse merely because their retained bytes match.
+	var sample [maxRetainedRawBytes + 8]byte
+	// originalLength is non-negative here and an int always fits in uint64.
+	binary.BigEndian.PutUint64(sample[:8], uint64(originalLength)) //nolint:gosec // guarded lossless conversion
+	copy(sample[8:], retained)
+	digest := sha256.Sum256(sample[:8+len(retained)])
 	return hex.EncodeToString(digest[:8])
 }
 
@@ -112,10 +146,24 @@ func (w *sourceWireStats) record(now time.Time, raw []byte) {
 	if w.lengths == nil {
 		w.lengths = make(map[int]int64)
 	}
-	w.lengths[len(raw)]++
-	fingerprint := payloadFingerprint(raw)
-	w.lastHex = hex.EncodeToString(raw)
+	if count, ok := w.lengths[len(raw)]; ok {
+		w.lengths[len(raw)] = count + 1
+	} else if len(w.lengths) < maxTrackedPayloadLengths {
+		w.lengths[len(raw)] = 1
+	} else {
+		w.lengthOverflow++
+	}
+	retained := raw
+	w.lastHexTruncated = len(raw) > maxRetainedRawBytes
+	if w.lastHexTruncated {
+		retained = raw[:maxRetainedRawBytes]
+		w.truncatedSamples++
+	}
+	previousFingerprint := w.lastFingerprint
+	fingerprint := payloadFingerprint(retained, len(raw))
+	w.lastHex = hex.EncodeToString(retained)
 	w.lastFingerprint = fingerprint
+	w.lastLength = len(raw)
 	if w.fingerprints == nil {
 		w.fingerprints = make(map[string]*trackedFingerprint)
 	}
@@ -132,17 +180,17 @@ func (w *sourceWireStats) record(now time.Time, raw []byte) {
 
 	changedBytes := make([]int, 0)
 	if len(w.previous) > 0 {
-		maxLength := max(len(w.previous), len(raw))
+		maxLength := max(len(w.previous), len(retained))
 		distance := 0
 		for i := 0; i < maxLength; i++ {
 			var before, after byte
 			if i < len(w.previous) {
 				before = w.previous[i]
 			}
-			if i < len(raw) {
-				after = raw[i]
+			if i < len(retained) {
+				after = retained[i]
 			}
-			if before != after || i >= len(w.previous) || i >= len(raw) {
+			if before != after || i >= len(w.previous) || i >= len(retained) {
 				changedBytes = append(changedBytes, i)
 			}
 			distance += bits.OnesCount8(before ^ after)
@@ -154,11 +202,15 @@ func (w *sourceWireStats) record(now time.Time, raw []byte) {
 			w.hammingLen++
 		}
 	}
-	changed := len(w.previous) == 0 || len(changedBytes) > 0
+	changed := previousFingerprint == "" || previousFingerprint != fingerprint
 	if changed {
 		w.lastChanged = now
 		w.lastChangedBytes = append([]int(nil), changedBytes...)
-		sample := RawPayloadSample{ObservedAt: now, Hex: w.lastHex, Fingerprint: fingerprint, Length: len(raw)}
+		w.lastChangeOutsidePrefix = previousFingerprint != "" && len(changedBytes) == 0
+		sample := RawPayloadSample{
+			ObservedAt: now, Hex: w.lastHex, Fingerprint: fingerprint,
+			Length: len(raw), HexTruncated: w.lastHexTruncated,
+		}
 		w.samples[w.sampleHead] = sample
 		w.sampleHead = (w.sampleHead + 1) % maxRawSamples
 		if w.sampleLen < maxRawSamples {
@@ -166,12 +218,12 @@ func (w *sourceWireStats) record(now time.Time, raw []byte) {
 		}
 	}
 
-	analyzed := min(len(raw), maxAnalyzedPayloadBytes)
+	analyzed := min(len(retained), maxAnalyzedPayloadBytes)
 	for len(w.bytes) < analyzed {
 		w.bytes = append(w.bytes, sourceByteDistribution{counts: make(map[uint8]uint32)})
 	}
 	for i := 0; i < analyzed; i++ {
-		value := raw[i]
+		value := retained[i]
 		byteStats := &w.bytes[i]
 		if byteStats.samples == 0 {
 			byteStats.minimum, byteStats.maximum = value, value
@@ -184,7 +236,13 @@ func (w *sourceWireStats) record(now time.Time, raw []byte) {
 			}
 		}
 		byteStats.samples++
-		byteStats.counts[value]++
+		if count, ok := byteStats.counts[value]; ok {
+			byteStats.counts[value] = count + 1
+		} else if len(byteStats.counts) < maxTrackedByteValues {
+			byteStats.counts[value] = 1
+		} else {
+			byteStats.other++
+		}
 		if i < len(w.previous) {
 			byteStats.comparisons++
 			delta := w.previous[i] ^ value
@@ -198,7 +256,7 @@ func (w *sourceWireStats) record(now time.Time, raw []byte) {
 			}
 		}
 	}
-	w.previous = append(w.previous[:0], raw...)
+	w.previous = append(w.previous[:0], retained...)
 }
 
 func (w *sourceWireStats) snapshot(now time.Time) *RawPayloadDiagnostics {
@@ -207,10 +265,13 @@ func (w *sourceWireStats) snapshot(now time.Time) *RawPayloadDiagnostics {
 	}
 	out := &RawPayloadDiagnostics{
 		LastHex: w.lastHex, LastFingerprint: w.lastFingerprint,
-		LengthCounts:     make(map[string]int64, len(w.lengths)),
+		LastLength: w.lastLength, LastHexTruncated: w.lastHexTruncated,
+		RetainedByteLimit: maxRetainedRawBytes, TruncatedSamples: w.truncatedSamples,
+		LengthCounts: make(map[string]int64, len(w.lengths)), LengthCountOverflow: w.lengthOverflow,
 		DistinctPayloads: len(w.fingerprints), DistinctPayloadOverflow: w.fingerprintOverflow,
-		HammingDistanceMean: w.hamming.mean,
-		LastChangedBytes:    append([]int(nil), w.lastChangedBytes...),
+		HammingDistanceMean:     w.hamming.mean,
+		LastChangedBytes:        append([]int(nil), w.lastChangedBytes...),
+		LastChangeOutsidePrefix: w.lastChangeOutsidePrefix,
 	}
 	if !w.lastChanged.IsZero() {
 		out.UnchangedSeconds = max(0, now.Sub(w.lastChanged).Seconds())
@@ -266,6 +327,12 @@ func (w *sourceWireStats) snapshot(now time.Time) *RawPayloadDiagnostics {
 			probability := float64(count) / float64(value.samples)
 			entropy -= probability * math.Log2(probability)
 		}
+		if value.other > 0 {
+			// Overflow is one aggregate bucket: entropy remains bounded-cost and
+			// intentionally underestimates diversity beyond the tracked values.
+			probability := float64(value.other) / float64(value.samples)
+			entropy -= probability * math.Log2(probability)
+		}
 		changedShare := 0.0
 		var changedMask uint8
 		if value.comparisons > 0 {
@@ -280,7 +347,7 @@ func (w *sourceWireStats) snapshot(now time.Time) *RawPayloadDiagnostics {
 			Offset: offset, Samples: value.samples, Minimum: value.minimum, Maximum: value.maximum,
 			MostCommon: mode, MostCommonShare: float64(modeCount) / float64(value.samples),
 			EntropyBits: entropy, ChangedShare: changedShare,
-			ChangedBitMaskHex: hex.EncodeToString([]byte{changedMask}),
+			ChangedBitMaskHex: hex.EncodeToString([]byte{changedMask}), OtherSamples: int64(value.other),
 		})
 	}
 	start = (w.sampleHead - w.sampleLen + maxRawSamples) % maxRawSamples

@@ -2,12 +2,14 @@ package model
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"net/textproto"
 	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 var slugRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
@@ -15,8 +17,30 @@ var httpHeaderNameRE = regexp.MustCompile("^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$")
 var postgresIdentifierRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$]*$`)
 
 func validSlug(id string) error {
+	if len(id) > MaxEntityIDBytes {
+		return fmt.Errorf("id is %d bytes; maximum is %d", len(id), MaxEntityIDBytes)
+	}
 	if !slugRE.MatchString(id) {
 		return fmt.Errorf("id %q: must match %s", id, slugRE)
+	}
+	return nil
+}
+
+func validateTextBytes(kind, id, field, value string, limit int) error {
+	if len(value) > limit {
+		return fmt.Errorf("%s %q: %s is %d bytes; maximum is %d", kind, id, field, len(value), limit)
+	}
+	return nil
+}
+
+func validateHeaderText(kind, id string, headers map[string]string) error {
+	for name, value := range headers {
+		if err := validateTextBytes(kind, id, "header name", name, MaxHeaderNameBytes); err != nil {
+			return err
+		}
+		if err := validateTextBytes(kind, id, "header value", value, MaxHeaderValueBytes); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -24,6 +48,31 @@ func validSlug(id string) error {
 func (s Source) Validate() error {
 	if err := validSlug(s.ID); err != nil {
 		return fmt.Errorf("source %w", err)
+	}
+	if err := validateTextBytes("source", s.ID, "name", s.Name, MaxEntityNameBytes); err != nil {
+		return err
+	}
+	for _, field := range [...]struct {
+		name, value string
+	}{
+		{"interface", s.Interface},
+		{"port", s.Port},
+		{"url", s.URL},
+		{"file_path", s.FilePath},
+		{"address", s.Address},
+	} {
+		if err := validateTextBytes("source", s.ID, field.name, field.value, MaxEndpointTextBytes); err != nil {
+			return err
+		}
+	}
+	if err := validateTextBytes("source", s.ID, "topic", s.Topic, MaxTopicBytes); err != nil {
+		return err
+	}
+	if len(s.Headers) > MaxEndpointHeaders {
+		return fmt.Errorf("source %q: headers must not exceed %d entries", s.ID, MaxEndpointHeaders)
+	}
+	if err := validateHeaderText("source", s.ID, s.Headers); err != nil {
+		return err
 	}
 	switch s.Type {
 	case SourceSocketCAN:
@@ -67,6 +116,32 @@ func (s Source) Validate() error {
 func (s Sink) Validate() error {
 	if err := validSlug(s.ID); err != nil {
 		return fmt.Errorf("sink %w", err)
+	}
+	if err := validateTextBytes("sink", s.ID, "name", s.Name, MaxEntityNameBytes); err != nil {
+		return err
+	}
+	for _, field := range [...]struct {
+		name, value string
+	}{
+		{"interface", s.Interface},
+		{"port", s.Port},
+		{"path", s.Path},
+		{"address", s.Address},
+		{"url", s.URL},
+		{"file_path", s.FilePath},
+	} {
+		if err := validateTextBytes("sink", s.ID, field.name, field.value, MaxEndpointTextBytes); err != nil {
+			return err
+		}
+	}
+	if err := validateTextBytes("sink", s.ID, "topic", s.Topic, MaxTopicBytes); err != nil {
+		return err
+	}
+	if len(s.Headers) > MaxEndpointHeaders {
+		return fmt.Errorf("sink %q: headers must not exceed %d entries", s.ID, MaxEndpointHeaders)
+	}
+	if err := validateHeaderText("sink", s.ID, s.Headers); err != nil {
+		return err
 	}
 	switch s.Type {
 	case SinkSocketCAN:
@@ -145,6 +220,9 @@ func (s Sink) Validate() error {
 		if s.MaxFiles < 0 {
 			return fmt.Errorf("sink %q: max_files must not be negative", s.ID)
 		}
+		if s.MaxFiles > MaxFileCount {
+			return fmt.Errorf("sink %q: max_files must not exceed %d", s.ID, MaxFileCount)
+		}
 	case SinkMQTT:
 		if err := validateMQTTBrokerURL(s.URL); err != nil {
 			return fmt.Errorf("sink %q: invalid mqtt broker url %q: %w", s.ID, s.URL, err)
@@ -166,8 +244,8 @@ func (s Sink) Validate() error {
 		if s.BatchSize < 0 || s.BatchSize > MaxPostgresBatchSize {
 			return fmt.Errorf("sink %q: batch_size must be between 1 and %d, or 0 for the default", s.ID, MaxPostgresBatchSize)
 		}
-		if s.WriteTimeout < 0 {
-			return fmt.Errorf("sink %q: write_timeout must not be negative", s.ID)
+		if s.WriteTimeout < 0 || s.WriteTimeout > MaxPostgresWriteTimeout {
+			return fmt.Errorf("sink %q: write_timeout must be between 0 and %s", s.ID, time.Duration(MaxPostgresWriteTimeout))
 		}
 	case SinkNull:
 		// Null sinks have no type-specific configuration.
@@ -230,11 +308,37 @@ func (c Connector) Validate() error {
 	if err := validSlug(c.ID); err != nil {
 		return fmt.Errorf("connector %w", err)
 	}
+	if err := validateTextBytes("connector", c.ID, "name", c.Name, MaxEntityNameBytes); err != nil {
+		return err
+	}
 	if c.SourceID == "" || c.SinkID == "" {
 		return fmt.Errorf("connector %q: source_id and sink_id are required", c.ID)
 	}
+	if err := validateTextBytes("connector", c.ID, "source_id", c.SourceID, MaxEntityIDBytes); err != nil {
+		return err
+	}
+	if err := validateTextBytes("connector", c.ID, "sink_id", c.SinkID, MaxEntityIDBytes); err != nil {
+		return err
+	}
+	if len(c.Filters) > MaxConnectorFilters {
+		return fmt.Errorf("connector %q: filters must not exceed %d expressions", c.ID, MaxConnectorFilters)
+	}
+	for _, expression := range c.Filters {
+		if len(expression) > MaxFilterExpressionLen {
+			return fmt.Errorf("connector %q: filter expressions must not exceed %d bytes", c.ID, MaxFilterExpressionLen)
+		}
+	}
 	if c.Buffer.MaxMessages < 0 || c.Buffer.MaxAge < 0 || c.Buffer.MaxBytes < 0 {
 		return fmt.Errorf("connector %q: buffer limits must not be negative", c.ID)
+	}
+	if c.Buffer.MaxMessages > MaxBufferMessages {
+		return fmt.Errorf("connector %q: max_messages exceeds %d", c.ID, MaxBufferMessages)
+	}
+	if c.Buffer.MaxBytes > MaxBufferBytes {
+		return fmt.Errorf("connector %q: max_bytes exceeds %d", c.ID, MaxBufferBytes)
+	}
+	if c.Buffer.MaxAge > MaxBufferAge {
+		return fmt.Errorf("connector %q: max_age exceeds %s", c.ID, time.Duration(MaxBufferAge))
 	}
 	switch c.EffectiveMode() {
 	case BridgeSemantic, BridgeTransparent, BridgeObserve:
@@ -247,9 +351,95 @@ func (c Connector) Validate() error {
 	return nil
 }
 
+// authoredConfigTextBytes counts operator-authored string content without
+// serializing the config or building a temporary aggregate. JSON field names,
+// punctuation, booleans, and numbers are fixed/small overhead and are not part
+// of this budget. The boolean is false as soon as limit is exceeded.
+func authoredConfigTextBytes(c *Config, limit int) (int, bool) {
+	if limit < 0 {
+		return 0, false
+	}
+	remaining := limit
+	consume := func(value string) bool {
+		if len(value) > remaining {
+			return false
+		}
+		remaining -= len(value)
+		return true
+	}
+
+	for i := range c.Sources {
+		s := &c.Sources[i]
+		for _, value := range [...]string{
+			s.ID, s.Name, string(s.Type), s.Interface, s.Port, s.URL,
+			s.Topic, s.FilePath, s.Address, s.Format,
+		} {
+			if !consume(value) {
+				return 0, false
+			}
+		}
+		for name, value := range s.Headers {
+			if !consume(name) || !consume(value) {
+				return 0, false
+			}
+		}
+	}
+	for i := range c.Sinks {
+		s := &c.Sinks[i]
+		for _, value := range [...]string{
+			s.ID, s.Name, string(s.Type), s.Interface, s.Port, s.Path,
+			s.Address, s.URL, s.Topic, s.FilePath, s.Format, s.Table,
+		} {
+			if !consume(value) {
+				return 0, false
+			}
+		}
+		for name, value := range s.Headers {
+			if !consume(name) || !consume(value) {
+				return 0, false
+			}
+		}
+	}
+	for i := range c.Connectors {
+		connector := &c.Connectors[i]
+		for _, value := range [...]string{
+			connector.ID, connector.Name, connector.SourceID, connector.SinkID, string(connector.Mode),
+		} {
+			if !consume(value) {
+				return 0, false
+			}
+		}
+		for _, expression := range connector.Filters {
+			if !consume(expression) {
+				return 0, false
+			}
+		}
+	}
+	return limit - remaining, true
+}
+
 // Validate checks structural rules across the whole config: per-entity
 // rules, ID uniqueness, reference integrity, and sink path collisions.
 func (c *Config) Validate() error {
+	if len(c.Sources) > MaxSources {
+		return fmt.Errorf("configuration must not exceed %d sources", MaxSources)
+	}
+	if len(c.Sinks) > MaxSinks {
+		return fmt.Errorf("configuration must not exceed %d sinks", MaxSinks)
+	}
+	if len(c.Connectors) > MaxConnectors {
+		return fmt.Errorf("configuration must not exceed %d connectors", MaxConnectors)
+	}
+	resources := c.EffectiveResources()
+	if resources.MaxDatabaseBytes < MinDatabaseBytes || resources.MaxDatabaseBytes > MaxDatabaseBytes {
+		return fmt.Errorf("settings.resources.max_database_bytes must be between %d and %d", MinDatabaseBytes, MaxDatabaseBytes)
+	}
+	if resources.DatabaseReserveBytes < 0 || resources.DatabaseReserveBytes >= resources.MaxDatabaseBytes {
+		return fmt.Errorf("settings.resources.database_reserve_bytes must be non-negative and less than max_database_bytes")
+	}
+	if resources.MaxFileStoreBytes < 0 || resources.MaxFileStoreBytes > MaxDatabaseBytes {
+		return fmt.Errorf("settings.resources.max_file_store_bytes must be between 0 and %d", MaxDatabaseBytes)
+	}
 	ids := map[string]bool{}
 	srcIDs := map[string]bool{}
 	for _, s := range c.Sources {
@@ -265,6 +455,7 @@ func (c *Config) Validate() error {
 	sinkIDs := map[string]bool{}
 	sinksByID := map[string]Sink{}
 	paths := map[string]string{}
+	filePaths := map[string]string{}
 	for _, s := range c.Sinks {
 		if err := s.Validate(); err != nil {
 			return err
@@ -281,7 +472,18 @@ func (c *Config) Validate() error {
 			}
 			paths[s.Path] = s.ID
 		}
+		if s.Type == SinkFile {
+			cleaned := filepath.Clean(s.FilePath)
+			for otherPath, otherID := range filePaths {
+				if fileRotationNamespacesOverlap(cleaned, otherPath) {
+					return fmt.Errorf("file sinks %q and %q have overlapping rotation paths %q and %q",
+						otherID, s.ID, otherPath, cleaned)
+				}
+			}
+			filePaths[cleaned] = s.ID
+		}
 	}
+	var routeBytes int64
 	for _, cn := range c.Connectors {
 		if err := cn.Validate(); err != nil {
 			return err
@@ -290,6 +492,11 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("duplicate connector id %q", cn.ID)
 		}
 		ids["con:"+cn.ID] = true
+		limit := cn.Buffer.ApplyDefaults().MaxBytes
+		if routeBytes > math.MaxInt64-limit {
+			return fmt.Errorf("connector route byte budgets overflow int64")
+		}
+		routeBytes += limit
 		if !srcIDs[cn.SourceID] {
 			return fmt.Errorf("connector %q: unknown source %q", cn.ID, cn.SourceID)
 		}
@@ -308,5 +515,69 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	if _, ok := authoredConfigTextBytes(c, MaxAuthoredConfigTextBytes); !ok {
+		return fmt.Errorf("configuration authored text must not exceed %d bytes", MaxAuthoredConfigTextBytes)
+	}
+	queueBudget := resources.MaxDatabaseBytes - resources.DatabaseReserveBytes
+	if routeBytes > queueBudget {
+		return fmt.Errorf("connector route max_bytes total %d exceeds database queue budget %d", routeBytes, queueBudget)
+	}
+	var fileBytes int64
+	for _, sink := range c.Sinks {
+		if sink.Type != SinkFile {
+			continue
+		}
+		perFile := sink.MaxFileBytes
+		if perFile == 0 {
+			perFile = DefaultMaxFileBytes
+		}
+		files := sink.MaxFiles
+		if files == 0 {
+			files = DefaultMaxFiles
+		}
+		if files > 0 && perFile > math.MaxInt64/int64(files) {
+			return fmt.Errorf("file sink %q storage budget overflows int64", sink.ID)
+		}
+		allocation := perFile * int64(files)
+		if fileBytes > math.MaxInt64-allocation {
+			return fmt.Errorf("file sink storage budgets overflow int64")
+		}
+		fileBytes += allocation
+		if fileBytes > resources.MaxFileStoreBytes {
+			return fmt.Errorf("file sink storage total %d exceeds appliance file budget %d", fileBytes, resources.MaxFileStoreBytes)
+		}
+	}
 	return nil
+}
+
+// fileRotationNamespacesOverlap reports whether either active path is a
+// numeric rotation owned by the other. A sink at /data/log owns /data/log.1,
+// /data/log.2, ... during rotation and startup cleanup, so another sink may
+// not use one of those suffixes as its active file.
+func fileRotationNamespacesOverlap(a, b string) bool {
+	return a == b || isNumericRotationPath(a, b) || isNumericRotationPath(b, a)
+}
+
+func isNumericRotationPath(base, candidate string) bool {
+	prefix := base + "."
+	if !strings.HasPrefix(candidate, prefix) {
+		return false
+	}
+	suffix := strings.TrimPrefix(candidate, prefix)
+	if suffix == "" {
+		return false
+	}
+	for _, digit := range suffix {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	// Zero is not a rotation index; leading zeroes still name the same numeric
+	// namespace cleanup recognizes through strconv.Atoi.
+	for _, digit := range suffix {
+		if digit != '0' {
+			return true
+		}
+	}
+	return false
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
@@ -20,6 +21,36 @@ import (
 	"github.com/open-ships/beacon/internal/stats"
 	"github.com/open-ships/beacon/internal/store"
 )
+
+func useFastConvergence(t *testing.T) {
+	t.Helper()
+	oldInterval := convergenceInterval
+	oldRetryMin := convergenceRetryMin
+	oldRetryMax := convergenceRetryMax
+	oldAttemptTimeout := convergenceAttemptTimeout
+	convergenceInterval = 20 * time.Millisecond
+	convergenceRetryMin = 5 * time.Millisecond
+	convergenceRetryMax = 20 * time.Millisecond
+	convergenceAttemptTimeout = 250 * time.Millisecond
+	t.Cleanup(func() {
+		convergenceInterval = oldInterval
+		convergenceRetryMin = oldRetryMin
+		convergenceRetryMax = oldRetryMax
+		convergenceAttemptTimeout = oldAttemptTimeout
+	})
+}
+
+func waitForStatus(t *testing.T, sup *Supervisor, kind, id, state string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if status := find(sup.Statuses(), kind, id); status != nil && status.State == state {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("%s/%s did not reach %q; statuses: %+v", kind, id, state, sup.Statuses())
+}
 
 func setup(t *testing.T) (*store.Store, *Supervisor, *sink.DataServer) {
 	t.Helper()
@@ -88,6 +119,114 @@ func TestReconcileStartsAndStops(t *testing.T) {
 	}
 }
 
+func TestConvergenceObservesPersistedDesiredStateWithoutAnotherWrite(t *testing.T) {
+	useFastConvergence(t)
+	st, sup, _ := setup(t)
+	if err := st.ReplaceConfig(context.Background(), model.Config{Sinks: []model.Sink{{
+		ID: "eventual", Name: "Eventual", Type: model.SinkNull, Enabled: true,
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Deliberately do not call Reconcile. The supervisor's lifecycle-owned
+	// convergence loop must observe the durable desired state on its own.
+	waitForStatus(t, sup, "sink", "eventual", "up")
+}
+
+func TestConvergenceRetriesTransientConstructorFailure(t *testing.T) {
+	useFastConvergence(t)
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := occupied.Addr().String()
+	t.Cleanup(func() { _ = occupied.Close() })
+
+	st, sup, _ := setup(t)
+	if err := st.ReplaceConfig(context.Background(), model.Config{Sinks: []model.Sink{{
+		ID: "eventual", Name: "Eventual", Type: model.SinkTCP, Address: address, Enabled: true,
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if status := find(sup.Statuses(), "sink", "eventual"); status == nil || status.State != "error" {
+		t.Fatalf("constructor failure status = %+v, want error", status)
+	}
+
+	if err := occupied.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, sup, "sink", "eventual", "up")
+}
+
+func TestConvergenceDoesNotRestartDegradedRuntime(t *testing.T) {
+	useFastConvergence(t)
+	st, sup, _ := setup(t)
+	if err := st.ReplaceConfig(context.Background(), baseConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	sup.stateMu.Lock()
+	before := sup.sources["up"].rt
+	sup.stateMu.Unlock()
+	waitForStatus(t, sup, "source", "up", "degraded")
+	// Allow several steady-state passes. Readiness is observational; the
+	// network source owns reconnection and must not be churned by the loop.
+	time.Sleep(80 * time.Millisecond)
+	sup.stateMu.Lock()
+	after := sup.sources["up"].rt
+	sup.stateMu.Unlock()
+	if before != after {
+		t.Fatal("degraded runtime was restarted by convergence")
+	}
+}
+
+func TestReconcileAppliesPersistedDatabaseResourceBudget(t *testing.T) {
+	st, sup, _ := setup(t)
+	cfg := model.Config{Settings: &model.Settings{Resources: &model.ResourceConfig{
+		MaxDatabaseBytes: model.MinDatabaseBytes, DatabaseReserveBytes: 1 << 20,
+	}}}
+	if err := st.ReplaceConfig(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := st.StorageStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storage.MaxBytes > model.MinDatabaseBytes || storage.MaxBytes < model.MinDatabaseBytes-storage.PageSize {
+		t.Fatalf("applied max bytes = %d, want page-rounded %d", storage.MaxBytes, model.MinDatabaseBytes)
+	}
+}
+
+func TestReconcileFailureIsVisibleUntilConvergenceRecovers(t *testing.T) {
+	st, sup, _ := setup(t)
+	if err := st.ReplaceConfig(context.Background(), model.Config{}); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := sup.Reconcile(cancelled); err == nil {
+		t.Fatal("Reconcile with cancelled context succeeded")
+	}
+	if status := find(sup.Statuses(), "system", "desired_state"); status == nil || status.State != "error" {
+		t.Fatalf("desired-state failure status = %+v", status)
+	}
+	if err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if status := find(sup.Statuses(), "system", "desired_state"); status != nil {
+		t.Fatalf("desired-state failure remained after recovery: %+v", status)
+	}
+}
+
 func TestReconcileRestartsOnChange(t *testing.T) {
 	st, sup, _ := setup(t)
 	ctx := context.Background()
@@ -145,20 +284,101 @@ func TestBrokenComponentIsErrorNotCrash(t *testing.T) {
 }
 
 // A hand-edited DB can hold a connector filter that fails CEL compilation
-// (store.ReplaceConfig does not validate; only the HTTP config API would).
-// Reconcile must record an error status, not crash.
-func TestBadFilterIsErrorNotCrash(t *testing.T) {
+// (store.ReplaceConfig does not validate; only the config service would).
+// Reconcile rejects the entire persisted document before partially starting it.
+func TestInvalidPersistedFilterPreventsPartialStartup(t *testing.T) {
 	st, sup, _ := setup(t)
 	ctx := context.Background()
 	cfg := baseConfig()
 	cfg.Connectors[0].Filters = []string{"not a valid cel expression &&&"}
 	_ = st.ReplaceConfig(ctx, cfg)
+	if err := sup.Reconcile(ctx); err == nil || !strings.Contains(err.Error(), "validate persisted connector") {
+		t.Fatalf("Reconcile error = %v, want persisted filter validation error", err)
+	}
+	statuses := sup.Statuses()
+	for _, component := range []struct{ kind, id string }{{"source", "up"}, {"sink", "out"}, {"connector", "link"}} {
+		if status := find(statuses, component.kind, component.id); status != nil {
+			t.Fatalf("invalid persisted config partially started %s/%s: %+v", component.kind, component.id, statuses)
+		}
+	}
+	if status := find(statuses, "system", "desired_state"); status == nil || status.State != "error" {
+		t.Fatalf("desired-state validation status = %+v", status)
+	}
+}
+
+func TestInvalidPersistedReferencesPreventPartialStartup(t *testing.T) {
+	st, sup, _ := setup(t)
+	ctx := context.Background()
+	cfg := model.Config{
+		Sinks: []model.Sink{{ID: "out", Name: "Out", Type: model.SinkNull, Enabled: true}},
+		Connectors: []model.Connector{{
+			ID: "broken", Name: "Broken", SourceID: "missing", SinkID: "out", Enabled: true,
+		}},
+	}
+	if err := st.ReplaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := sup.Reconcile(ctx); err == nil || !strings.Contains(err.Error(), "validate persisted config") {
+		t.Fatalf("Reconcile error = %v, want whole-config validation error", err)
+	}
+	if status := find(sup.Statuses(), "sink", "out"); status != nil {
+		t.Fatalf("valid subset started from invalid persisted config: %+v", sup.Statuses())
+	}
+}
+
+func TestPrometheusSourceDetailsFailClosedOnResourceApplyError(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "resource-gate.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	met, _, err := metrics.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sup := New(st, nil, nil, slog.Default(), met, nil)
+	t.Cleanup(sup.Stop)
+	ctx := context.Background()
+
+	cfg := model.Config{Settings: &model.Settings{Observability: &model.ObservabilityConfig{
+		PrometheusSourceDetails: true,
+	}}}
+	if err := st.ReplaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
 	if err := sup.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
-	s := find(sup.Statuses(), "connector", "link")
-	if s == nil || s.State != "error" {
-		t.Fatalf("connector with bad filter status: %+v", s)
+	if !met.PrometheusSourceDetailsEnabled() {
+		t.Fatal("successful reconcile did not enable rich Prometheus source details")
+	}
+
+	// Grow beyond the minimum valid appliance ceiling without allocating a
+	// correspondingly large Go buffer. The next desired resource policy is
+	// structurally valid but cannot be applied to this high-water database.
+	if _, err := st.DB().ExecContext(ctx, `
+		CREATE TABLE resource_pressure (data BLOB);
+		INSERT INTO resource_pressure(data) VALUES (zeroblob(?));`, model.MinDatabaseBytes+(1<<20)); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := st.StorageStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storage.PhysicalBytes <= model.MinDatabaseBytes {
+		t.Fatalf("test database is only %d bytes; want above %d", storage.PhysicalBytes, model.MinDatabaseBytes)
+	}
+	cfg.Settings.Resources = &model.ResourceConfig{
+		MaxDatabaseBytes: model.MinDatabaseBytes, DatabaseReserveBytes: 1 << 20,
+	}
+	if err := st.ReplaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := sup.Reconcile(ctx); err == nil || !strings.Contains(err.Error(), "configure resource budgets") {
+		t.Fatalf("Reconcile error = %v, want resource-apply error", err)
+	}
+	if met.PrometheusSourceDetailsEnabled() {
+		t.Fatal("resource-apply failure left rich Prometheus source details enabled")
 	}
 }
 
@@ -209,7 +429,7 @@ func TestDeletedConnectorQueueIsPurged(t *testing.T) {
 
 	// Seed the connector's queue directly, then delete the connector.
 	q := queue.NewSQLite(st, "link", model.BufferLimits{MaxMessages: 10})
-	_ = q.Append(ctx, []*msg.Envelope{{PGN: 1, Timestamp: time.Now(), Payload: json.RawMessage(`{}`)}})
+	_, _ = q.Append(ctx, []*msg.Envelope{{PGN: 1, Timestamp: time.Now(), Payload: json.RawMessage(`{}`)}})
 
 	cfg := baseConfig()
 	cfg.Connectors = nil
@@ -249,7 +469,7 @@ func TestDeletedConnectorStatsAreRemoved(t *testing.T) {
 	// a checkpoint) — seed one directly, as TestDeletedConnectorQueueIsPurged
 	// does, so "link" is "known" to the sweep.
 	q := queue.NewSQLite(st, "link", model.BufferLimits{MaxMessages: 10})
-	_ = q.Append(ctx, []*msg.Envelope{{PGN: 1, Timestamp: time.Now(), Payload: json.RawMessage(`{}`)}})
+	_, _ = q.Append(ctx, []*msg.Envelope{{PGN: 1, Timestamp: time.Now(), Payload: json.RawMessage(`{}`)}})
 
 	reg.Record("link", 1, 10)
 	if _, ok := reg.Snapshot("link"); !ok {
@@ -386,7 +606,7 @@ func TestDisabledConnectorQueueSurvives(t *testing.T) {
 	_ = st.ReplaceConfig(ctx, baseConfig())
 	_ = sup.Reconcile(ctx)
 	q := queue.NewSQLite(st, "link", model.BufferLimits{MaxMessages: 10})
-	_ = q.Append(ctx, []*msg.Envelope{{PGN: 1, Timestamp: time.Now(), Payload: json.RawMessage(`{}`)}})
+	_, _ = q.Append(ctx, []*msg.Envelope{{PGN: 1, Timestamp: time.Now(), Payload: json.RawMessage(`{}`)}})
 
 	cfg := baseConfig()
 	cfg.Connectors[0].Enabled = false
@@ -439,6 +659,49 @@ func TestStatusesDoesNotBlockDuringReconcile(t *testing.T) {
 	<-done
 }
 
+type blockingStateSink struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingStateSink) ID() string { return "slow" }
+func (s *blockingStateSink) Stop()      {}
+func (s *blockingStateSink) State() (string, error) {
+	close(s.entered)
+	<-s.release
+	return "up", nil
+}
+
+func TestStatusesReleasesStateLockBeforePollingRuntime(t *testing.T) {
+	runtime := &blockingStateSink{entered: make(chan struct{}), release: make(chan struct{})}
+	sup := &Supervisor{sinks: map[string]*runningSink{
+		"slow": {rt: runtime},
+	}}
+
+	statusesDone := make(chan struct{})
+	go func() {
+		_ = sup.Statuses()
+		close(statusesDone)
+	}()
+	<-runtime.entered
+
+	lockAcquired := make(chan struct{})
+	go func() {
+		sup.stateMu.Lock()
+		close(lockAcquired)
+		sup.stateMu.Unlock()
+	}()
+	select {
+	case <-lockAcquired:
+	case <-time.After(100 * time.Millisecond):
+		close(runtime.release)
+		<-statusesDone
+		t.Fatal("Statuses held stateMu while a runtime State call was blocked")
+	}
+	close(runtime.release)
+	<-statusesDone
+}
+
 func TestRecoveredComponentStateNotSticky(t *testing.T) {
 	// A component that fails to start records error status; after the config
 	// is fixed and reconciled, Statuses must no longer report the error.
@@ -472,7 +735,7 @@ func TestPurgeSweepGating(t *testing.T) {
 
 	// Seed storage for a connector id that was never configured.
 	ghost := queue.NewSQLite(st, "ghost", model.BufferLimits{MaxMessages: 10})
-	_ = ghost.Append(ctx, []*msg.Envelope{{PGN: 1, Timestamp: time.Now(), Payload: json.RawMessage(`{}`)}})
+	_, _ = ghost.Append(ctx, []*msg.Envelope{{PGN: 1, Timestamp: time.Now(), Payload: json.RawMessage(`{}`)}})
 
 	// Same config, no shrink: the sweep must not run again.
 	_ = sup.Reconcile(ctx)
@@ -503,7 +766,7 @@ func TestFirstReconcileSweepsOrphanedStorage(t *testing.T) {
 	st, sup, _ := setup(t)
 	ctx := context.Background()
 	ghost := queue.NewSQLite(st, "ghost", model.BufferLimits{MaxMessages: 10})
-	_ = ghost.Append(ctx, []*msg.Envelope{{PGN: 1, Timestamp: time.Now(), Payload: json.RawMessage(`{}`)}})
+	_, _ = ghost.Append(ctx, []*msg.Envelope{{PGN: 1, Timestamp: time.Now(), Payload: json.RawMessage(`{}`)}})
 
 	_ = st.ReplaceConfig(ctx, baseConfig())
 	_ = sup.Reconcile(ctx)

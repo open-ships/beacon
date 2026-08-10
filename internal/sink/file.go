@@ -3,12 +3,12 @@ package sink
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -17,6 +17,12 @@ import (
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/msg"
 	"github.com/open-ships/beacon/internal/n2kwire"
+	"github.com/open-ships/beacon/internal/queue"
+)
+
+const (
+	fileBatchSize        = 64
+	fileWriteBufferBytes = 32 << 10
 )
 
 // canFrame is one 8-byte CAN data frame with its 29-bit extended ID, the
@@ -44,11 +50,16 @@ type fileSink struct {
 	f        *os.File
 	bw       *bufio.Writer
 	size     int64
-	lastErr  error
 	fragment *n2kwire.Fragmenter
+
+	statusMu sync.RWMutex
+	lastErr  error
 }
 
 func newFileSink(cfg model.Sink, log *slog.Logger) (Runtime, error) {
+	if log == nil {
+		log = slog.Default()
+	}
 	switch cfg.Format {
 	case model.FileFormatNDJSON, model.FileFormatCANDump:
 	default:
@@ -80,24 +91,36 @@ func newFileSink(cfg model.Sink, log *slog.Logger) (Runtime, error) {
 		maxFiles = model.DefaultMaxFiles
 	}
 
-	return &fileSink{
+	s := &fileSink{
 		id: cfg.ID, format: cfg.Format, path: cfg.FilePath,
 		maxFileBytes: maxBytes, maxFiles: maxFiles, log: log,
-		f: f, bw: bufio.NewWriter(f), size: info.Size(),
+		f: f, bw: bufio.NewWriterSize(f, fileWriteBufferBytes), size: info.Size(),
 		fragment: n2kwire.NewFragmenter(),
-	}, nil
+	}
+	if err := s.enforceExistingBudget(); err != nil {
+		_ = s.f.Close()
+		return nil, fmt.Errorf("sink %q: enforce existing file budget: %w", cfg.ID, err)
+	}
+	return s, nil
 }
 
 func (s *fileSink) ID() string                   { return s.id }
+func (s *fileSink) BatchSize() int               { return fileBatchSize }
 func (s *fileSink) DeliveryClass() DeliveryClass { return DeliveryConfirmed }
 
 func (s *fileSink) State() (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.statusMu.RLock()
+	defer s.statusMu.RUnlock()
 	if s.lastErr != nil {
 		return "error", s.lastErr
 	}
 	return "up", nil
+}
+
+func (s *fileSink) setLastError(err error) {
+	s.statusMu.Lock()
+	s.lastErr = err
+	s.statusMu.Unlock()
 }
 
 func (s *fileSink) Stop() {
@@ -120,6 +143,42 @@ func (s *fileSink) Stop() {
 func (s *fileSink) Push(_ context.Context, e *msg.Envelope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.writeEnvelope(e); err != nil {
+		return s.prepareRetry(err)
+	}
+	if err := s.flush(); err != nil {
+		return s.prepareRetry(err)
+	}
+	return nil
+}
+
+// PushBatchSelective writes an ordered connector chunk under one lock and
+// performs one steady-state Flush. Rotation and errors may flush earlier;
+// after any transient error the connector retries the whole chunk, which is
+// the file sink's documented at-least-once behavior.
+func (s *fileSink) PushBatchSelective(ctx context.Context, entries []queue.Entry) (BatchPushReport, error) {
+	report := BatchPushReport{Skipped: make([]bool, len(entries))}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
+		if err := s.writeEnvelope(entry.Env); err != nil {
+			if errors.Is(err, ErrSkip) {
+				report.Skipped[i] = true
+				continue
+			}
+			return report, s.prepareRetry(err)
+		}
+	}
+	if err := s.flush(); err != nil {
+		return report, s.prepareRetry(err)
+	}
+	return report, nil
+}
+
+func (s *fileSink) writeEnvelope(e *msg.Envelope) error {
 
 	var (
 		line []byte
@@ -138,6 +197,19 @@ func (s *fileSink) Push(_ context.Context, e *msg.Envelope) error {
 	if err != nil {
 		return err
 	}
+	if int64(len(line)) > s.maxFileBytes {
+		return fmt.Errorf("encoded file record is %d bytes, above max_file_bytes %d: %w",
+			len(line), s.maxFileBytes, ErrSkip)
+	}
+	// Rotate before a record that would cross the configured threshold. This
+	// makes max_file_bytes a physical ceiling rather than a threshold that
+	// can be exceeded by one record.
+	if s.size > 0 && s.size+int64(len(line)) > s.maxFileBytes {
+		if err := s.rotate(); err != nil {
+			s.setLastError(err)
+			return err
+		}
+	}
 
 	// The whole encoded message — for candump, ALL frames of a multi-frame
 	// fast-packet message — goes through one Write+Flush under mu, so a
@@ -151,23 +223,56 @@ func (s *fileSink) Push(_ context.Context, e *msg.Envelope) error {
 	// per-line), so replay/ingest tools skip it, and duplicates are the
 	// documented at-least-once delivery semantics.
 	n, werr := s.bw.Write(line)
-	if werr == nil {
-		werr = s.bw.Flush()
-	}
 	if werr != nil {
-		s.lastErr = werr
+		s.setLastError(werr)
 		return werr
 	}
-	s.lastErr = nil
+	s.setLastError(nil)
 	s.size += int64(n)
 
-	if s.size > s.maxFileBytes {
-		if rerr := s.rotate(); rerr != nil {
-			s.lastErr = rerr
-			return rerr
-		}
-	}
 	return nil
+}
+
+func (s *fileSink) flush() error {
+	if err := s.bw.Flush(); err != nil {
+		s.setLastError(err)
+		return err
+	}
+	s.setLastError(nil)
+	return nil
+}
+
+// prepareRetry clears bufio.Writer's sticky error and discards any unwritten
+// tail before the connector retries the whole batch. A flush may already have
+// written a prefix, so duplicates or one torn trailing record remain possible
+// (the file delivery contract is at-least-once), but a transient ENOSPC or
+// descriptor error can recover without a process restart.
+func (s *fileSink) prepareRetry(cause error) error {
+	if errors.Is(cause, ErrSkip) {
+		return cause
+	}
+	next, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		joined := errors.Join(cause, fmt.Errorf("reopen file sink for retry: %w", err))
+		s.setLastError(joined)
+		return joined
+	}
+	info, statErr := next.Stat()
+	if statErr != nil {
+		_ = next.Close()
+		joined := errors.Join(cause, fmt.Errorf("stat file sink for retry: %w", statErr))
+		s.setLastError(joined)
+		return joined
+	}
+	previous := s.f
+	s.f = next
+	s.bw.Reset(next) // discards the failed writer's buffered remainder and error
+	s.size = info.Size()
+	if previous != nil && previous != next {
+		_ = previous.Close()
+	}
+	s.setLastError(cause)
+	return cause
 }
 
 // encodeNDJSON marshals the envelope as-is (it already carries Seq/
@@ -176,11 +281,14 @@ func (s *fileSink) Push(_ context.Context, e *msg.Envelope) error {
 // bytes that can never be encoded as valid JSON — not a transient condition
 // — so it is skipped rather than retried.
 func encodeNDJSON(e *msg.Envelope) ([]byte, error) {
-	b, err := json.Marshal(e)
+	b, err := e.WireBytes()
 	if err != nil {
 		return nil, ErrSkip
 	}
-	return append(b, '\n'), nil
+	line := make([]byte, len(b)+1)
+	copy(line, b)
+	line[len(b)] = '\n'
+	return line, nil
 }
 
 // encodeCANDump renders e as one candump -L line per CAN frame:
@@ -288,10 +396,56 @@ func (s *fileSink) rotate() error {
 		return rotErr
 	}
 	s.f = f
-	s.bw = bufio.NewWriter(f)
+	s.bw = bufio.NewWriterSize(f, fileWriteBufferBytes)
 	s.size = 0
 	// Fresh file, fresh streams: any in-flight fast-packet sequence numbers
 	// from before rotation are meaningless in the new file.
 	s.fragment = n2kwire.NewFragmenter()
 	return rotErr
+}
+
+// enforceExistingBudget handles a configuration reduction without leaving
+// old rotations outside the new hard physical ceiling. Line-oriented records
+// cannot be split safely: an oversized active file is rotated out, and any
+// oversized or now-out-of-range backup is removed with an operator-visible
+// warning. Normal writes can no longer create these files because
+// writeEnvelope rotates before crossing and skips a single oversized record.
+func (s *fileSink) enforceExistingBudget() error {
+	if s.size > s.maxFileBytes {
+		s.log.Warn("active file exceeds configured budget; rotating it out",
+			"sink", s.id, "path", s.path, "bytes", s.size, "limit", s.maxFileBytes)
+		if err := s.rotate(); err != nil {
+			return err
+		}
+	}
+	dir := filepath.Dir(s.path)
+	base := filepath.Base(s.path)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, base+".") {
+			continue
+		}
+		index, err := strconv.Atoi(strings.TrimPrefix(name, base+"."))
+		if err != nil || index < 1 {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if index < s.maxFiles && info.Size() <= s.maxFileBytes {
+			continue
+		}
+		s.log.Warn("removing rotated file outside configured budget",
+			"sink", s.id, "path", path, "bytes", info.Size(), "index", index)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }

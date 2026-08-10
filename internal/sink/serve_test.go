@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -46,6 +47,18 @@ func (m *memReplay) Read(_ context.Context, after int64, limit int) ([]queue.Ent
 	return out, nil
 }
 
+type blockingReplay struct {
+	started  chan struct{}
+	canceled chan error
+}
+
+func (r *blockingReplay) Read(ctx context.Context, _ int64, _ int) ([]queue.Entry, error) {
+	close(r.started)
+	<-ctx.Done()
+	r.canceled <- ctx.Err()
+	return nil, ctx.Err()
+}
+
 func entry(connector string, seq int64, pgnNumber uint32) queue.Entry {
 	receivedAt := time.Now()
 	payload, _ := json.Marshal(struct {
@@ -84,10 +97,70 @@ func startSSE(t *testing.T) (*DataServer, Runtime) {
 	return ds, rt
 }
 
-func TestDataServerSetsReadHeaderTimeout(t *testing.T) {
+func TestDataServerSetsBoundedHTTPTimeoutsWithoutWriteTimeout(t *testing.T) {
 	ds := NewDataServer("127.0.0.1:0", slog.Default())
-	if ds.srv.ReadHeaderTimeout != 10*time.Second {
-		t.Fatalf("ReadHeaderTimeout = %s, want 10s", ds.srv.ReadHeaderTimeout)
+	if ds.srv.ReadHeaderTimeout != dataReadHeaderTimeout {
+		t.Fatalf("ReadHeaderTimeout = %s, want %s", ds.srv.ReadHeaderTimeout, dataReadHeaderTimeout)
+	}
+	if ds.srv.ReadTimeout != dataReadTimeout || ds.srv.IdleTimeout != dataIdleTimeout {
+		t.Fatalf("read/idle timeouts = %s/%s, want %s/%s",
+			ds.srv.ReadTimeout, ds.srv.IdleTimeout, dataReadTimeout, dataIdleTimeout)
+	}
+	if ds.srv.MaxHeaderBytes != dataMaxHeaderBytes {
+		t.Fatalf("MaxHeaderBytes = %d, want %d", ds.srv.MaxHeaderBytes, dataMaxHeaderBytes)
+	}
+	if ds.srv.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout = %s, want zero for streaming endpoints", ds.srv.WriteTimeout)
+	}
+}
+
+func TestDataServerRecoversUnexpectedListenerFailure(t *testing.T) {
+	oldMin, oldMax := dataRetryMin, dataRetryMax
+	dataRetryMin, dataRetryMax = 100*time.Millisecond, 200*time.Millisecond
+	t.Cleanup(func() { dataRetryMin, dataRetryMax = oldMin, oldMax })
+
+	ds := NewDataServer("127.0.0.1:0", slog.Default())
+	if err := ds.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ds.Stop(context.Background()) })
+	address := ds.Addr()
+	ds.mu.RLock()
+	ln := ds.ln
+	ds.mu.RUnlock()
+	if ln == nil {
+		t.Fatal("data listener is nil")
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Hold the stable address through at least one retry so the failure is
+	// observable rather than racing directly from closed to recovered.
+	blocker, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, time.Second, "failed data server rebind to remain observable", func() bool {
+		state, stateErr := ds.State()
+		return state == "error" && stateErr != nil && strings.Contains(stateErr.Error(), "rebind data endpoints")
+	})
+	if err := blocker.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &http.Client{Timeout: 100 * time.Millisecond}
+	waitFor(t, 2*time.Second, "data listener recovery", func() bool {
+		resp, err := client.Get("http://" + address + "/not-configured")
+		if err != nil {
+			return false
+		}
+		_ = resp.Body.Close()
+		state, stateErr := ds.State()
+		return resp.StatusCode == http.StatusNotFound && state == "up" && stateErr == nil
+	})
+	if got := ds.Addr(); got != address {
+		t.Fatalf("recovered address = %q, want stable %q", got, address)
 	}
 }
 
@@ -204,6 +277,89 @@ func TestSSELiveBroadcast(t *testing.T) {
 	assertNativeMessageInfoPreserved(t, events[0])
 }
 
+func TestServeSinkClientLimit(t *testing.T) {
+	ds, rt := startSSE(t)
+	s := rt.(*serveSink)
+	clients := make([]*client, 0, maxServeClients)
+	defer func() {
+		for _, c := range clients {
+			s.removeClient(c)
+		}
+	}()
+	for range maxServeClients {
+		c, ok := s.addClient(func() {})
+		if !ok {
+			t.Fatalf("client %d rejected before limit %d", len(clients)+1, maxServeClients)
+		}
+		clients = append(clients, c)
+	}
+	if c, ok := s.addClient(func() {}); ok {
+		s.removeClient(c)
+		t.Fatalf("client %d accepted beyond limit %d", maxServeClients+1, maxServeClients)
+	}
+
+	resp, err := http.Get(fmt.Sprintf("http://%s/events", ds.Addr()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("SSE over client limit = %d, want 503", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Retry-After"); got != "5" {
+		t.Fatalf("Retry-After = %q, want 5", got)
+	}
+}
+
+func TestWebSocketClientLimitRejectsBeforeUpgrade(t *testing.T) {
+	ds := NewDataServer("127.0.0.1:0", slog.Default())
+	if err := ds.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ds.Stop(context.Background()) })
+	rt, err := New(context.Background(), model.Sink{
+		ID: "ws-limit", Type: model.SinkHTTPWS, Enabled: true, Path: "/ws-limit",
+	}, nil, ds, slog.Default(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(rt.Stop)
+	s := rt.(*serveSink)
+	clients := make([]*client, 0, maxServeClients)
+	defer func() {
+		for _, c := range clients {
+			s.removeClient(c)
+		}
+	}()
+	for range maxServeClients {
+		c, ok := s.addClient(func() {})
+		if !ok {
+			t.Fatalf("client %d rejected before limit %d", len(clients)+1, maxServeClients)
+		}
+		clients = append(clients, c)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s/ws-limit", ds.Addr()), nil)
+	if conn != nil {
+		_ = conn.CloseNow()
+	}
+	if err == nil {
+		t.Fatal("WebSocket client beyond the limit was upgraded")
+	}
+	if resp == nil {
+		t.Fatalf("WebSocket rejection did not return an HTTP response: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("WebSocket over client limit = %d, want 503", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Retry-After"); got != "5" {
+		t.Fatalf("Retry-After = %q, want 5", got)
+	}
+}
+
 func TestSSEReplayWithLastEventID(t *testing.T) {
 	ds, rt := startSSE(t)
 	replay := &memReplay{entries: []queue.Entry{
@@ -220,6 +376,45 @@ func TestSSEReplayWithLastEventID(t *testing.T) {
 	events := readSSEEvents(t, resp, 2, 3*time.Second)
 	if consumerEnvelopePGN(t, events[0]) != 128259 || consumerEnvelopePGN(t, events[1]) != 129026 {
 		t.Fatalf("replay wrong: %v", events)
+	}
+}
+
+func TestServeSinkStopCancelsBlockedReplayAndWaitsForHandler(t *testing.T) {
+	ds, rt := startSSE(t)
+	replay := &blockingReplay{started: make(chan struct{}), canceled: make(chan error, 1)}
+	rt.(ConnectorRegistrar).RegisterConnector("nav", replay)
+
+	resp, err := http.Get(fmt.Sprintf("http://%s/events?after=nav:0", ds.Addr()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	select {
+	case <-replay.started:
+	case <-time.After(time.Second):
+		t.Fatal("SSE handler did not enter blocked replay")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		rt.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("serve sink Stop did not cancel and join blocked replay handler")
+	}
+	select {
+	case err := <-replay.canceled:
+		if err != context.Canceled {
+			t.Fatalf("replay context error = %v, want context.Canceled", err)
+		}
+	default:
+		t.Fatal("serve sink Stop returned before replay observed cancellation")
+	}
+	if got := rt.(*serveSink).clientCount(); got != 0 {
+		t.Fatalf("client count after Stop = %d, want 0", got)
 	}
 }
 

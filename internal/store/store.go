@@ -6,14 +6,41 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
+	"os"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/open-ships/beacon/internal/model"
 )
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db   *sql.DB
+	path string
+}
+
+const (
+	maxWALBytes int64 = 16 << 20
+
+	// Migrations run before the persisted appliance budget is reconciled. Give
+	// a legacy database bounded room to add schema/index pages even when its
+	// previous max_page_count was pinned at the current high-water mark. This is
+	// capacity only; SQLite does not preallocate it.
+	migrationHeadroomBytes int64 = model.DefaultDatabaseReserve
+)
+
+type StorageStats struct {
+	PageSize       int64 `json:"page_size"`
+	PageCount      int64 `json:"page_count"`
+	FreePages      int64 `json:"free_pages"`
+	MaxPages       int64 `json:"max_pages"`
+	PhysicalBytes  int64 `json:"physical_bytes"`
+	AllocatedBytes int64 `json:"allocated_bytes"`
+	FreeBytes      int64 `json:"free_bytes"`
+	MaxBytes       int64 `json:"max_bytes"`
+}
 
 var migrations = []string{
 	`CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, doc TEXT NOT NULL);
@@ -100,8 +127,12 @@ var migrations = []string{
 	 ) AS ids
 	 LEFT JOIN checkpoints c ON c.connector_id = ids.connector_id
 	 LEFT JOIN queue q ON q.connector_id = ids.connector_id
-	 GROUP BY ids.connector_id
-	 ON CONFLICT(connector_id) DO NOTHING;`,
+		 GROUP BY ids.connector_id
+		 ON CONFLICT(connector_id) DO NOTHING;`,
+	`CREATE TABLE IF NOT EXISTS config_settings (
+		   key TEXT PRIMARY KEY,
+		   doc TEXT NOT NULL
+		 );`,
 }
 
 func Open(path string) (*Store, error) {
@@ -113,10 +144,30 @@ func Open(path string) (*Store, error) {
 	}
 	// modernc.org/sqlite serializes writes; a single conn avoids SQLITE_BUSY.
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db}
+	s := &Store{db: db, path: path}
+	// New databases can reclaim deleted pages incrementally. Existing databases
+	// created with auto_vacuum=NONE require one explicit offline Compact before
+	// incremental maintenance can return pages to the filesystem.
+	if _, err := db.Exec(`PRAGMA auto_vacuum=INCREMENTAL`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("configure sqlite auto_vacuum: %w", err)
+	}
+	// A high-water legacy database may already equal max_page_count. Raise that
+	// ceiling by a bounded amount before migrations; the Supervisor applies the
+	// persisted desired limit only after the upgraded config can be loaded.
+	if err := s.configureMigrationResources(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("configure sqlite migration budget: %w", err)
+	}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	if path != "" && path != ":memory:" {
+		if err := os.Chmod(path, 0o600); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("restrict sqlite permissions: %w", err)
+		}
 	}
 	return s, nil
 }
@@ -141,10 +192,136 @@ func (s *Store) migrate() error {
 func (s *Store) DB() *sql.DB  { return s.db }
 func (s *Store) Close() error { return s.db.Close() }
 
+func (s *Store) configureMigrationResources(ctx context.Context) error {
+	var pageSize, pageCount int64
+	if err := s.db.QueryRowContext(ctx, `PRAGMA page_size`).Scan(&pageSize); err != nil {
+		return fmt.Errorf("read sqlite page size: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `PRAGMA page_count`).Scan(&pageCount); err != nil {
+		return fmt.Errorf("read sqlite page count: %w", err)
+	}
+	budget, err := migrationBudgetBytes(pageSize, pageCount)
+	if err != nil {
+		return err
+	}
+	return s.ConfigureResources(ctx, model.ResourceConfig{MaxDatabaseBytes: budget})
+}
+
+func migrationBudgetBytes(pageSize, pageCount int64) (int64, error) {
+	if pageSize <= 0 {
+		return 0, fmt.Errorf("sqlite reported invalid page size %d", pageSize)
+	}
+	if pageCount < 0 || (pageCount > 0 && pageSize > math.MaxInt64/pageCount) {
+		return 0, fmt.Errorf("sqlite page allocation overflows int64: %d pages of %d bytes", pageCount, pageSize)
+	}
+	physicalBytes := pageSize * pageCount
+	if physicalBytes > math.MaxInt64-migrationHeadroomBytes {
+		return 0, fmt.Errorf("sqlite migration budget overflows int64 at %d bytes", physicalBytes)
+	}
+	return max(model.DefaultMaxDatabaseBytes, physicalBytes+migrationHeadroomBytes), nil
+}
+
+// ConfigureResources applies the hard SQLite main-database page ceiling and a
+// small WAL retention ceiling. SQLite may transiently exceed the WAL target
+// during an active transaction, but the main database cannot grow beyond
+// MaxDatabaseBytes. Lowering the limit below an existing file requires Compact.
+func (s *Store) ConfigureResources(ctx context.Context, resources model.ResourceConfig) error {
+	resources = resources.ApplyDefaults()
+	// Keep the preflight and every PRAGMA on the same pooled connection. The
+	// store has one connection, so no queue/config writer can grow the database
+	// between checking page_count and applying max_page_count.
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+
+	var pageSize int64
+	if err := conn.QueryRowContext(ctx, `PRAGMA page_size`).Scan(&pageSize); err != nil {
+		return err
+	}
+	if pageSize <= 0 {
+		return fmt.Errorf("sqlite reported invalid page size %d", pageSize)
+	}
+	maxPages := resources.MaxDatabaseBytes / pageSize
+	if maxPages < 1 {
+		return fmt.Errorf("database budget %d is smaller than one SQLite page", resources.MaxDatabaseBytes)
+	}
+	var pageCount int64
+	if err := conn.QueryRowContext(ctx, `PRAGMA page_count`).Scan(&pageCount); err != nil {
+		return err
+	}
+	if pageCount > maxPages {
+		return fmt.Errorf("database already occupies %d bytes, above configured maximum %d; compact it offline before lowering the limit", pageCount*pageSize, resources.MaxDatabaseBytes)
+	}
+	var appliedPages int64
+	if err := conn.QueryRowContext(ctx, fmt.Sprintf(`PRAGMA max_page_count=%d`, maxPages)).Scan(&appliedPages); err != nil { // #nosec G201 -- maxPages is an integer derived from validated config.
+		return err
+	}
+	if appliedPages > maxPages {
+		return fmt.Errorf("database already occupies %d bytes, above configured maximum %d; compact it offline before lowering the limit", appliedPages*pageSize, resources.MaxDatabaseBytes)
+	}
+	journalLimit := min(maxWALBytes, resources.MaxDatabaseBytes/16)
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf(`PRAGMA journal_size_limit=%d`, journalLimit)); err != nil { // #nosec G201 -- journalLimit is a bounded integer.
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `PRAGMA wal_autocheckpoint=1000`); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) StorageStats(ctx context.Context) (StorageStats, error) {
+	var out StorageStats
+	for query, dst := range map[string]*int64{
+		`PRAGMA page_size`:      &out.PageSize,
+		`PRAGMA page_count`:     &out.PageCount,
+		`PRAGMA freelist_count`: &out.FreePages,
+		`PRAGMA max_page_count`: &out.MaxPages,
+	} {
+		if err := s.db.QueryRowContext(ctx, query).Scan(dst); err != nil {
+			return out, err
+		}
+	}
+	out.PhysicalBytes = out.PageCount * out.PageSize
+	out.FreeBytes = out.FreePages * out.PageSize
+	out.AllocatedBytes = out.PhysicalBytes - out.FreeBytes
+	out.MaxBytes = out.MaxPages * out.PageSize
+	return out, nil
+}
+
+// Maintain performs bounded online maintenance. It never runs a full VACUUM;
+// that operation can require another database-sized allocation and belongs to
+// the explicit offline Compact command.
+func (s *Store) Maintain(ctx context.Context) error {
+	var busy, logPages, checkpointed int64
+	if err := s.db.QueryRowContext(ctx, `PRAGMA wal_checkpoint(PASSIVE)`).Scan(&busy, &logPages, &checkpointed); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `PRAGMA incremental_vacuum(1024)`); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Compact reclaims the database high-water mark and enables incremental page
+// reclamation for legacy databases. Call only while Beacon is offline and with
+// enough free space for SQLite's VACUUM operation.
+func (s *Store) Compact(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `PRAGMA auto_vacuum=INCREMENTAL`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `VACUUM`); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *Store) IsEmpty(ctx context.Context) (bool, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT (SELECT COUNT(*) FROM sources) + (SELECT COUNT(*) FROM sinks) + (SELECT COUNT(*) FROM connectors)`).Scan(&n)
+		`SELECT (SELECT COUNT(*) FROM sources) + (SELECT COUNT(*) FROM sinks) +
+		        (SELECT COUNT(*) FROM connectors) + (SELECT COUNT(*) FROM config_settings)`).Scan(&n)
 	return n == 0, err
 }
 
@@ -254,6 +431,22 @@ func (s *Store) LoadConfig(ctx context.Context) (model.Config, error) {
 	if cfg.Connectors, err = s.ListConnectors(ctx); err != nil {
 		return cfg, err
 	}
+	var settingsDoc string
+	err = s.db.QueryRowContext(ctx,
+		`SELECT doc FROM config_settings WHERE key = 'global'`).Scan(&settingsDoc)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// Existing databases and configs have no settings row. Absence is the
+		// backward-compatible default, with rich Prometheus details disabled.
+	case err != nil:
+		return cfg, err
+	default:
+		var settings model.Settings
+		if err := json.Unmarshal([]byte(settingsDoc), &settings); err != nil {
+			return cfg, fmt.Errorf("decode global settings: %w", err)
+		}
+		cfg.Settings = &settings
+	}
 	return cfg, nil
 }
 
@@ -311,6 +504,21 @@ func (s *Store) ReplaceConfig(ctx context.Context, cfg model.Config) error {
 	}
 	for _, v := range cfg.Connectors {
 		if err := ins("connectors", v.ID, v); err != nil {
+			return err
+		}
+	}
+	if cfg.Settings == nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM config_settings WHERE key = 'global'`); err != nil {
+			return err
+		}
+	} else {
+		doc, err := json.Marshal(cfg.Settings)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO config_settings (key, doc) VALUES ('global', ?)
+			ON CONFLICT(key) DO UPDATE SET doc = excluded.doc`, string(doc)); err != nil {
 			return err
 		}
 	}

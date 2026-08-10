@@ -21,46 +21,46 @@ func NewSQLite(st *store.Store, connectorID string, limits model.BufferLimits) Q
 	return &sqliteQueue{db: st.DB(), connectorID: connectorID, limits: limits.ApplyDefaults()}
 }
 
-func (q *sqliteQueue) Append(ctx context.Context, envs []*msg.Envelope) error {
+func (q *sqliteQueue) Append(ctx context.Context, envs []*msg.Envelope) (PruneResult, error) {
 	if len(envs) == 0 {
-		return nil
+		return PruneResult{}, nil
 	}
 	tx, err := q.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return PruneResult{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	if err := q.ensureAggregate(ctx, tx, false); err != nil {
-		return err
+		return PruneResult{}, err
 	}
 	var cursor int64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COALESCE((SELECT last_seq FROM checkpoints WHERE connector_id = ?), 0)`,
 		q.connectorID).Scan(&cursor); err != nil {
-		return err
+		return PruneResult{}, err
 	}
 	stmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO queue (connector_id, ts, envelope, bytes) VALUES (?, ?, ?, ?)`)
 	if err != nil {
-		return err
+		return PruneResult{}, err
 	}
 	defer func() { _ = stmt.Close() }()
 	var retainedBytes, pendingCount, pendingBytes, tail int64
 	var oldestRetained, oldestPending int64
 	var oldestRetainedSet, oldestPendingSet bool
 	for _, e := range envs {
-		doc, err := json.Marshal(e)
+		doc, err := e.WireBytes()
 		if err != nil {
-			return err
+			return PruneResult{}, err
 		}
-		ts := e.Timestamp.UnixNano()
+		ts := retentionTime(e).UnixNano()
 		res, err := stmt.ExecContext(ctx, q.connectorID, ts, string(doc), len(doc))
 		if err != nil {
-			return err
+			return PruneResult{}, err
 		}
 		id, err := res.LastInsertId()
 		if err != nil {
-			return err
+			return PruneResult{}, err
 		}
 		tail = id
 		retainedBytes += int64(len(doc))
@@ -99,9 +99,27 @@ func (q *sqliteQueue) Append(ctx context.Context, envs []*msg.Envelope) error {
 		  tail_id = MAX(queue_aggregates.tail_id, excluded.tail_id)`,
 		q.connectorID, pendingCount, pendingBytes, nullableTimestamp(oldestPending, oldestPendingSet),
 		len(envs), retainedBytes, oldestRetained, tail); err != nil {
-		return err
+		return PruneResult{}, err
 	}
-	return tx.Commit()
+	pruned, err := q.pruneTx(ctx, tx)
+	if err != nil {
+		return PruneResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return PruneResult{}, err
+	}
+	return pruned, nil
+}
+
+// retentionTime is Beacon's local admission clock. Wire Timestamp remains
+// canonical inside the Envelope, while retention age measures how long this
+// appliance has held the row. Remote sources reset ObservedAt on ingestion;
+// hand-built/legacy envelopes fall back to the append time.
+func retentionTime(e *msg.Envelope) time.Time {
+	if !e.ObservedAt.IsZero() {
+		return e.ObservedAt.UTC()
+	}
+	return time.Now().UTC()
 }
 
 func (q *sqliteQueue) Read(ctx context.Context, after int64, limit int) ([]Entry, error) {
@@ -198,12 +216,23 @@ func (q *sqliteQueue) Ack(ctx context.Context, upTo int64) error {
 }
 
 func (q *sqliteQueue) Prune(ctx context.Context) (PruneResult, error) {
-	var result PruneResult
 	tx, err := q.db.BeginTx(ctx, nil)
 	if err != nil {
-		return result, err
+		return PruneResult{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	result, err := q.pruneTx(ctx, tx)
+	if err != nil {
+		return PruneResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return PruneResult{}, err
+	}
+	return result, nil
+}
+
+func (q *sqliteQueue) pruneTx(ctx context.Context, tx *sql.Tx) (PruneResult, error) {
+	var result PruneResult
 	if err := q.ensureAggregate(ctx, tx, true); err != nil {
 		return result, err
 	}
@@ -263,7 +292,9 @@ func (q *sqliteQueue) Prune(ctx context.Context) (PruneResult, error) {
 		pendingCount = max(int64(0), pendingCount-removedPending)
 		pendingBytes = max(int64(0), pendingBytes-removedPendingBytes)
 		result.Total += removedCount
+		result.TotalBytes += removedBytes
 		result.Pending += removedPending
+		result.PendingBytes += removedPendingBytes
 		return nil
 	}
 
@@ -349,9 +380,6 @@ func (q *sqliteQueue) Prune(ctx context.Context) (PruneResult, error) {
 			retainedCount, retainedBytes, nullInt64Value(oldestRetained), tail, q.connectorID); err != nil {
 			return result, err
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return PruneResult{}, err
 	}
 	return result, nil
 }

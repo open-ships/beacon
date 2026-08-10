@@ -41,6 +41,21 @@ type wireEnvelope struct {
 // plus the raw CAN bytes exist at the top level. Payload is the verbatim JSON
 // representation of the native n2k struct.
 func (e *Envelope) MarshalJSON() ([]byte, error) {
+	return e.WireBytes()
+}
+
+// WireBytes returns the canonical consumer JSON for the Envelope. An Envelope
+// is immutable after publication, so the encoding is computed once and shared
+// by statistics, every matching connector route, and every downstream Adapter.
+// Callers must treat the returned bytes as read-only.
+func (e *Envelope) WireBytes() ([]byte, error) {
+	e.wireOnce.Do(func() {
+		e.wireCache, e.wireErr = e.marshalWire()
+	})
+	return e.wireCache, e.wireErr
+}
+
+func (e *Envelope) marshalWire() ([]byte, error) {
 	payload, err := e.consumerPayload()
 	if err != nil {
 		return nil, err
@@ -153,6 +168,21 @@ func (e *Envelope) consumerPayload() (json.RawMessage, error) {
 }
 
 func (e *Envelope) buildConsumerPayload() (json.RawMessage, error) {
+	if len(e.Payload) != 0 {
+		// Native n2k payloads already carry info. Probe only that field first so
+		// the steady-state path scans JSON without allocating a RawMessage map
+		// entry for every decoded sensor field.
+		var header struct {
+			Info json.RawMessage `json:"info"`
+		}
+		if err := json.Unmarshal(e.Payload, &header); err != nil {
+			return nil, fmt.Errorf("decode N2K payload: %w", err)
+		}
+		if len(header.Info) > 0 && !bytes.Equal(bytes.TrimSpace(header.Info), []byte("null")) {
+			return e.Payload, nil
+		}
+	}
+
 	var fields map[string]json.RawMessage
 	if len(e.Payload) != 0 {
 		if err := json.Unmarshal(e.Payload, &fields); err != nil {
@@ -162,13 +192,10 @@ func (e *Envelope) buildConsumerPayload() (json.RawMessage, error) {
 	if fields == nil {
 		fields = make(map[string]json.RawMessage)
 	}
-	if info, ok := fields["info"]; !ok || bytes.Equal(bytes.TrimSpace(info), []byte("null")) {
-		rawInfo, err := json.Marshal(e.Info())
-		if err != nil {
-			return nil, fmt.Errorf("encode N2K payload info: %w", err)
-		}
-		fields["info"] = rawInfo
-		return json.Marshal(fields)
+	rawInfo, err := json.Marshal(e.Info())
+	if err != nil {
+		return nil, fmt.Errorf("encode N2K payload info: %w", err)
 	}
-	return e.Payload, nil
+	fields["info"] = rawInfo
+	return json.Marshal(fields)
 }

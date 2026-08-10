@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,7 +20,10 @@ import (
 	"github.com/open-ships/beacon/internal/queue"
 )
 
-const maxHTTPPostErrorBody = 4 << 10
+const (
+	maxHTTPPostErrorBody  = 4 << 10
+	maxHTTPPostBatchBytes = 4 << 20
+)
 
 // httpPostSink sends confirmed JSON-array batches to a remote HTTP(S)
 // endpoint. The connector owns retry and checkpointing; this runtime returns
@@ -74,6 +76,7 @@ func cloneHeaders(headers map[string]string) http.Header {
 
 func (s *httpPostSink) ID() string                   { return s.id }
 func (s *httpPostSink) BatchSize() int               { return s.batchSize }
+func (s *httpPostSink) BatchMaxBytes() int64         { return maxHTTPPostBatchBytes }
 func (s *httpPostSink) DeliveryClass() DeliveryClass { return DeliveryConfirmed }
 
 func (s *httpPostSink) State() (string, error) {
@@ -165,20 +168,33 @@ func (s *httpPostSink) PushBatch(ctx context.Context, entries []queue.Entry) err
 }
 
 func encodeHTTPPostBatch(envelopes []*msg.Envelope, compress bool) ([]byte, int, error) {
-	body, err := json.Marshal(envelopes)
-	if err != nil || !compress {
-		return body, len(body), err
+	var body bytes.Buffer
+	body.WriteByte('[')
+	for i, envelope := range envelopes {
+		document, err := envelope.WireBytes()
+		if err != nil {
+			return nil, 0, err
+		}
+		if i > 0 {
+			body.WriteByte(',')
+		}
+		_, _ = body.Write(document)
+	}
+	body.WriteByte(']')
+	uncompressed := body.Bytes()
+	if !compress {
+		return uncompressed, len(uncompressed), nil
 	}
 	var compressed bytes.Buffer
 	writer := gzip.NewWriter(&compressed)
-	if _, err := writer.Write(body); err != nil {
+	if _, err := writer.Write(uncompressed); err != nil {
 		_ = writer.Close()
-		return nil, len(body), err
+		return nil, len(uncompressed), err
 	}
 	if err := writer.Close(); err != nil {
-		return nil, len(body), err
+		return nil, len(uncompressed), err
 	}
-	return compressed.Bytes(), len(body), nil
+	return compressed.Bytes(), len(uncompressed), nil
 }
 
 func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {

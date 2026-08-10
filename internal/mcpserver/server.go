@@ -24,7 +24,15 @@ import (
 	"github.com/open-ships/beacon/internal/supervisor"
 )
 
-const EndpointPath = "/mcp"
+const (
+	EndpointPath       = "/mcp"
+	maxMCPRequestBytes = 1 << 20 // 1 MiB; comfortably above normal config writes.
+
+	defaultRichDiagnosticResults = 16
+	maxRichDiagnosticResults     = 32
+	defaultSourceEventResults    = 10
+	maxSourceEventResults        = 20
+)
 
 // ToolInfo is the stable, human-readable catalog shared by the MCP server and
 // the onboard /mcp/info reference page.
@@ -44,8 +52,8 @@ var toolCatalog = []ToolInfo{
 	{Name: "delete_connector", Access: "delete", Description: "Delete a connector route and its route-owned queue."},
 	{Name: "get_health", Access: "read", Description: "Read rolled-up health and live source, sink, and connector states."},
 	{Name: "get_delivery_metrics", Access: "read", Description: "Read delivery rates, totals, pending delivery, retained history, limits, drops, and errors."},
-	{Name: "get_source_metrics", Access: "read", Description: "Inspect every sensor/PGN stream, including sampled raw payload diagnostics, timing, load, decode quality, addressing, gaps, field distributions, and lifecycle events."},
-	{Name: "get_latest_payloads", Access: "read", Description: "Read the single latest decoded payload for every matching source, sensor id, and PGN stream."},
+	{Name: "get_source_metrics", Access: "read", Description: "Inspect a bounded, filterable set of sensor/PGN streams, including sampled raw payload diagnostics, timing, load, decode quality, addressing, gaps, field distributions, and lifecycle events."},
+	{Name: "get_latest_payloads", Access: "read", Description: "Read a bounded, filterable set of latest decoded sensor/PGN payloads."},
 }
 
 // Catalog returns a copy so callers cannot mutate the registered tool list.
@@ -80,21 +88,34 @@ func NewServer(svc *config.Service, reg *stats.Registry, version string, log *sl
 	return server
 }
 
-// Handler serves the current MCP Streamable HTTP transport. It uses ordinary
-// JSON responses because Beacon's tools complete synchronously and do not need
-// server-to-client streaming. Sessions are still negotiated normally for broad
-// client compatibility. Cross-origin protection enforces the MCP transport's
-// Origin requirement while continuing to allow non-browser local/LAN agents.
+// Handler serves the current MCP Streamable HTTP transport. Beacon's tools are
+// synchronous and keep no cross-call state, so stateless mode avoids retaining
+// one server session per client. Request bodies are bounded before the SDK
+// decodes JSON. Cross-origin protection enforces the MCP transport's Origin
+// requirement while continuing to allow non-browser local/LAN agents.
 func Handler(svc *config.Service, reg *stats.Registry, version string, log *slog.Logger) http.Handler {
 	server := NewServer(svc, reg, version, log)
 	transport := sdkmcp.NewStreamableHTTPHandler(func(*http.Request) *sdkmcp.Server {
 		return server
 	}, &sdkmcp.StreamableHTTPOptions{
-		JSONResponse:   true,
-		Logger:         log,
-		SessionTimeout: 30 * time.Minute,
+		Stateless:    true,
+		JSONResponse: true,
+		Logger:       log,
 	})
-	return allMethodOriginGuard(http.NewCrossOriginProtection().Handler(transport))
+	return allMethodOriginGuard(http.NewCrossOriginProtection().Handler(limitMCPRequestBody(transport)))
+}
+
+func limitMCPRequestBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			if r.ContentLength > maxMCPRequestBytes {
+				http.Error(w, "MCP request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, maxMCPRequestBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // allMethodOriginGuard extends net/http's cross-origin protection to safe
@@ -229,9 +250,9 @@ func (v sinkDefinition) model() (model.Sink, error) {
 }
 
 type bufferDefinition struct {
-	MaxMessages int64  `json:"max_messages,omitempty" jsonschema:"Maximum retained messages; all-zero limits default to 10000 messages."`
+	MaxMessages int64  `json:"max_messages,omitempty" jsonschema:"Maximum retained messages; zero or omitted uses the independent 10000-message safety default."`
 	MaxAge      string `json:"max_age,omitempty" jsonschema:"Maximum retained age as a Go duration such as 24h or 90s."`
-	MaxBytes    int64  `json:"max_bytes,omitempty" jsonschema:"Maximum retained bytes."`
+	MaxBytes    int64  `json:"max_bytes,omitempty" jsonschema:"Maximum retained logical bytes; zero or omitted uses the independent 67108864-byte (64 MiB) safety default."`
 }
 
 type connectorDefinition struct {
@@ -298,6 +319,7 @@ type getConfigOutput struct {
 	Sources    []sourceDefinition `json:"sources"`
 	Sinks      []sinkDefinition   `json:"sinks"`
 	Connectors []connectorView    `json:"connectors"`
+	Settings   *model.Settings    `json:"settings,omitempty" jsonschema:"Optional process-wide appliance settings; absent values use low-resource defaults."`
 }
 
 type putSourceInput struct {
@@ -351,13 +373,16 @@ type sourceMetricsInput struct {
 	PGN           *uint32 `json:"pgn,omitempty" jsonschema:"Optional PGN number filter."`
 	SourceAddress *uint8  `json:"source_address,omitempty" jsonschema:"Optional NMEA 2000 source-address (sensor/sender id) filter."`
 	DeviceNameHex string  `json:"device_name_hex,omitempty" jsonschema:"Optional stable 64-bit NMEA 2000 Device NAME filter, as hexadecimal with or without a 0x prefix."`
-	EventLimit    int     `json:"event_limit,omitempty" jsonschema:"Recent lifecycle events per source to include; zero defaults to 50."`
+	EventLimit    int     `json:"event_limit,omitempty" jsonschema:"Recent lifecycle events per source to include; zero defaults to 10 and values are capped at 20."`
+	Limit         int     `json:"limit,omitempty" jsonschema:"Maximum rich PGN/sender streams returned across all sources; zero defaults to 16 and values are capped at 32. Use filters for additional streams."`
 }
 
 type sourceMetricsOutput struct {
-	GeneratedAt time.Time                            `json:"generated_at"`
-	Sources     map[string][]stats.SourcePGNMetric   `json:"sources"`
-	Events      map[string][]stats.SourceMetricEvent `json:"events"`
+	GeneratedAt time.Time                             `json:"generated_at"`
+	Sources     map[string][]stats.SourcePGNMetric    `json:"sources"`
+	Events      map[string][]stats.SourceMetricEvent  `json:"events"`
+	Capacity    map[string]stats.SourceMetricCapacity `json:"capacity"`
+	Truncated   bool                                  `json:"truncated,omitempty"`
 }
 
 type latestPayloadsInput struct {
@@ -366,6 +391,7 @@ type latestPayloadsInput struct {
 	PGN           *uint32 `json:"pgn,omitempty" jsonschema:"Optional PGN number filter."`
 	SourceAddress *uint8  `json:"source_address,omitempty" jsonschema:"Optional NMEA 2000 source-address (sensor/sender id) filter."`
 	DeviceNameHex string  `json:"device_name_hex,omitempty" jsonschema:"Optional stable 64-bit NMEA 2000 Device NAME filter, as hexadecimal with or without a 0x prefix."`
+	Limit         int     `json:"limit,omitempty" jsonschema:"Maximum latest payloads returned; zero defaults to 16 and values are capped at 32. Use filters for additional payloads."`
 }
 
 type latestPayloadView struct {
@@ -382,6 +408,7 @@ type latestPayloadView struct {
 type latestPayloadsOutput struct {
 	GeneratedAt time.Time           `json:"generated_at"`
 	Payloads    []latestPayloadView `json:"payloads"`
+	Truncated   bool                `json:"truncated,omitempty"`
 }
 
 func latestPayloadViewFromStats(v stats.SourcePGNLastPayload) (latestPayloadView, error) {
@@ -408,6 +435,13 @@ func normalizeDeviceNameHex(raw string) (string, error) {
 		return "", fmt.Errorf("invalid Device NAME %q: expected up to 16 hexadecimal digits", raw)
 	}
 	return fmt.Sprintf("%016x", name), nil
+}
+
+func boundedDiagnosticLimit(requested, fallback, maximum int) int {
+	if requested <= 0 {
+		return fallback
+	}
+	return min(requested, maximum)
 }
 
 func latestPayloadFilter(in latestPayloadsInput) (stats.SourcePGNMetricFilter, error) {
@@ -501,6 +535,18 @@ func deliveryMetricsFromSnapshot(v stats.Snapshot) deliveryMetrics {
 }
 
 func registerTools(server *sdkmcp.Server, svc *config.Service, reg *stats.Registry, log *slog.Logger) {
+	// Rich snapshots clone and sort bounded-but-nontrivial diagnostic maps. Keep
+	// only one such construction active per MCP server; ordinary configuration,
+	// health, and delivery tools remain fully concurrent.
+	richDiagnosticGate := make(chan struct{}, 1)
+	acquireRichDiagnostics := func(ctx context.Context) (func(), error) {
+		select {
+		case richDiagnosticGate <- struct{}{}:
+			return func() { <-richDiagnosticGate }, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	readAnnotations := toolAnnotations(true, false, false)
 	writeAnnotations := toolAnnotations(false, true, true)
 	deleteAnnotations := toolAnnotations(false, true, true)
@@ -515,6 +561,7 @@ func registerTools(server *sdkmcp.Server, svc *config.Service, reg *stats.Regist
 				Sources:    make([]sourceDefinition, 0, len(cfg.Sources)),
 				Sinks:      make([]sinkDefinition, 0, len(cfg.Sinks)),
 				Connectors: make([]connectorView, 0, len(cfg.Connectors)),
+				Settings:   cfg.Settings,
 			}
 			for _, v := range cfg.Sources {
 				out.Sources = append(out.Sources, sourceDefinitionFromModel(v))
@@ -630,15 +677,19 @@ func registerTools(server *sdkmcp.Server, svc *config.Service, reg *stats.Regist
 
 	sdkmcp.AddTool(server, tool("get_source_metrics", "Get source PGN metrics", readAnnotations),
 		func(ctx context.Context, _ *sdkmcp.CallToolRequest, in sourceMetricsInput) (*sdkmcp.CallToolResult, sourceMetricsOutput, error) {
+			release, err := acquireRichDiagnostics(ctx)
+			if err != nil {
+				return nil, sourceMetricsOutput{}, err
+			}
+			defer release()
 			out := sourceMetricsOutput{
 				GeneratedAt: time.Now().UTC(),
 				Sources:     map[string][]stats.SourcePGNMetric{},
 				Events:      map[string][]stats.SourceMetricEvent{},
+				Capacity:    map[string]stats.SourceMetricCapacity{},
 			}
-			eventLimit := in.EventLimit
-			if eventLimit <= 0 || eventLimit > 200 {
-				eventLimit = 50
-			}
+			eventLimit := boundedDiagnosticLimit(in.EventLimit, defaultSourceEventResults, maxSourceEventResults)
+			resultLimit := boundedDiagnosticLimit(in.Limit, defaultRichDiagnosticResults, maxRichDiagnosticResults)
 			if in.DeviceNameHex != "" {
 				normalized, err := normalizeDeviceNameHex(in.DeviceNameHex)
 				if err != nil {
@@ -653,38 +704,57 @@ func registerTools(server *sdkmcp.Server, svc *config.Service, reg *stats.Regist
 				if _, err := svc.GetSource(ctx, in.SourceID); err != nil {
 					return nil, sourceMetricsOutput{}, publicError(log, err)
 				}
-				out.Sources[in.SourceID] = reg.SourcePGNMetricsFiltered(in.SourceID, metricFilter)
+				metrics, truncated := reg.SourcePGNMetricsFilteredLimit(in.SourceID, metricFilter, resultLimit)
+				out.Truncated = truncated
+				out.Sources[in.SourceID] = metrics
 				out.Events[in.SourceID] = filterSourceMetricEvents(reg.SourceMetricEvents(in.SourceID, eventLimit), in)
+				out.Capacity[in.SourceID] = reg.SourceMetricCapacity(in.SourceID)
 				return nil, out, nil
 			}
 			sources, err := svc.ListSources(ctx)
 			if err != nil {
 				return nil, sourceMetricsOutput{}, publicError(log, err)
 			}
-			if in.PGN == nil && in.SourceAddress == nil && in.DeviceNameHex == "" {
-				all := reg.AllSourcePGNMetrics()
-				for _, source := range sources {
-					out.Sources[source.ID] = all[source.ID]
-					out.Events[source.ID] = filterSourceMetricEvents(reg.SourceMetricEvents(source.ID, eventLimit), in)
-				}
-				return nil, out, nil
-			}
+			remaining := resultLimit
 			for _, source := range sources {
-				out.Sources[source.ID] = reg.SourcePGNMetricsFiltered(source.ID, metricFilter)
+				metrics, truncated := reg.SourcePGNMetricsFilteredLimit(source.ID, metricFilter, remaining)
+				out.Truncated = out.Truncated || truncated
+				out.Sources[source.ID] = metrics
 				out.Events[source.ID] = filterSourceMetricEvents(reg.SourceMetricEvents(source.ID, eventLimit), in)
+				out.Capacity[source.ID] = reg.SourceMetricCapacity(source.ID)
+				remaining -= len(metrics)
+				if remaining == 0 {
+					// Later sources may contain matching streams. Stop before cloning
+					// their rich diagnostic state and make the output bound explicit.
+					out.Truncated = out.Truncated || len(sources) > len(out.Sources)
+					break
+				}
 			}
 			return nil, out, nil
 		})
 
 	sdkmcp.AddTool(server, tool("get_latest_payloads", "Get latest sensor payloads", readAnnotations),
 		func(ctx context.Context, _ *sdkmcp.CallToolRequest, in latestPayloadsInput) (*sdkmcp.CallToolResult, latestPayloadsOutput, error) {
+			release, err := acquireRichDiagnostics(ctx)
+			if err != nil {
+				return nil, latestPayloadsOutput{}, err
+			}
+			defer release()
 			out := latestPayloadsOutput{GeneratedAt: time.Now().UTC(), Payloads: []latestPayloadView{}}
+			resultLimit := boundedDiagnosticLimit(in.Limit, defaultRichDiagnosticResults, maxRichDiagnosticResults)
 			filter, err := latestPayloadFilter(in)
 			if err != nil {
 				return nil, latestPayloadsOutput{}, err
 			}
 			appendSource := func(sourceID string) error {
-				for _, payload := range reg.SourcePGNLastPayloadsFiltered(sourceID, filter) {
+				remaining := resultLimit - len(out.Payloads)
+				if remaining <= 0 {
+					out.Truncated = true
+					return nil
+				}
+				payloads, truncated := reg.SourcePGNLastPayloadsFilteredLimit(sourceID, filter, remaining)
+				out.Truncated = out.Truncated || truncated
+				for _, payload := range payloads {
 					view, err := latestPayloadViewFromStats(payload)
 					if err != nil {
 						return err
@@ -709,6 +779,9 @@ func registerTools(server *sdkmcp.Server, svc *config.Service, reg *stats.Regist
 			for _, source := range sources {
 				if err := appendSource(source.ID); err != nil {
 					return nil, latestPayloadsOutput{}, publicError(log, err)
+				}
+				if out.Truncated {
+					break
 				}
 			}
 			return nil, out, nil

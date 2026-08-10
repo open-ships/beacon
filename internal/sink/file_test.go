@@ -1,7 +1,6 @@
 package sink
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/hex"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/msg"
+	"github.com/open-ships/beacon/internal/queue"
 )
 
 func newTestFileSink(t *testing.T, format string, maxFileBytes int64, maxFiles int) (Runtime, string) {
@@ -68,6 +68,33 @@ func TestFileSinkNDJSONRoundTrips(t *testing.T) {
 		if got.Seq != want[i].Seq || got.PGN != want[i].PGN || got.ConnectorID != want[i].ConnectorID {
 			t.Fatalf("line %d = %+v, want seq/pgn/connector matching %+v", i, &got, want[i])
 		}
+	}
+}
+
+func TestFileSinkBatchFlushesOnceAndReportsPermanentSkips(t *testing.T) {
+	rt, path := newTestFileSink(t, model.FileFormatCANDump, 0, 0)
+	defer rt.Stop()
+	p := rt.(SelectiveBatchPusher)
+	now := time.Now()
+	entries := []queue.Entry{
+		{Seq: 1, Env: &msg.Envelope{ConnectorID: "nav", PGN: 127250, Source: 1, Dest: 255, Priority: 2, Timestamp: now, Raw: make([]byte, 8)}},
+		{Seq: 2, Env: &msg.Envelope{ConnectorID: "nav", PGN: 127250, Source: 1, Dest: 255, Priority: 2, Timestamp: now}},
+		{Seq: 3, Env: &msg.Envelope{ConnectorID: "nav", PGN: 127250, Source: 1, Dest: 255, Priority: 2, Timestamp: now, Raw: make([]byte, 8)}},
+	}
+	report, err := p.PushBatchSelective(context.Background(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Skipped) != 3 || report.Skipped[0] || !report.Skipped[1] || report.Skipped[2] {
+		t.Fatalf("skip report = %v", report.Skipped)
+	}
+	// Read before Stop proves the batch boundary flushed its buffered writes.
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Count(string(b), "\n"); lines != 2 {
+		t.Fatalf("batch file has %d lines, want 2: %q", lines, b)
 	}
 }
 
@@ -346,11 +373,17 @@ func TestFileSinkFastPacketSeqCounterWraps(t *testing.T) {
 	}
 }
 
-// TestFileSinkRotation forces a rotation on every push (MaxFileBytes: 1, so
-// any write exceeds it) with MaxFiles: 3 (active + 2 backups) and checks the
-// oldest backup is dropped once the cap is reached.
+// TestFileSinkRotation sets a ceiling that fits exactly one record, then
+// checks pre-write rotation keeps every file within that physical ceiling.
 func TestFileSinkRotation(t *testing.T) {
-	rt, path := newTestFileSink(t, model.FileFormatNDJSON, 1, 3)
+	now := time.Now()
+	first := &msg.Envelope{Seq: 1, ConnectorID: "nav", PGN: 127250, Source: 1, Dest: 255,
+		Priority: 2, Timestamp: now, Payload: json.RawMessage(`{}`)}
+	line, err := encodeNDJSON(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, path := newTestFileSink(t, model.FileFormatNDJSON, int64(len(line)+1), 3)
 	p := rt.(Pusher)
 
 	readSeq := func(name string) int64 {
@@ -372,28 +405,62 @@ func TestFileSinkRotation(t *testing.T) {
 
 	for i := int64(1); i <= 3; i++ {
 		e := &msg.Envelope{Seq: i, ConnectorID: "nav", PGN: 127250, Source: 1, Dest: 255,
-			Priority: 2, Timestamp: time.Now(), Payload: json.RawMessage(`{}`)}
+			Priority: 2, Timestamp: now, Payload: json.RawMessage(`{}`)}
 		if err := p.Push(context.Background(), e); err != nil {
 			t.Fatalf("push %d: %v", i, err)
 		}
 	}
 	rt.Stop()
 
-	// Active file was freshly reopened by the 3rd rotation and never
-	// written to again.
-	if b, err := os.ReadFile(path); err != nil {
-		t.Fatal(err)
-	} else if len(b) != 0 {
-		t.Fatalf("active file = %q, want empty", b)
+	if got := readSeq(path); got != 3 {
+		t.Fatalf("active seq = %d, want 3", got)
 	}
-	if got := readSeq(path + ".1"); got != 3 {
-		t.Fatalf("file.1 seq = %d, want 3 (most recent)", got)
+	if got := readSeq(path + ".1"); got != 2 {
+		t.Fatalf("file.1 seq = %d, want 2", got)
 	}
-	if got := readSeq(path + ".2"); got != 2 {
-		t.Fatalf("file.2 seq = %d, want 2", got)
+	if got := readSeq(path + ".2"); got != 1 {
+		t.Fatalf("file.2 seq = %d, want 1", got)
 	}
 	if _, err := os.Stat(path + ".3"); !os.IsNotExist(err) {
 		t.Fatalf("file.3 exists (or unexpected error %v), want deleted (MaxFiles=3 caps at 2 backups)", err)
+	}
+}
+
+func TestFileSinkSkipsRecordLargerThanPhysicalCeiling(t *testing.T) {
+	rt, path := newTestFileSink(t, model.FileFormatNDJSON, 1, 2)
+	defer rt.Stop()
+	err := rt.(Pusher).Push(context.Background(), &msg.Envelope{
+		Seq: 1, ConnectorID: "nav", PGN: 127250, Source: 1, Dest: 255,
+		Priority: 2, Timestamp: time.Now(), Payload: json.RawMessage(`{}`),
+	})
+	if !errors.Is(err, ErrSkip) {
+		t.Fatalf("Push = %v, want permanent skip", err)
+	}
+	if info, statErr := os.Stat(path); statErr != nil || info.Size() != 0 {
+		t.Fatalf("active file after oversized record = %v/%v", info, statErr)
+	}
+}
+
+func TestFileSinkStartupRemovesFilesOutsideReducedBudget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "out.ndjson")
+	for _, name := range []string{path, path + ".1", path + ".3"} {
+		if err := os.WriteFile(name, []byte("01234567890123456789"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rt, err := New(context.Background(), model.Sink{
+		ID: "log", Name: "Log", Type: model.SinkFile, Enabled: true,
+		FilePath: path, Format: model.FileFormatNDJSON, MaxFileBytes: 10, MaxFiles: 3,
+	}, nil, nil, slog.Default(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.Stop()
+	for _, name := range []string{path + ".1", path + ".2", path + ".3"} {
+		if _, err := os.Stat(name); !os.IsNotExist(err) {
+			t.Fatalf("%s remains after budget enforcement: %v", name, err)
+		}
 	}
 }
 
@@ -506,7 +573,7 @@ func TestFileSinkConcurrentPushNoCorruption(t *testing.T) {
 }
 
 func TestFileSinkStateReflectsWriteFailure(t *testing.T) {
-	rt, path := newTestFileSink(t, model.FileFormatNDJSON, 0, 0)
+	rt, _ := newTestFileSink(t, model.FileFormatNDJSON, 0, 0)
 	p := rt.(Pusher)
 
 	if state, err := rt.State(); state != "up" || err != nil {
@@ -531,16 +598,9 @@ func TestFileSinkStateReflectsWriteFailure(t *testing.T) {
 		t.Fatalf("state after write failure = %q/%v, want error/non-nil", state, serr)
 	}
 
-	// Recover: reopening the file (as a real restart would) and pushing
-	// again must clear the error state.
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fs.mu.Lock()
-	fs.f = f
-	fs.bw = bufio.NewWriter(f)
-	fs.mu.Unlock()
+	// The failed flush must reset its sticky bufio error and reopen the active
+	// path itself. Once the transient condition clears, Connector's next retry
+	// succeeds without a process restart.
 	if err := p.Push(context.Background(), e); err != nil {
 		t.Fatalf("push after recovery: %v", err)
 	}

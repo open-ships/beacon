@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/open-ships/beacon/internal/metrics"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/msg"
+	"github.com/open-ships/beacon/internal/retry"
 	"github.com/open-ships/beacon/internal/stats"
 )
 
@@ -24,6 +26,28 @@ import (
 // must call connected exactly once, after the endpoint is actually established
 // (dialed and subscribed), so the dialer only then reports "up".
 type runFunc func(ctx context.Context, cfg model.Source, publish func(*msg.Envelope), connected func()) error
+
+var (
+	sourceReconnectMin        = 250 * time.Millisecond
+	sourceReconnectMax        = time.Minute
+	sourceStableConnectionAge = 30 * time.Second
+	sourceHTTPAttemptTimeout  = 15 * time.Second
+)
+
+func newSourceHTTPClient() *http.Client {
+	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true}
+	if defaults, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = defaults.Clone()
+	}
+	transport.DialContext = (&net.Dialer{
+		Timeout: sourceHTTPAttemptTimeout, KeepAlive: 30 * time.Second,
+	}).DialContext
+	transport.ResponseHeaderTimeout = sourceHTTPAttemptTimeout
+	transport.TLSHandshakeTimeout = sourceHTTPAttemptTimeout
+	transport.MaxConnsPerHost = 1
+	transport.MaxIdleConnsPerHost = 1
+	return &http.Client{Transport: transport}
+}
 
 // dialerSource maintains a dial-reconnect loop around a runFunc.
 type dialerSource struct {
@@ -61,31 +85,40 @@ func newDialerSource(ctx context.Context, cfg model.Source, log *slog.Logger, me
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		const baseBackoff = 250 * time.Millisecond
-		backoff := baseBackoff
-		// connected is invoked by run once the endpoint is actually
-		// established. The source starts (and stays) "degraded" until then, so
-		// an endpoint that never connects — bad host, missing port — never
-		// flashes "up". Only reached from run() on this goroutine, so the
-		// backoff reset is race-free.
-		connected := func() {
-			s.setState("up", nil)
-			backoff = baseBackoff // a real connection earns a fresh backoff budget
-		}
+		backoff := retry.NewBackoff(sourceReconnectMin, sourceReconnectMax)
+		consecutiveFailures := 0
 		for runCtx.Err() == nil {
+			var connectedAt time.Time
+			// connected is invoked by run once the endpoint is actually
+			// established. Report "up" immediately, but do not reset retry history
+			// until the session has remained useful for a while: a peer that accepts
+			// a handshake and drops it immediately must still reach the full backoff.
+			connected := func() {
+				if connectedAt.IsZero() {
+					connectedAt = time.Now()
+				}
+				s.setState("up", nil)
+			}
 			err := run(runCtx, cfg, publish, connected)
 			if runCtx.Err() != nil {
 				return
 			}
-			s.setState("degraded", err)
-			log.Warn("source disconnected; reconnecting", "source", cfg.ID, "err", err)
-			select {
-			case <-runCtx.Done():
-				return
-			case <-time.After(backoff):
+			if !connectedAt.IsZero() && time.Since(connectedAt) >= sourceStableConnectionAge {
+				backoff.Reset()
+				consecutiveFailures = 0
 			}
-			if backoff < 5*time.Second {
-				backoff *= 2
+			s.setState("degraded", err)
+			consecutiveFailures++
+			delay := backoff.Next()
+			if consecutiveFailures == 1 || consecutiveFailures%60 == 0 {
+				log.Warn("source disconnected; reconnecting", "source", cfg.ID, "err", err,
+					"retry_in", delay, "consecutive_failures", consecutiveFailures)
+			} else {
+				log.Debug("source still disconnected", "source", cfg.ID, "err", err,
+					"retry_in", delay, "consecutive_failures", consecutiveFailures)
+			}
+			if !retry.Sleep(runCtx, delay) {
+				return
 			}
 		}
 	}()
@@ -125,7 +158,9 @@ func runSSE(ctx context.Context, cfg model.Source, publish func(*msg.Envelope), 
 	for k, v := range cfg.Headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := newSourceHTTPClient()
+	defer client.CloseIdleConnections()
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -135,14 +170,19 @@ func runSSE(ctx context.Context, cfg model.Source, publish func(*msg.Envelope), 
 	}
 	connected()
 	sc := bufio.NewScanner(resp.Body)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	// Allow the bounded document plus the SSE field prefix and Scanner's token
+	// bookkeeping. A conventional "data: " prefix must not make an Envelope at
+	// the exact ingress limit fail one byte early.
+	sc.Buffer(make([]byte, 0, 64*1024), msg.MaxWireEnvelopeBytes+64)
 	for sc.Scan() {
 		line := sc.Text()
 		if !strings.HasPrefix(line, "data:") {
 			continue // id:, event:, retry:, comments, blank separators
 		}
 		var e msg.Envelope
-		if err := json.Unmarshal([]byte(strings.TrimSpace(line[5:])), &e); err != nil {
+		document := []byte(strings.TrimSpace(line[5:]))
+		if len(document) > msg.MaxWireEnvelopeBytes || json.Unmarshal(document, &e) != nil ||
+			msg.ValidateRemote(&e, len(document)) != nil {
 			continue // tolerate junk lines
 		}
 		publish(&e)
@@ -155,7 +195,9 @@ func runSSE(ctx context.Context, cfg model.Source, publish func(*msg.Envelope), 
 
 // runWS consumes NDJSON text messages from a WebSocket.
 func runWS(ctx context.Context, cfg model.Source, publish func(*msg.Envelope), connected func()) error {
-	opts := &websocket.DialOptions{HTTPHeader: http.Header{}}
+	client := newSourceHTTPClient()
+	defer client.CloseIdleConnections()
+	opts := &websocket.DialOptions{HTTPClient: client, HTTPHeader: http.Header{}}
 	for k, v := range cfg.Headers {
 		opts.HTTPHeader.Set(k, v)
 	}
@@ -165,14 +207,14 @@ func runWS(ctx context.Context, cfg model.Source, publish func(*msg.Envelope), c
 	}
 	defer func() { _ = c.CloseNow() }()
 	connected()
-	c.SetReadLimit(1024 * 1024)
+	c.SetReadLimit(msg.MaxWireEnvelopeBytes)
 	for {
 		_, data, err := c.Read(ctx)
 		if err != nil {
 			return err
 		}
 		var e msg.Envelope
-		if err := json.Unmarshal(data, &e); err != nil {
+		if err := json.Unmarshal(data, &e); err != nil || msg.ValidateRemote(&e, len(data)) != nil {
 			continue
 		}
 		publish(&e)

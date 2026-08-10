@@ -1,6 +1,6 @@
 module github.com/open-ships/beacon
 
-go 1.25.2
+go 1.25.12
 
 require (
 	github.com/brutella/can v0.0.2

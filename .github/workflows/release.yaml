@@ -132,7 +132,7 @@ jobs:
         if: ${{ steps.published.outputs.complete != 'true' }}
         uses: actions/setup-go@v7
         with:
-          go-version: 1.25.x
+          go-version: 1.25.12
           check-latest: true
 
       - name: Publish archives and checksums

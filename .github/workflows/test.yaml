@@ -20,7 +20,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: 1.25.x
+          go-version: 1.25.12
           check-latest: true
 
       - name: Check formatting
@@ -54,7 +54,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: 1.25.x
+          go-version: 1.25.12
           check-latest: true
 
       - name: Set up Node
@@ -82,7 +82,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: 1.25.x
+          go-version: 1.25.12
           check-latest: true
 
       - name: Race detector
@@ -98,7 +98,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: 1.25.x
+          go-version: 1.25.12
           check-latest: true
 
       - name: golangci-lint
@@ -116,7 +116,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: 1.25.x
+          go-version: 1.25.12
           check-latest: true
 
       - name: Run govulncheck
@@ -133,9 +133,35 @@ jobs:
           go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1
           gosec -exclude-generated -exclude-dir=.claude ./...
 
+  vessel:
+    name: Vessel resource and recovery gates
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: 1.25.12
+          check-latest: true
+
+      - name: Check gate script syntax
+        run: bash -n scripts/vessel-release-gate.sh
+
+      - name: Run vessel gates
+        env:
+          BEACON_IDLE_RSS_MAX_KIB: "65536"
+          BEACON_IDLE_FD_MAX: "32"
+          BEACON_LOAD_RSS_MAX_KIB: "98304"
+          BEACON_LOAD_FD_MAX: "32"
+          BEACON_LOAD_RATE_PER_SECOND: "50"
+        run: scripts/vessel-release-gate.sh
+
   release-gate:
     if: ${{ always() }}
-    needs: [test, browser, race, lint, secure]
+    needs: [test, browser, race, lint, secure, vessel]
     runs-on: ubuntu-latest
     env:
       TEST_RESULT: ${{ needs.test.result }}
@@ -143,6 +169,7 @@ jobs:
       RACE_RESULT: ${{ needs.race.result }}
       LINT_RESULT: ${{ needs.lint.result }}
       SECURE_RESULT: ${{ needs.secure.result }}
+      VESSEL_RESULT: ${{ needs.vessel.result }}
 
     steps:
       - name: Require every release gate
@@ -152,3 +179,4 @@ jobs:
           test "$RACE_RESULT" = success
           test "$LINT_RESULT" = success
           test "$SECURE_RESULT" = success
+          test "$VESSEL_RESULT" = success

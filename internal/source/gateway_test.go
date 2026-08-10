@@ -201,6 +201,40 @@ func TestPrepareReplayFileRejectsCorruptGzip(t *testing.T) {
 	}
 }
 
+func TestPrepareReplayFileBoundsGzipExpansion(t *testing.T) {
+	oldLimit := maxCompressedReplayBytes
+	maxCompressedReplayBytes = 32
+	t.Cleanup(func() { maxCompressedReplayBytes = oldLimit })
+	path := filepath.Join(t.TempDir(), "oversized.log.gz")
+	writeGzipCapture(t, path, strings.Repeat("x", 33))
+	_, cleanup, err := prepareReplayFile(context.Background(), path)
+	cleanup()
+	if err == nil || !strings.Contains(err.Error(), "exceeds 32 bytes") {
+		t.Fatalf("prepareReplayFile = %v, want expansion limit", err)
+	}
+}
+
+func TestPrepareReplayFileBoundsConcurrentTemporaryCopies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "capture.log.gz")
+	writeGzipCapture(t, path, replayHeadingLine)
+	for i := 0; i < cap(compressedReplaySlots); i++ {
+		compressedReplaySlots <- struct{}{}
+	}
+	t.Cleanup(func() {
+		for len(compressedReplaySlots) > 0 {
+			<-compressedReplaySlots
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	_, cleanup, err := prepareReplayFile(ctx, path)
+	cleanup()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("prepareReplayFile() error = %v, want replay-capacity deadline", err)
+	}
+}
+
 func TestCorruptGzipFileSourceReportsError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "capture.log.gz")
 	if err := os.WriteFile(path, []byte{0x1f, 0x8b, 0x00}, 0o600); err != nil {
@@ -238,8 +272,8 @@ func TestPrepareReplayFileCleansUpDecompressedCopy(t *testing.T) {
 		t.Fatalf("decompressed content = %q, want %q", content, replayHeadingLine)
 	}
 	cleanup()
-	if _, err := os.Stat(replayPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("temporary replay file still exists after cleanup: %v", err)
+	if _, err := os.Stat(replayPath); err == nil {
+		t.Fatalf("temporary replay descriptor still exists after cleanup: %q", replayPath)
 	}
 }
 

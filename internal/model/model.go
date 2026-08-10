@@ -11,6 +11,25 @@ import (
 
 type SourceType string
 
+// Configuration text limits are byte counts. The aggregate covers every
+// operator-authored string stored in Source, Sink, and Connector values; fixed
+// JSON syntax and numeric/boolean settings are not charged to it.
+const (
+	MaxEntityIDBytes           = 128
+	MaxEntityNameBytes         = 256
+	MaxEndpointTextBytes       = 8 << 10
+	MaxTopicBytes              = 4 << 10
+	MaxHeaderNameBytes         = 256
+	MaxHeaderValueBytes        = 8 << 10
+	MaxAuthoredConfigTextBytes = 256 << 10
+	MaxSources                 = 32
+	MaxSinks                   = 32
+	MaxConnectors              = 64
+	MaxEndpointHeaders         = 32
+	MaxConnectorFilters        = 32
+	MaxFilterExpressionLen     = 8 << 10
+)
+
 const (
 	SourceSocketCAN SourceType = "socketcan"
 	SourceUSBCAN    SourceType = "usbcan"
@@ -56,6 +75,7 @@ const (
 const (
 	DefaultMaxFileBytes int64 = 100 << 20 // 100 MiB
 	DefaultMaxFiles           = 5
+	MaxFileCount              = 128
 )
 
 // HTTP POST sink defaults and bounds. BatchSize is a maximum: a route sends
@@ -74,6 +94,7 @@ const (
 	DefaultPostgresBatchSize    = 100
 	MaxPostgresBatchSize        = 1000
 	DefaultPostgresWriteTimeout = Duration(10 * time.Second)
+	MaxPostgresWriteTimeout     = Duration(time.Minute)
 )
 
 // ReservedPathPrefixes cannot be used by HTTP sink paths.
@@ -184,10 +205,21 @@ type BufferLimits struct {
 	MaxBytes    int64    `json:"max_bytes,omitempty"`
 }
 
-// DefaultMaxMessages is the retention cap used when a connector does not
-// configure any buffer limit. Keep it exported so every configuration surface
-// can show the same effective default instead of presenting an empty field.
-const DefaultMaxMessages int64 = 10_000
+// Connector route and appliance storage defaults are hard safety budgets, not
+// outage promises. Operators should size them from the documented Envelope
+// rate × disconnected-duration calculation.
+const (
+	DefaultMaxMessages       int64 = 10_000
+	DefaultBufferMaxBytes    int64 = 64 << 20 // 64 MiB per connector route
+	MaxBufferMessages        int64 = 10_000_000
+	MaxBufferBytes           int64 = 8 << 30
+	MaxBufferAge                   = Duration(365 * 24 * time.Hour)
+	DefaultMaxDatabaseBytes  int64 = 1 << 30 // includes queue rows, indexes, and config
+	DefaultDatabaseReserve   int64 = 128 << 20
+	DefaultMaxFileStoreBytes int64 = 2 << 30
+	MinDatabaseBytes         int64 = 64 << 20
+	MaxDatabaseBytes         int64 = 64 << 30
+)
 
 type BridgeMode string
 
@@ -197,11 +229,14 @@ const (
 	BridgeObserve     BridgeMode = "observe"
 )
 
-// ApplyDefaults returns l with the spec default (max_messages=10000)
-// applied when no limit at all is set.
+// ApplyDefaults always supplies independent count and logical-byte guards.
+// Zero therefore means "use the appliance-safe default", never unbounded.
 func (l BufferLimits) ApplyDefaults() BufferLimits {
-	if l.MaxMessages == 0 && l.MaxAge == 0 && l.MaxBytes == 0 {
+	if l.MaxMessages == 0 {
 		l.MaxMessages = DefaultMaxMessages
+	}
+	if l.MaxBytes == 0 {
+		l.MaxBytes = DefaultBufferMaxBytes
 	}
 	return l
 }
@@ -225,8 +260,63 @@ func (c Connector) EffectiveMode() BridgeMode {
 	return c.Mode
 }
 
+// ObservabilityConfig controls optional, resource-intensive diagnostic
+// exports. The ordinary low-cardinality delivery, queue, component, and source
+// counters are always exported; PrometheusSourceDetails adds the per-PGN,
+// per-field, and raw-byte source series.
+type ObservabilityConfig struct {
+	PrometheusSourceDetails bool `json:"prometheus_source_details,omitempty"`
+}
+
+// ResourceConfig is the process-wide physical storage budget. Connector route
+// limits are logical JSON sizes; DatabaseReserveBytes leaves room for SQLite
+// indexes, config, inventory, and maintenance inside MaxDatabaseBytes.
+type ResourceConfig struct {
+	MaxDatabaseBytes     int64 `json:"max_database_bytes,omitempty"`
+	DatabaseReserveBytes int64 `json:"database_reserve_bytes,omitempty"`
+	MaxFileStoreBytes    int64 `json:"max_file_store_bytes,omitempty"`
+}
+
+func (r ResourceConfig) ApplyDefaults() ResourceConfig {
+	if r.MaxDatabaseBytes == 0 {
+		r.MaxDatabaseBytes = DefaultMaxDatabaseBytes
+	}
+	if r.DatabaseReserveBytes == 0 {
+		r.DatabaseReserveBytes = DefaultDatabaseReserve
+	}
+	if r.MaxFileStoreBytes == 0 {
+		r.MaxFileStoreBytes = DefaultMaxFileStoreBytes
+	}
+	return r
+}
+
+// Settings holds process-wide appliance settings. Its pointer-valued sections
+// let merge imports distinguish an omitted section from an explicitly supplied
+// zero-valued section, and leave one document that future resource policies can
+// extend without changing the entity tables.
+type Settings struct {
+	Observability *ObservabilityConfig `json:"observability,omitempty"`
+	Resources     *ResourceConfig      `json:"resources,omitempty"`
+}
+
 type Config struct {
 	Sources    []Source    `json:"sources"`
 	Sinks      []Sink      `json:"sinks"`
 	Connectors []Connector `json:"connectors"`
+	Settings   *Settings   `json:"settings,omitempty"`
+}
+
+// PrometheusSourceDetailsEnabled reports the effective rich-source-metrics
+// setting. A missing observability block is the backward-compatible default:
+// disabled.
+func (c Config) PrometheusSourceDetailsEnabled() bool {
+	return c.Settings != nil && c.Settings.Observability != nil &&
+		c.Settings.Observability.PrometheusSourceDetails
+}
+
+func (c Config) EffectiveResources() ResourceConfig {
+	if c.Settings == nil || c.Settings.Resources == nil {
+		return (ResourceConfig{}).ApplyDefaults()
+	}
+	return c.Settings.Resources.ApplyDefaults()
 }

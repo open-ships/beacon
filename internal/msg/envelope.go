@@ -49,6 +49,9 @@ type Envelope struct {
 	consumerOnce         sync.Once
 	consumerPayloadCache json.RawMessage
 	consumerPayloadErr   error
+	wireOnce             sync.Once
+	wireCache            []byte
+	wireErr              error
 }
 
 const (
@@ -173,7 +176,7 @@ func (e *Envelope) PayloadMap() map[string]any {
 // every connector and statistics consumer that sees the envelope.
 func (e *Envelope) SizeBytes() int {
 	e.sizeOnce.Do(func() {
-		doc, err := json.Marshal(e)
+		doc, err := e.WireBytes()
 		if err != nil {
 			e.sizeBytes = len(e.Payload) + len(e.Raw) + 64
 			return

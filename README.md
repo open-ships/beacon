@@ -30,7 +30,7 @@ go run ./cmd/beacon \
   --data-address 127.0.0.1:8080
 ```
 
-This route requires Go 1.25.2 or newer. Prefer a container? The published
+This route requires Go 1.25.12 or newer. Prefer a container? The published
 image provides the same no-hardware preview:
 
 ```bash
@@ -134,11 +134,16 @@ routes, making fan-out and fan-in explicit rather than implicit.
 | CAN | `socketcan`, `usbcan` | `socketcan`, `usbcan` | Physical NMEA 2000 buses; SocketCAN is Linux-native |
 | HTTP | `http_sse`, `http_ws` | `http_sse`, `http_ws`, `http_post` | SSE/WS streaming and replay, or confirmed JSON-batch POST delivery over HTTP(S) |
 | Gateways | `tcp`, `udp` | `tcp_gateway` | Yacht Devices RAW or Actisense gateway streams |
-| Messaging | `mqtt` | `mqtt` | Topic-based ingestion and live publishing |
+| Messaging | `mqtt` | `mqtt` | Topic-based ingestion and QoS 1 broker-confirmed publishing |
 | Databases | — | `postgres` | Confirmed batch inserts into PostgreSQL or TimescaleDB |
 | Files | `file` | `file` | Replay captures; write rotating `ndjson` or `candump` logs |
 | Plain TCP | — | `tcp` | Live NDJSON listener for backend consumers |
 | Utility | — | `null` | Accept, count, and intentionally discard routed events |
+
+Compressed file replays are content-detected and expanded to a temporary copy.
+Each expansion is capped at 128 MiB and only two copies (256 MiB aggregate)
+may exist concurrently; decompress larger captures once and configure the
+resulting file directly.
 
 ### Bridge modes
 
@@ -188,31 +193,51 @@ A slow or disconnected sink does not block another route using the same source.
 
 | Delivery class | Sinks / mode | Checkpoint advances when… |
 |---|---|---|
-| Confirmed | SocketCAN, USB-CAN, file, TCP gateway, HTTP POST, PostgreSQL, null | The write or database batch succeeds, an HTTP POST returns 2xx, or the null sink accepts the message |
+| Confirmed | SocketCAN, USB-CAN, file, TCP gateway, HTTP POST, MQTT, PostgreSQL, null | The write or database batch succeeds, HTTP POST returns 2xx, MQTT receives broker PUBACK, or the null sink accepts the message |
 | Resumable | SSE, WebSocket | The message is available in the replayable stream |
-| Best effort | TCP, MQTT | Dispatch completes; downstream receipt is not claimed |
+| Best effort | TCP | Dispatch completes; downstream receipt is not claimed |
 | Observe only | `observe` bridge mode | Local inspection completes without a sink write |
 
-Each route can bound retained data with any combination of `max_messages`,
-`max_age`, and `max_bytes`. With no limits set, `max_messages` defaults to
-10,000. Metrics distinguish **pending delivery** after the checkpoint from
+Each route bounds retained data with `max_messages`, `max_age`, and
+`max_bytes`. Omitted limits are filled independently: every route gets a
+10,000-message guard and a 64 MiB logical canonical-Envelope guard unless each
+is explicitly set. `max_age` remains optional and measures time held by this
+Beacon from local `observed_at`/queue admission, never the upstream wire
+timestamp. Metrics distinguish **pending delivery** after the checkpoint from
 **retained history** that has already been acknowledged but remains replayable.
 Queue totals are maintained in a separate aggregate row, so reading live
-metrics does not repeatedly scan or deserialize retained envelopes. A retention
-cap can prune pending delivery when a sink falls behind; raise it explicitly
-for routes that need a larger outage window.
+metrics does not repeatedly scan or deserialize retained Envelopes. Any cap can
+prune pending delivery when a sink falls behind; size all three dimensions for
+the longest supported outage.
 
 SSE clients resume with `Last-Event-ID`; SSE and WebSocket clients can also use
 `?after=<connector>:<sequence>`. A sink shared by multiple routes accepts a
-comma-separated cursor such as `?after=nav:104,engine:57`. TCP and MQTT are
-live-only.
+comma-separated cursor such as `?after=nav:104,engine:57`. TCP is live-only.
+MQTT has no Beacon-side consumer replay, but a Connector route keeps delivery
+pending and retries until the broker acknowledges its QoS 1 publish.
+Each SSE, WebSocket, or TCP sink admits at most 32 concurrent clients. Excess
+SSE or WebSocket requests receive `503` with `Retry-After: 5`, and excess TCP
+connections are closed. TCP sink connections are receive-only.
 
-Confirmed writes use retry with bounded exponential backoff and at-least-once
-semantics. HTTP POST retries carry a deterministic `Idempotency-Key` derived
-from the sink, connector route, and queue range so a receiver can deduplicate
-an ambiguous resend. A valid HTTP `Retry-After` response header raises the
-next delay above that backoff when the receiver needs more time. An envelope
-that cannot be encoded for semantic CAN
+Confirmed writes use continuous, jittered exponential retry and at-least-once
+semantics. Remote-source, physical NMEA-endpoint, and sink-delivery retry use a
+250 ms initial ceiling; durable queue writes use 100 ms. All double to a
+one-minute ceiling and continue until success or shutdown, avoiding a tight
+loop through a long outage. SSE/WebSocket dial, TLS, and response-header phases
+are each bounded to 15 seconds without imposing a lifetime on an established
+stream. HTTP POST retries carry a deterministic `Idempotency-Key` derived from
+the sink, connector route, and queue range so a receiver can deduplicate an
+ambiguous resend. A valid HTTP `Retry-After` response header raises the next
+delay when the receiver needs more time, but is capped at one minute so a stale
+or hostile value cannot park delivery indefinitely. Source and MQTT reconnect
+history resets only after 30 seconds of stable connectivity; handshake/drop
+flapping therefore continues backing off. MQTT confirmation is equally precise:
+PUBACK proves broker acceptance, not subscriber receipt. A
+lost acknowledgement can cause a duplicate publish. Automatic MQTT reconnect
+is disabled: every loss invalidates the current client generation, and retry
+uses a newly constructed client so an old in-flight token cannot advance the
+Connector checkpoint.
+An envelope that cannot be encoded for semantic CAN
 delivery is counted as skipped and checkpointed so an unknown PGN cannot wedge
 a route.
 Transparent SocketCAN delivery preserves that unknown PGN losslessly. A
@@ -222,6 +247,86 @@ normal connector and sink statistics, and then intentionally discards it.
 For the precise retention, pruning, replay, retry, and file-rotation contract,
 read [Concepts](internal/ui/docs/03-concepts.md) and
 [ADR 0001](docs/adr/0001-route-delivery-boundaries.md).
+
+### Storage budgets and outage sizing
+
+Omitting `settings.resources` applies these appliance-wide defaults:
+
+| Setting | Default | Validation boundary |
+|---|---:|---|
+| `max_database_bytes` | 1 GiB | Physical SQLite main-database page ceiling |
+| `database_reserve_bytes` | 128 MiB | Space inside that ceiling withheld from logical route allocations |
+| `max_file_store_bytes` | 2 GiB | Sum of every file sink's `max_file_bytes × max_files` allocation |
+
+The sum of every connector route's effective `max_bytes` must fit within
+`max_database_bytes - database_reserve_bytes` (896 MiB by default). The reserve
+is validation headroom for configuration, indexes, inventory, and SQLite
+overhead; it is not preallocated filesystem space. The 1 GiB page ceiling
+applies to the main database file. The separate WAL has a 16 MiB retention
+target and automatic checkpoints but can transiently exceed that target during
+an active transaction, so leave filesystem headroom beyond the configured
+database ceiling.
+
+Beacon performs a passive WAL checkpoint and bounded incremental vacuum every
+six hours. It never runs a full `VACUUM` online. To reclaim a legacy or
+high-water database, stop Beacon and run `beacon compact --db beacon.db`; allow
+temporary free space for approximately one additional database copy. Compact
+before lowering `max_database_bytes` below the current page high-water mark.
+
+A file sink defaults to 100 MiB per file and five files including the active
+file. `max_files` cannot exceed 128. Beacon rotates *before* a record would
+cross `max_file_bytes`, skips and checkpoints a single encoded record larger
+than that limit, and on startup rotates/removes existing active or backup files
+that no longer fit after limits shrink. Aggregate configured file allocations
+must fit the 2 GiB appliance budget even if the files do not yet exist.
+
+Size a route from observed peak Envelope rate and average canonical JSON size:
+
+```text
+factor       = 1 + reserve_percent / 100
+max_messages = ceil(rate_per_second × outage_seconds × factor)
+max_bytes    = max_messages × average_envelope_bytes
+max_age      = outage × factor
+```
+
+The CLI performs the same calculation. For one 512-byte Envelope per second,
+a seven-day outage, and 25% reserve:
+
+```bash
+beacon size-buffer --rate 1 --average-bytes 512 --outage 168h --reserve-percent 25
+# max_messages: 756000; max_bytes: 387072000; max_age: 210h0m0s
+```
+
+These are safety budgets, not measured vessel capacity. Run the
+[vessel release gates](docs/vessel-release-gates.md) and then qualify the
+actual hardware with representative traffic, outage duration, storage, and
+power-loss testing.
+
+### Ingress and connection bounds
+
+Remote MQTT, SSE, and WebSocket sources accept at most a 256 KiB encoded
+Envelope. Within it, decoded `payload` JSON is capped at 128 KiB, raw NMEA 2000
+data at 1,785 bytes, `physical` and missing-field collections at 256 entries
+each, and individual metadata strings at 1 KiB. Invalid remote Envelopes are
+discarded before filtering, diagnostics, or durable storage.
+
+Configuration is capped at 32 sources, 32 sinks, and 64 connector routes. A
+source or sink may configure at most 32 headers; a connector route may contain
+at most 32 CEL filters of 8 KiB each. Names are capped at 256 bytes, endpoint
+and header-value text at 8 KiB, MQTT topics at 4 KiB, header names at 256 bytes,
+and all authored Source/Sink/Connector strings together at 256 KiB. Beacon
+retains at most 1,024 uncommissioned Device NAME records, while operator-approved
+commissioning baseline entries are never evicted by that history cap.
+
+The admin listener, data HTTP listener, and configured plain-TCP sink listeners
+share a 128 accepted-connection budget. The HTTP servers also enforce a 64 KiB
+header limit, five-second header deadline, 30-second read deadline, and
+90-second idle timeout. Typed REST request bodies and MCP POST bodies are
+capped at 1 MiB, and MCP keeps no cross-request session. Each SSE, WebSocket,
+or plain TCP sink also caps clients at 32 inside the shared allowance. These
+limits bound accepted network socket descriptors; listeners, SQLite,
+CAN/serial endpoints, and outbound connections still use additional file
+descriptors.
 
 ### HTTP POST sink
 
@@ -393,9 +498,26 @@ The entire desired state is one JSON document:
       "buffer": {"max_messages": 10000},
       "enabled": true
     }
-  ]
+  ],
+  "settings": {
+    "observability": {
+      "prometheus_source_details": false
+    },
+    "resources": {
+      "max_database_bytes": 1073741824,
+      "database_reserve_bytes": 134217728,
+      "max_file_store_bytes": 2147483648
+    }
+  }
 }
 ```
+
+`settings` is optional. Per-source and queue health metrics are always
+available, while the higher-cardinality per-PGN Prometheus series are disabled
+by default to keep collection inexpensive on constrained hosts. Set
+`settings.observability.prometheus_source_details` to `true` only when that
+diagnostic detail is needed. The `resources` values shown are also the defaults;
+omit that block to use them unchanged.
 
 Use it in whichever workflow fits:
 
@@ -460,12 +582,15 @@ An MCP client can connect without a cloud relay or companion process:
 The MCP server exposes tools to read the complete configuration, create or
 update sources, sinks, and connector routes, delete each entity type, and read
 health, delivery metrics, per-source PGN traffic metrics, or the exact latest
-decoded payload for every sensor/PGN stream. Connector responses expose both
+decoded payloads from a bounded, filterable set of sensor/PGN streams.
+Rich-diagnostic calls return 16 matches by default, cap explicit requests at
+32, and report `truncated` when filters should be narrowed. Connector responses expose both
 authored and effective retention limits. It uses the same validation, SQLite
 persistence, and hot reconciliation as the UI and REST API.
 The server, tool schemas, and reference page are all embedded in the Beacon
 binary; no internet connection, remote schema, CDN, or hosted MCP service is
-required.
+required. The endpoint retains no cross-request MCP session state and caps each
+POST body at 1 MiB.
 
 Each source overview groups traffic by source address and PGN, including PGNs
 Beacon cannot decode. It reports learned frequency and jitter, gaps and bursts,
@@ -478,9 +603,16 @@ is exported as `beacon_source_pgn_*` at `/metrics`; raw payloads and fingerprint
 identifiers stay in the UI/MCP response to avoid unbounded Prometheus labels.
 Traffic, decode, addressing, and timing counters are exact for every message;
 decoded-field and raw-byte distributions are diagnostic samples taken at most
-once per second per source/PGN/address stream. MCP latest-payload reads are not
-sampled: Beacon retains exactly one current payload per bounded stream and
-overwrites it on every message.
+once per second per source/PGN/address stream. Rich state is capped at 256
+streams per source and 512 process-wide; novel streams omitted at capacity
+still contribute to exact source totals, and state idle for six hours is
+reclaimed. Per stream, Beacon keeps at most 32 decoded fields, 32 missing-field
+names, an 8 KiB latest decoded payload, 256 retained raw bytes (32 analyzed),
+16 raw lengths, 16 distinct values per analyzed byte, 32 fingerprints, and four
+raw samples. MCP reports local/global capacity, omitted/expired, and truncation
+counters. The canonical Envelope is never truncated by diagnostic limits.
+Source lifecycle diagnostics retain 100 events per source, at most 1,000
+persisted events overall, and no more than 4 KiB in one persisted document.
 
 Every source and sink overview also has a stopped-by-default stream inspector.
 Start captures future source-received or sink-sent messages without consuming
@@ -494,7 +626,11 @@ with exactly one message per line in either view. Captures can be copied,
 exported as n2k JSONL, or exported as one hexadecimal CAN payload per line,
 preserving message boundaries. The captured counter tracks the entire browser
 session even though only its latest 200 messages remain available for display,
-copy, and export.
+copy, and export. Each source or sink admits at most eight simultaneous preview
+subscribers, each with an eight-Envelope channel. Serialized preview documents
+larger than 32 KiB are omitted. A slow inspector loses preview messages rather
+than applying backpressure to vessel traffic; these limits never alter the
+canonical Envelope on a Connector route.
 
 The admin API also exposes the complete PGN and field catalog, best-effort
 CAN/USB hardware discovery, stable Device NAME inventory, commissioning
@@ -510,6 +646,12 @@ Prebuilt archives for Linux, macOS, and Windows on amd64 and arm64 are published
 on [GitHub Releases](https://github.com/open-ships/beacon/releases). Physical
 SocketCAN operation requires Linux; the other builds remain useful for USB-CAN,
 remote streams, development, and administration.
+
+Before qualifying a build for constrained or intermittently connected vessel
+hardware, run the repeatable [vessel release gates](docs/vessel-release-gates.md).
+They enforce an idle resource budget and exercise SQLite full-database and
+abrupt-process recovery paths; the guide also identifies the hardware tests
+that those automated proxies cannot replace.
 
 | Flag | Default | Purpose |
 |---|---|---|
@@ -615,6 +757,7 @@ just build          # local static binary
 just test           # all Go tests
 just test-race      # full suite with the race detector
 just test-browser   # Playwright end-to-end tests
+just vessel-gate    # Linux idle-resource and SQLite recovery gates
 just fmt            # gofmt
 just vet            # go vet
 just lint           # golangci-lint

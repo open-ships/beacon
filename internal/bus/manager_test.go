@@ -243,6 +243,45 @@ func (writeFailBus) WriteFrame(can.Frame) error {
 
 func (writeFailBus) Close() error { return nil }
 
+type flappingBus struct{ attempts chan time.Time }
+
+func (b *flappingBus) Run(context.Context, func(can.Frame)) error {
+	b.attempts <- time.Now()
+	return errors.New("bus immediately dropped")
+}
+
+func (*flappingBus) WriteFrame(can.Frame) error { return nil }
+func (*flappingBus) Close() error               { return nil }
+
+func TestShortBusFlapsRetainExponentialBackoff(t *testing.T) {
+	oldMin, oldMax, oldStable := busReconnectMin, busReconnectMax, busStableConnectionAge
+	busReconnectMin, busReconnectMax, busStableConnectionAge = 2*time.Millisecond, 64*time.Millisecond, time.Second
+	t.Cleanup(func() {
+		busReconnectMin, busReconnectMax, busStableConnectionAge = oldMin, oldMax, oldStable
+	})
+
+	bus := &flappingBus{attempts: make(chan time.Time, 16)}
+	m := NewManagerWithBus(slog.Default(), nil, bus, n2k.WithClaimTimeout(5*time.Millisecond))
+	h, err := m.Acquire(context.Background(), Endpoint{Kind: "socketcan", Name: "can0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Release()
+
+	times := make([]time.Time, 0, 6)
+	for len(times) < cap(times) {
+		select {
+		case attemptedAt := <-bus.attempts:
+			times = append(times, attemptedAt)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only observed %d bus reconnect attempts", len(times))
+		}
+	}
+	if lastInterval := times[5].Sub(times[4]); lastInterval < 10*time.Millisecond {
+		t.Fatalf("fifth short-flap retry interval = %s, want retained exponential backoff", lastInterval)
+	}
+}
+
 func TestClientStartupWriteFailureReportsError(t *testing.T) {
 	m := NewManagerWithBus(slog.Default(), nil, writeFailBus{},
 		n2k.WithClaimTimeout(10*time.Millisecond))

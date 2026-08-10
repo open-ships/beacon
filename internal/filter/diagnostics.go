@@ -29,7 +29,7 @@ func Diagnose(exprs []string) ([]Diagnostic, error) {
 	var diagnostics []Diagnostic
 	seen := make(map[[4]int]struct{})
 	for expressionIndex, expr := range exprs {
-		_, issues := env.Compile(expr)
+		ast, issues := env.Compile(expr)
 		for _, issue := range issues.Errors() {
 			line := issue.Location.Line()
 			column := issue.Location.Column()
@@ -52,6 +52,21 @@ func Diagnose(exprs []string) ([]Diagnostic, error) {
 				EndColumn:  end,
 				Message:    issue.Message,
 			})
+		}
+		if issues.Err() == nil {
+			if err := requireBooleanOutput(ast); err != nil {
+				end := len(expr)
+				if newline := strings.IndexByte(expr, '\n'); newline >= 0 {
+					end = newline
+				}
+				diagnostics = append(diagnostics, Diagnostic{
+					Expression: expressionIndex,
+					Line:       1,
+					Column:     0,
+					EndColumn:  end,
+					Message:    err.Error(),
+				})
+			}
 		}
 	}
 	return diagnostics, nil

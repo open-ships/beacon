@@ -10,19 +10,36 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/open-ships/beacon/internal/msg"
 )
 
 const (
-	sourceIntervalSamples       = 64
-	maxSourceFields             = 128
-	maxCategoryValues           = 16
-	sourceDiagnosticInterval    = time.Second
-	sourceExpectedRefresh       = 8
-	maxSourceStreamsPerSource   = 2048
-	sourceStreamRetention       = 24 * time.Hour
-	maxTrackedSourceDeviceNames = 4096
+	// Rich source diagnostics are intentionally much smaller than the
+	// canonical Envelope stream. A typical vessel stays well below these
+	// limits; malformed or unusually diverse input loses diagnostic detail,
+	// never traffic or canonical payload data.
+	sourceIntervalSamples          = 32
+	maxSourceFields                = 32
+	maxCategoryValues              = 12
+	maxMissingDecodedFields        = 32
+	maxMissingFieldObservations    = 64
+	maxPhysicalFieldObservations   = 64
+	maxFlattenedPayloadFields      = 64
+	maxDecodedPayloadDepth         = 8
+	maxDiagnosticFieldNameBytes    = 96
+	maxDiagnosticUnitBytes         = 32
+	maxDiagnosticLabelBytes        = 128
+	maxDiagnosticCategoryBytes     = 64
+	maxRetainedDecodedPayloadBytes = 8 << 10 // one 8 KiB latest-payload copy per tracked stream
+	sourceDiagnosticInterval       = time.Second
+	sourceExpectedRefresh          = 8
+	maxSourceStreamsPerSource      = 256
+	maxSourceStreamsTotal          = 512
+	sourceStreamRetention          = 6 * time.Hour
+	sourceStreamSweepInterval      = time.Minute
+	maxTrackedSourceDeviceNames    = 1024
 )
 
 // FieldDistribution is the process-local distribution of one decoded field
@@ -61,57 +78,62 @@ type FieldDistribution struct {
 // CAN source address is part of the identity so two devices sending the same
 // PGN remain independently observable when one stops transmitting.
 type SourcePGNMetric struct {
-	Observed                bool                   `json:"observed"`
-	SourceID                string                 `json:"source_id"`
-	PGN                     uint32                 `json:"pgn"`
-	PGNName                 string                 `json:"pgn_name,omitempty"`
-	Variant                 string                 `json:"variant,omitempty"`
-	Transport               string                 `json:"transport,omitempty"`
-	ManufacturerCode        *uint16                `json:"manufacturer_code,omitempty"`
-	DecodeStatus            string                 `json:"decode_status"`
-	DecodeStatuses          map[string]int64       `json:"decode_statuses"`
-	DecodeComplete          int64                  `json:"decode_complete"`
-	DecodeIncomplete        int64                  `json:"decode_incomplete"`
-	DecodeFallback          int64                  `json:"decode_fallback"`
-	UnknownMessages         int64                  `json:"unknown_messages"`
-	MissingDecodedFields    map[string]int64       `json:"missing_decoded_fields,omitempty"`
-	SourceAddress           uint8                  `json:"source_address"`
-	DeviceName              *uint64                `json:"device_name,omitempty"`
-	DeviceNameHex           string                 `json:"device_name_hex,omitempty"`
-	Messages                int64                  `json:"messages"`
-	DiagnosticSamples       int64                  `json:"diagnostic_samples"`
-	FirstSeen               time.Time              `json:"first_seen"`
-	LastSeen                time.Time              `json:"last_seen"`
-	AgeSeconds              float64                `json:"age_seconds"`
-	FrequencyHz             float64                `json:"frequency_hz"`
-	ExpectedPeriodSeconds   float64                `json:"expected_period_seconds"`
-	ShortestPeriodSeconds   float64                `json:"shortest_period_seconds,omitempty"`
-	LongestPeriodSeconds    float64                `json:"longest_period_seconds,omitempty"`
-	PeriodP90Seconds        float64                `json:"period_p90_seconds,omitempty"`
-	PeriodP95Seconds        float64                `json:"period_p95_seconds,omitempty"`
-	PeriodP99Seconds        float64                `json:"period_p99_seconds,omitempty"`
-	JitterMADSeconds        float64                `json:"jitter_mad_seconds,omitempty"`
-	JitterPercent           float64                `json:"jitter_percent,omitempty"`
-	BurstCount              int64                  `json:"burst_count"`
-	RecentMessagesPerSec    float64                `json:"recent_messages_per_sec"`
-	RecentBytesPerSec       float64                `json:"recent_bytes_per_sec"`
-	EstimatedBusLoadPercent float64                `json:"estimated_bus_load_percent"`
-	TrafficSharePercent     float64                `json:"traffic_share_percent"`
-	PayloadBytesLast        int64                  `json:"payload_bytes_last"`
-	PayloadBytesMin         int64                  `json:"payload_bytes_min"`
-	PayloadBytesMax         int64                  `json:"payload_bytes_max"`
-	PayloadBytesMean        float64                `json:"payload_bytes_mean"`
-	GapActive               bool                   `json:"gap_active"`
-	GapRatio                float64                `json:"gap_ratio,omitempty"`
-	GapCount                int64                  `json:"gap_count"`
-	LastGapAt               *time.Time             `json:"last_gap_at,omitempty"`
-	LongestGapSeconds       float64                `json:"longest_gap_seconds,omitempty"`
-	Status                  string                 `json:"status"`
-	DestinationCounts       map[string]int64       `json:"destination_counts"`
-	PriorityCounts          map[string]int64       `json:"priority_counts"`
-	IdentityChanges         int64                  `json:"identity_changes"`
-	Raw                     *RawPayloadDiagnostics `json:"raw,omitempty"`
-	Fields                  []FieldDistribution    `json:"fields,omitempty"`
+	Observed                 bool                   `json:"observed"`
+	SourceID                 string                 `json:"source_id"`
+	PGN                      uint32                 `json:"pgn"`
+	PGNName                  string                 `json:"pgn_name,omitempty"`
+	Variant                  string                 `json:"variant,omitempty"`
+	Transport                string                 `json:"transport,omitempty"`
+	ManufacturerCode         *uint16                `json:"manufacturer_code,omitempty"`
+	DecodeStatus             string                 `json:"decode_status"`
+	DecodeStatuses           map[string]int64       `json:"decode_statuses"`
+	DecodeComplete           int64                  `json:"decode_complete"`
+	DecodeIncomplete         int64                  `json:"decode_incomplete"`
+	DecodeFallback           int64                  `json:"decode_fallback"`
+	UnknownMessages          int64                  `json:"unknown_messages"`
+	MissingDecodedFields     map[string]int64       `json:"missing_decoded_fields,omitempty"`
+	MissingDecodedOverflow   int64                  `json:"missing_decoded_fields_overflow,omitempty"`
+	SourceAddress            uint8                  `json:"source_address"`
+	DeviceName               *uint64                `json:"device_name,omitempty"`
+	DeviceNameHex            string                 `json:"device_name_hex,omitempty"`
+	Messages                 int64                  `json:"messages"`
+	DiagnosticSamples        int64                  `json:"diagnostic_samples"`
+	DiagnosticTruncations    int64                  `json:"diagnostic_truncations,omitempty"`
+	LatestPayloadBytes       int                    `json:"latest_payload_bytes,omitempty"`
+	LatestPayloadTruncated   bool                   `json:"latest_payload_truncated,omitempty"`
+	LatestPayloadTruncations int64                  `json:"latest_payload_truncations,omitempty"`
+	FirstSeen                time.Time              `json:"first_seen"`
+	LastSeen                 time.Time              `json:"last_seen"`
+	AgeSeconds               float64                `json:"age_seconds"`
+	FrequencyHz              float64                `json:"frequency_hz"`
+	ExpectedPeriodSeconds    float64                `json:"expected_period_seconds"`
+	ShortestPeriodSeconds    float64                `json:"shortest_period_seconds,omitempty"`
+	LongestPeriodSeconds     float64                `json:"longest_period_seconds,omitempty"`
+	PeriodP90Seconds         float64                `json:"period_p90_seconds,omitempty"`
+	PeriodP95Seconds         float64                `json:"period_p95_seconds,omitempty"`
+	PeriodP99Seconds         float64                `json:"period_p99_seconds,omitempty"`
+	JitterMADSeconds         float64                `json:"jitter_mad_seconds,omitempty"`
+	JitterPercent            float64                `json:"jitter_percent,omitempty"`
+	BurstCount               int64                  `json:"burst_count"`
+	RecentMessagesPerSec     float64                `json:"recent_messages_per_sec"`
+	RecentBytesPerSec        float64                `json:"recent_bytes_per_sec"`
+	EstimatedBusLoadPercent  float64                `json:"estimated_bus_load_percent"`
+	TrafficSharePercent      float64                `json:"traffic_share_percent"`
+	PayloadBytesLast         int64                  `json:"payload_bytes_last"`
+	PayloadBytesMin          int64                  `json:"payload_bytes_min"`
+	PayloadBytesMax          int64                  `json:"payload_bytes_max"`
+	PayloadBytesMean         float64                `json:"payload_bytes_mean"`
+	GapActive                bool                   `json:"gap_active"`
+	GapRatio                 float64                `json:"gap_ratio,omitempty"`
+	GapCount                 int64                  `json:"gap_count"`
+	LastGapAt                *time.Time             `json:"last_gap_at,omitempty"`
+	LongestGapSeconds        float64                `json:"longest_gap_seconds,omitempty"`
+	Status                   string                 `json:"status"`
+	DestinationCounts        map[string]int64       `json:"destination_counts"`
+	PriorityCounts           map[string]int64       `json:"priority_counts"`
+	IdentityChanges          int64                  `json:"identity_changes"`
+	Raw                      *RawPayloadDiagnostics `json:"raw,omitempty"`
+	Fields                   []FieldDistribution    `json:"fields,omitempty"`
 }
 
 type sourceStreamKey struct {
@@ -212,8 +234,12 @@ type sourceStream struct {
 	firstSeen              time.Time
 	lastSeen               time.Time
 	diagnosticSamples      int64
+	diagnosticTruncations  int64
 	lastDiagnostic         time.Time
 	lastPayload            json.RawMessage
+	lastPayloadBytes       int
+	lastPayloadTruncated   bool
+	lastPayloadTruncations int64
 	intervals              [sourceIntervalSamples]time.Duration
 	intHead                int
 	intLen                 int
@@ -231,6 +257,7 @@ type sourceStream struct {
 	unknownMessages        int64
 	novelValues            int64
 	missingDecodedFields   map[string]int64
+	missingDecodedOverflow int64
 	burstCount             int64
 	wire                   sourceWireStats
 	rate                   sourceRateStats
@@ -371,13 +398,13 @@ func (s *sourceStream) record(now time.Time, e *msg.Envelope) (sourceEventState,
 	s.messages++
 	s.lastSeen = now
 	if e.PGNName != "" {
-		s.pgnName = e.PGNName
+		s.pgnName, _ = boundedDiagnosticText(e.PGNName, maxDiagnosticLabelBytes)
 	}
 	if e.Variant != "" {
-		s.variant = e.Variant
+		s.variant, _ = boundedDiagnosticText(e.Variant, maxDiagnosticLabelBytes)
 	}
 	if e.Transport != "" {
-		s.transport = e.Transport
+		s.transport, _ = boundedDiagnosticText(e.Transport, maxDiagnosticLabelBytes)
 	}
 	if e.ManufacturerCode != nil {
 		manufacturer := *e.ManufacturerCode
@@ -392,12 +419,21 @@ func (s *sourceStream) record(now time.Time, e *msg.Envelope) (sourceEventState,
 	}
 	payloadSize := sourcePayloadSize(e)
 	s.payload.add(float64(payloadSize))
-	if len(e.Payload) > 0 {
-		// Published envelopes are immutable. Retain the current payload slice
-		// and copy only when an explicit latest-payload read snapshots it.
-		s.lastPayload = e.Payload
-	} else {
+	s.lastPayloadBytes = len(e.Payload)
+	s.lastPayloadTruncated = len(e.Payload) > maxRetainedDecodedPayloadBytes
+	switch {
+	case len(e.Payload) == 0:
 		s.lastPayload = nil
+	case s.lastPayloadTruncated:
+		// Never retain a prefix that is no longer valid JSON. The rich stream
+		// metric reports the omission; the canonical Envelope is untouched.
+		s.lastPayload = nil
+		s.lastPayloadTruncations++
+	default:
+		// Own the bounded buffer so a diagnostic entry cannot pin an incoming
+		// transport buffer with a much larger capacity. Reuse it on the next
+		// message to avoid steady-state allocations.
+		s.lastPayload = append(s.lastPayload[:0], e.Payload...)
 	}
 	s.rate.record(now, payloadSize, e.Transport == "Fast" || e.Transport == "fast")
 	if s.destinations == nil {
@@ -422,8 +458,25 @@ func (s *sourceStream) record(now time.Time, e *msg.Envelope) (sourceEventState,
 	if decodeStatus == "unknown" {
 		s.unknownMessages++
 	}
-	for _, missing := range e.Decode.Missing {
-		s.missingDecodedFields[missing]++
+	missingFields := e.Decode.Missing
+	if len(missingFields) > maxMissingFieldObservations {
+		s.missingDecodedOverflow += int64(len(missingFields) - maxMissingFieldObservations)
+		missingFields = missingFields[:maxMissingFieldObservations]
+	}
+	for _, missing := range missingFields {
+		if !validDiagnosticFieldName(missing) {
+			s.missingDecodedOverflow++
+			continue
+		}
+		if existing, ok := s.missingDecodedFields[missing]; ok {
+			s.missingDecodedFields[missing] = existing + 1
+			continue
+		}
+		if len(s.missingDecodedFields) >= maxMissingDecodedFields {
+			s.missingDecodedOverflow++
+			continue
+		}
+		s.missingDecodedFields[strings.Clone(missing)] = 1
 	}
 
 	if s.lastDiagnostic.IsZero() || now.Before(s.lastDiagnostic) || now.Sub(s.lastDiagnostic) >= sourceDiagnosticInterval {
@@ -441,16 +494,21 @@ func (s *sourceStream) record(now time.Time, e *msg.Envelope) (sourceEventState,
 func (s *sourceStream) recordDiagnosticsLocked(now time.Time, e *msg.Envelope) {
 	s.wire.record(now, e.Raw)
 
-	observedFields := make(map[string]bool)
-	physicalNames := make([]string, 0, len(e.Physical))
-	for name := range e.Physical {
-		physicalNames = append(physicalNames, name)
-	}
-	sort.Strings(physicalNames)
-	for _, name := range physicalNames {
-		value := e.Physical[name]
+	truncated := false
+	observedFields := make(map[string]bool, min(len(s.fields), maxSourceFields))
+	// Do not copy and sort every physical-field name: an Envelope can carry a
+	// caller-supplied map. Iterating it directly keeps temporary memory fixed;
+	// the final snapshot is sorted after the stored field set has been bounded.
+	physicalObservations := 0
+	for name, value := range e.Physical {
+		if physicalObservations >= maxPhysicalFieldObservations {
+			truncated = true
+			break
+		}
+		physicalObservations++
 		field := s.field(name, "number", value.Unit)
 		if field == nil {
+			truncated = true
 			continue
 		}
 		field.lowerBound = cloneFloat(value.Minimum)
@@ -459,12 +517,18 @@ func (s *sourceStream) recordDiagnosticsLocked(now time.Time, e *msg.Envelope) {
 		field.recordNumeric(now, value.Value)
 	}
 
-	values := map[string]any{}
-	if len(e.Payload) > 0 && string(e.Payload) != "null" {
-		_ = json.Unmarshal(e.Payload, &values)
+	var values any
+	if len(e.Payload) > 0 && !bytes.Equal(bytes.TrimSpace(e.Payload), []byte("null")) {
+		if len(e.Payload) > maxRetainedDecodedPayloadBytes {
+			truncated = true
+		} else if err := json.Unmarshal(e.Payload, &values); err != nil {
+			values = nil
+		}
 	}
-	flat := make(map[string]any)
-	flattenScalars("", values, flat)
+	flat := make(map[string]any, min(maxFlattenedPayloadFields, maxSourceFields))
+	if flattenScalars("", values, flat, 0) {
+		truncated = true
+	}
 	fieldNames := make([]string, 0, len(flat))
 	for name := range flat {
 		fieldNames = append(fieldNames, name)
@@ -480,6 +544,8 @@ func (s *sourceStream) recordDiagnosticsLocked(now time.Time, e *msg.Envelope) {
 			if field != nil {
 				observedFields[name] = true
 				field.recordNumeric(now, value)
+			} else {
+				truncated = true
 			}
 		case string:
 			if field := s.field(name, "category", ""); field != nil {
@@ -487,6 +553,8 @@ func (s *sourceStream) recordDiagnosticsLocked(now time.Time, e *msg.Envelope) {
 				if field.recordCategory(now, value) {
 					s.novelValues++
 				}
+			} else {
+				truncated = true
 			}
 		case bool:
 			if field := s.field(name, "category", ""); field != nil {
@@ -494,6 +562,8 @@ func (s *sourceStream) recordDiagnosticsLocked(now time.Time, e *msg.Envelope) {
 				if field.recordCategory(now, strconv.FormatBool(value)) {
 					s.novelValues++
 				}
+			} else {
+				truncated = true
 			}
 		}
 	}
@@ -501,6 +571,9 @@ func (s *sourceStream) recordDiagnosticsLocked(now time.Time, e *msg.Envelope) {
 		if !observedFields[name] {
 			field.missingMessages++
 		}
+	}
+	if truncated {
+		s.diagnosticTruncations++
 	}
 }
 
@@ -523,7 +596,13 @@ func cloneFloat(value *float64) *float64 {
 	return &out
 }
 
-func flattenScalars(prefix string, value any, out map[string]any) {
+// flattenScalars extracts a bounded set of scalar fields. It returns true when
+// depth, field-count, or name-size limits omitted diagnostic data.
+func flattenScalars(prefix string, value any, out map[string]any, depth int) bool {
+	if depth > maxDecodedPayloadDepth {
+		return value != nil
+	}
+	truncated := false
 	switch typed := value.(type) {
 	case map[string]any:
 		keys := make([]string, 0, len(typed))
@@ -532,33 +611,61 @@ func flattenScalars(prefix string, value any, out map[string]any) {
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
+			if len(out) >= maxFlattenedPayloadFields {
+				return true
+			}
 			name := key
 			if prefix != "" {
 				name = prefix + "." + key
 			}
-			flattenScalars(name, typed[key], out)
+			if !validDiagnosticFieldName(name) {
+				truncated = true
+				continue
+			}
+			if flattenScalars(name, typed[key], out, depth+1) {
+				truncated = true
+			}
 		}
 	case []any:
 		for i, item := range typed {
-			flattenScalars(prefix+"["+strconv.Itoa(i)+"]", item, out)
+			if len(out) >= maxFlattenedPayloadFields {
+				return true
+			}
+			name := prefix + "[" + strconv.Itoa(i) + "]"
+			if !validDiagnosticFieldName(name) {
+				truncated = true
+				continue
+			}
+			if flattenScalars(name, item, out, depth+1) {
+				truncated = true
+			}
 		}
 	case float64, string, bool:
 		if prefix != "" {
+			if len(out) >= maxFlattenedPayloadFields || !validDiagnosticFieldName(prefix) {
+				return true
+			}
 			out[prefix] = typed
 		}
 	}
+	return truncated
 }
 
 func (s *sourceStream) field(name, kind, unit string) *sourceField {
+	if !validDiagnosticFieldName(name) {
+		return nil
+	}
 	if field := s.fields[name]; field != nil {
 		if unit != "" {
-			field.unit = unit
+			field.unit, _ = boundedDiagnosticText(unit, maxDiagnosticUnitBytes)
 		}
 		return field
 	}
 	if len(s.fields) >= maxSourceFields {
 		return nil
 	}
+	name = strings.Clone(name)
+	unit, _ = boundedDiagnosticText(unit, maxDiagnosticUnitBytes)
 	field := &sourceField{kind: kind, unit: unit}
 	if kind == "category" {
 		field.values = make(map[string]int64)
@@ -596,16 +703,17 @@ func (f *sourceField) recordNumeric(now time.Time, value float64) {
 }
 
 func (f *sourceField) recordCategory(now time.Time, value string) bool {
-	if len(value) > 64 {
-		value = value[:64] + "…"
-	}
+	value, _ = boundedDiagnosticText(value, maxDiagnosticCategoryBytes)
 	_, known := f.values[value]
+	tracked := known || len(f.values) < maxCategoryValues
 	if known || len(f.values) < maxCategoryValues {
 		f.values[value]++
 	} else {
 		f.other++
 	}
-	novel := f.presentMessages > 0 && !known
+	// Once the bounded value table is full, Other accounts for observations
+	// without treating every repeat as a new lifecycle event.
+	novel := f.presentMessages > 0 && !known && tracked
 	if novel {
 		f.novelValueCount++
 	}
@@ -616,6 +724,28 @@ func (f *sourceField) recordCategory(now time.Time, value string) bool {
 	f.lastCategory = value
 	f.lastSeen = now
 	return novel
+}
+
+func validDiagnosticFieldName(name string) bool {
+	return name != "" && len(name) <= maxDiagnosticFieldNameBytes && utf8.ValidString(name)
+}
+
+// boundedDiagnosticText owns a valid UTF-8 string no larger than limit bytes,
+// avoiding references into larger transport buffers. A trailing ellipsis marks
+// truncation and is included in the limit.
+func boundedDiagnosticText(value string, limit int) (string, bool) {
+	if limit <= 0 {
+		return "", value != ""
+	}
+	if len(value) <= limit {
+		return strings.Clone(value), false
+	}
+	const suffix = "…"
+	end := max(0, limit-len(suffix))
+	for end > 0 && !utf8.ValidString(value[:end]) {
+		end--
+	}
+	return strings.Clone(value[:end]) + suffix, true
 }
 
 func (s *sourceStream) snapshot(now time.Time) SourcePGNMetric {
@@ -662,7 +792,10 @@ func (s *sourceStream) snapshot(now time.Time) SourcePGNMetric {
 		DecodeStatuses: cloneStringTotals(s.decodeStatuses), DecodeComplete: s.decodeComplete,
 		DecodeIncomplete: s.decodeIncomplete, DecodeFallback: s.decodeFallback,
 		UnknownMessages: s.unknownMessages, MissingDecodedFields: cloneStringTotals(s.missingDecodedFields),
-		SourceAddress: s.key.address, Messages: s.messages, DiagnosticSamples: s.diagnosticSamples,
+		MissingDecodedOverflow: s.missingDecodedOverflow,
+		SourceAddress:          s.key.address, Messages: s.messages, DiagnosticSamples: s.diagnosticSamples,
+		DiagnosticTruncations: s.diagnosticTruncations, LatestPayloadBytes: s.lastPayloadBytes,
+		LatestPayloadTruncated: s.lastPayloadTruncated, LatestPayloadTruncations: s.lastPayloadTruncations,
 		FirstSeen: s.firstSeen, LastSeen: s.lastSeen, AgeSeconds: age.Seconds(),
 		ExpectedPeriodSeconds: expected.Seconds(), ShortestPeriodSeconds: shortest.Seconds(),
 		LongestPeriodSeconds: longest.Seconds(), PeriodP90Seconds: periodP90.Seconds(),
@@ -909,25 +1042,73 @@ func (r *Registry) sourceStreamsFiltered(source string, filter SourcePGNMetricFi
 // streams. Filtering occurs before snapshot generation so narrow MCP and UI
 // reads do not rebuild diagnostics for unrelated sensors.
 func (r *Registry) SourcePGNMetricsFiltered(source string, filter SourcePGNMetricFilter) []SourcePGNMetric {
+	out, _ := r.SourcePGNMetricsFilteredLimit(source, filter, 0)
+	return out
+}
+
+// SourcePGNMetricsFilteredLimit applies a response bound before deep-copying
+// raw and decoded-field diagnostics. Problems retain the same ordering as the
+// full snapshot, followed by PGN and sender address. A non-positive limit is
+// unbounded for internal callers.
+func (r *Registry) SourcePGNMetricsFilteredLimit(source string, filter SourcePGNMetricFilter, limit int) ([]SourcePGNMetric, bool) {
 	if r == nil {
-		return nil
+		return nil, false
 	}
 	streams := r.sourceStreamsFiltered(source, filter)
 	now := r.now()
-	out := make([]SourcePGNMetric, 0, len(streams))
+	type candidate struct {
+		stream   *sourceStream
+		priority int
+	}
+	candidates := make([]candidate, 0, len(streams))
 	for _, stream := range streams {
-		out = append(out, stream.snapshot(now))
+		candidates = append(candidates, candidate{stream: stream, priority: stream.snapshotPriority(now)})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].priority != candidates[j].priority {
+			return candidates[i].priority < candidates[j].priority
+		}
+		left, right := candidates[i].stream.key, candidates[j].stream.key
+		if left.pgn != right.pgn {
+			return left.pgn < right.pgn
+		}
+		return left.address < right.address
+	})
+	truncated := limit > 0 && len(candidates) > limit
+	if truncated {
+		candidates = candidates[:limit]
+	}
+	out := make([]SourcePGNMetric, 0, len(candidates))
+	for _, candidate := range candidates {
+		out = append(out, candidate.stream.snapshot(now))
 	}
 	applyTrafficShares(out)
 	sortSourcePGNMetrics(out)
-	return out
+	return out, truncated
+}
+
+func (s *sourceStream) snapshotPriority(now time.Time) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.intLen < 3 {
+		return 4 // warming
+	}
+	expected := s.expectedInterval
+	if expected == 0 {
+		expected = medianInterval(s.intervalValues())
+	}
+	if now.Sub(s.lastSeen) > gapThreshold(expected) {
+		return 1 // gap
+	}
+	return 5 // active
 }
 
 // SourcePGNLastPayload is the single most recently observed decoded payload
 // for one configured-source/PGN/sender stream. The registry stores only this
-// one payload per bounded stream; it never retains a growing message history.
+// one payload per bounded stream and omits bodies above
+// maxRetainedDecodedPayloadBytes rather than retaining invalid JSON prefixes.
 // Payload is intentionally excluded from generic JSON/schema reflection so an
-// MCP boundary can decode the raw JSON into its true object/array/scalar type.
+// MCP seam can decode the raw JSON into its true object/array/scalar type.
 type SourcePGNLastPayload struct {
 	SourceID      string
 	PGN           uint32
@@ -935,6 +1116,8 @@ type SourcePGNLastPayload struct {
 	SourceAddress uint8
 	DeviceNameHex string
 	LastSeen      time.Time
+	PayloadBytes  int
+	Truncated     bool
 	Payload       json.RawMessage `json:"-"`
 }
 
@@ -944,6 +1127,7 @@ func (s *sourceStream) lastPayloadSnapshot() SourcePGNLastPayload {
 	out := SourcePGNLastPayload{
 		SourceID: s.key.source, PGN: s.key.pgn, PGNName: s.pgnName,
 		SourceAddress: s.key.address, LastSeen: s.lastSeen,
+		PayloadBytes: s.lastPayloadBytes, Truncated: s.lastPayloadTruncated,
 		Payload: bytes.Clone(s.lastPayload),
 	}
 	if s.deviceName != nil {
@@ -952,24 +1136,51 @@ func (s *sourceStream) lastPayloadSnapshot() SourcePGNLastPayload {
 	return out
 }
 
-// SourcePGNLastPayloadsFiltered returns one latest payload per matching
-// sensor/PGN stream, sorted by sender address and PGN for stable MCP output.
+func (s *sourceStream) hasLastPayload() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.lastPayload) > 0
+}
+
+// SourcePGNLastPayloadsFiltered returns one retained latest payload per
+// matching sensor/PGN stream, sorted by sender address and PGN for stable MCP
+// output. Oversized omitted bodies are reported by SourcePGNMetric's
+// LatestPayloadTruncated/LatestPayloadTruncations fields instead.
 func (r *Registry) SourcePGNLastPayloadsFiltered(source string, filter SourcePGNMetricFilter) []SourcePGNLastPayload {
+	out, _ := r.SourcePGNLastPayloadsFilteredLimit(source, filter, 0)
+	return out
+}
+
+// SourcePGNLastPayloadsFilteredLimit bounds payload cloning before it occurs.
+// A non-positive limit is unbounded for internal callers.
+func (r *Registry) SourcePGNLastPayloadsFilteredLimit(source string, filter SourcePGNMetricFilter, limit int) ([]SourcePGNLastPayload, bool) {
 	streams := r.sourceStreamsFiltered(source, filter)
-	out := make([]SourcePGNLastPayload, 0, len(streams))
+	sort.Slice(streams, func(i, j int) bool {
+		if streams[i].key.address != streams[j].key.address {
+			return streams[i].key.address < streams[j].key.address
+		}
+		return streams[i].key.pgn < streams[j].key.pgn
+	})
+	capacity := len(streams)
+	if limit > 0 {
+		capacity = min(capacity, limit)
+	}
+	out := make([]SourcePGNLastPayload, 0, capacity)
+	truncated := false
 	for _, stream := range streams {
+		if limit > 0 && len(out) >= limit {
+			if stream.hasLastPayload() {
+				truncated = true
+				break
+			}
+			continue
+		}
 		payload := stream.lastPayloadSnapshot()
 		if len(payload.Payload) > 0 {
 			out = append(out, payload)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].SourceAddress != out[j].SourceAddress {
-			return out[i].SourceAddress < out[j].SourceAddress
-		}
-		return out[i].PGN < out[j].PGN
-	})
-	return out
+	return out, truncated
 }
 
 // SourcePGNMetrics returns every observed PGN/sender stream for one source.
@@ -1067,29 +1278,37 @@ func (r *Registry) getSourceStream(source string, e *msg.Envelope) (*sourceStrea
 	stream := r.sourceStreams[key]
 	created := false
 	if stream == nil {
-		cutoff := r.now().Add(-sourceStreamRetention)
-		count := 0
-		var oldestKey sourceStreamKey
-		var oldestSeen time.Time
-		for candidateKey, candidate := range r.sourceStreams {
-			if candidateKey.source != source {
-				continue
+		now := r.now()
+		if r.nextSourceStreamSweep.IsZero() || !now.Before(r.nextSourceStreamSweep) {
+			cutoff := now.Add(-sourceStreamRetention)
+			for candidateKey, candidate := range r.sourceStreams {
+				seen := candidate.lastSeenTime()
+				if !seen.IsZero() && seen.Before(cutoff) {
+					delete(r.sourceStreams, candidateKey)
+					candidateState := r.sourceDiagnostics[candidateKey.source]
+					candidateState.streamsExpired++
+					candidateState.trackedStreams--
+					r.sourceDiagnostics[candidateKey.source] = candidateState
+					r.sourceStreamCount--
+				}
 			}
-			seen := candidate.lastSeenTime()
-			if !seen.IsZero() && seen.Before(cutoff) {
-				delete(r.sourceStreams, candidateKey)
-				continue
-			}
-			count++
-			if oldestSeen.IsZero() || seen.Before(oldestSeen) {
-				oldestKey, oldestSeen = candidateKey, seen
-			}
+			r.nextSourceStreamSweep = now.Add(sourceStreamSweepInterval)
 		}
-		if count >= maxSourceStreamsPerSource {
-			delete(r.sourceStreams, oldestKey)
+		state := r.sourceDiagnostics[source]
+		if state.trackedStreams >= maxSourceStreamsPerSource || r.sourceStreamCount >= maxSourceStreamsTotal {
+			// Preserve the stable working set instead of allowing arbitrary novel
+			// keys to churn every stream. Exact source totals and the canonical
+			// Envelope continue through RecordSource; only rich diagnostics omit
+			// this message until a tracked stream expires or the source is removed.
+			state.messagesOmitted++
+			r.sourceDiagnostics[source] = state
+			return nil, false
 		}
 		stream = &sourceStream{key: key, fields: make(map[string]*sourceField)}
 		r.sourceStreams[key] = stream
+		state.trackedStreams++
+		r.sourceStreamCount++
+		r.sourceDiagnostics[source] = state
 		created = true
 	}
 	return stream, created
@@ -1156,6 +1375,10 @@ func (r *Registry) sourceIdentityEvents(now time.Time, source string, e *msg.Env
 	} else if r.sourceDeviceCount < maxTrackedSourceDeviceNames {
 		r.sourceDeviceAddresses[deviceKey] = e.Source
 		r.sourceDeviceCount++
+	} else {
+		state := r.sourceDiagnostics[source]
+		state.deviceNamesOmitted++
+		r.sourceDiagnostics[source] = state
 	}
 	r.mu.Unlock()
 	base := SourceMetricEvent{Time: now.UTC(), SourceID: source, PGN: e.PGN,

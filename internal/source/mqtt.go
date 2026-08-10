@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
@@ -13,15 +12,17 @@ import (
 	"github.com/open-ships/beacon/internal/msg"
 )
 
-const mqttTokenPoll = 100 * time.Millisecond
-
 func runMQTT(ctx context.Context, cfg model.Source, publish func(*msg.Envelope), connected func()) error {
 	lost := make(chan error, 1)
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(model.NormalizeMQTTBrokerURL(cfg.URL))
 	opts.SetClientID(mqttClientID("beacon-source", cfg.ID))
 	opts.SetCleanSession(true)
+	// The enclosing dialer source owns reconnect/backoff. Paho auto-reconnect
+	// here would race a second client created by that loop after ConnectionLost
+	// and retain duplicate subscriptions during a long outage.
 	opts.SetAutoReconnect(false)
+	opts.SetConnectRetry(false)
 	opts.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
 		if err == nil {
 			err = errors.New("mqtt connection lost")
@@ -42,13 +43,19 @@ func runMQTT(ctx context.Context, cfg model.Source, publish func(*msg.Envelope),
 	}
 
 	handler := func(_ mqtt.Client, m mqtt.Message) {
+		if len(m.Payload()) > msg.MaxWireEnvelopeBytes {
+			return
+		}
 		var e msg.Envelope
 		if err := json.Unmarshal(m.Payload(), &e); err != nil {
 			return
 		}
+		if err := msg.ValidateRemote(&e, len(m.Payload())); err != nil {
+			return
+		}
 		publish(&e)
 	}
-	if err := waitMQTTToken(ctx, client.Subscribe(cfg.Topic, 0, handler)); err != nil {
+	if err := waitMQTTToken(ctx, client.Subscribe(cfg.Topic, 1, handler)); err != nil {
 		return err
 	}
 	connected()
@@ -62,15 +69,11 @@ func runMQTT(ctx context.Context, cfg model.Source, publish func(*msg.Envelope),
 }
 
 func waitMQTTToken(ctx context.Context, token mqtt.Token) error {
-	for {
-		if token.WaitTimeout(mqttTokenPoll) {
-			return token.Error()
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
+	select {
+	case <-token.Done():
+		return token.Error()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

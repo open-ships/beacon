@@ -2,6 +2,7 @@ package stats
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ func TestRemoveDropsComponentCountersAndEvents(t *testing.T) {
 	r := NewRegistry()
 	e := &msg.Envelope{PGN: 127250}
 	r.RecordSource("in", e)
+	r.recordSourceMetricEvent(SourceMetricEvent{SourceID: "in", PGN: e.PGN, Summary: "test"})
 	r.RecordSink("out", "route", e)
 	r.Record("route", 1, 10)
 	r.RecordConnectorEvent("route", "received", e)
@@ -38,6 +40,12 @@ func TestRemoveDropsComponentCountersAndEvents(t *testing.T) {
 
 	if _, ok := r.SourceSnapshot("in"); ok {
 		t.Fatal("removed source still has snapshot")
+	}
+	if events := r.SourceMetricEvents("in", 10); len(events) != 0 {
+		t.Fatalf("removed source still has lifecycle events: %+v", events)
+	}
+	if _, ok := r.sourceMetricEvents["in"]; ok {
+		t.Fatal("removed source still has a lifecycle-event ring")
 	}
 	if _, ok := r.SinkSnapshot("out"); ok {
 		t.Fatal("removed sink still has snapshot")
@@ -123,6 +131,58 @@ func TestStreamSubscriptionsDiscardOldestPreviewWhenFull(t *testing.T) {
 		if got.PGN != want {
 			t.Fatalf("preview PGN = %d, want %d", got.PGN, want)
 		}
+	}
+}
+
+func TestStreamSubscriptionCapacityIsStrictlyBounded(t *testing.T) {
+	r := NewRegistry()
+	stops := make([]func(), 0, maxStreamSubscribersPerEntity)
+	for i := 0; i < maxStreamSubscribersPerEntity; i++ {
+		stream, stop := r.SubscribeStream("source", "in", maxStreamSubscriberBuffer+1000)
+		if got := cap(stream); got != maxStreamSubscriberBuffer {
+			t.Fatalf("subscriber buffer = %d, want clamped to %d", got, maxStreamSubscriberBuffer)
+		}
+		stops = append(stops, stop)
+	}
+	overflow, stopOverflow := r.SubscribeStream("source", "in", 1)
+	defer stopOverflow()
+	if _, open := <-overflow; open {
+		t.Fatal("subscriber above per-entity limit was admitted")
+	}
+
+	for _, stop := range stops {
+		stop()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.streamSubscribers[streamKey("source", "in")]; ok {
+		t.Fatal("subscriber registry survived all unsubscribe callbacks")
+	}
+}
+
+func TestStreamPreviewOmitsOversizedDiagnosticDocument(t *testing.T) {
+	r := NewRegistry()
+	stream, stop := r.SubscribeStream("source", "in", 1)
+	defer stop()
+	payload := json.RawMessage(`"` + strings.Repeat("x", maxStreamPreviewDocumentBytes) + `"`)
+	want := string(payload)
+	r.publishStream("source", "in", &msg.Envelope{PGN: 130999, Payload: payload})
+	select {
+	case document := <-stream:
+		t.Fatalf("oversized preview document was retained: %d bytes", len(document))
+	default:
+	}
+	if string(payload) != want {
+		t.Fatal("preview diagnostics modified canonical payload")
+	}
+	if got := r.SourceMetricCapacity("in").PreviewDocsOmitted; got != 1 {
+		t.Fatalf("preview omissions = %d, want 1", got)
+	}
+	r.RemoveSource("in")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.streamPreviewOmitted) != 0 {
+		t.Fatalf("preview omission accounting survived source removal: %+v", r.streamPreviewOmitted)
 	}
 }
 
