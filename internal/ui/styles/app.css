@@ -182,6 +182,30 @@ code {
   font-size: 1.12rem;
 }
 
+.brand-version {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2rem;
+  border-radius: 6px;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: var(--space-1) var(--space-2);
+}
+
+a.brand-version:hover {
+  background: var(--surface-muted);
+  color: var(--black);
+}
+
+a.brand-version:focus-visible {
+  color: var(--black);
+  outline: 3px solid rgba(35, 55, 255, 0.16);
+  outline-offset: 1px;
+}
+
 .eyebrow,
 .dag-kind {
   display: block;

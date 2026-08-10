@@ -14,6 +14,7 @@
   <header class="app-header">
     <div class="brand-strip">
       <a class="brand-product" href="/dashboard" hx-boost="true">beacon</a>
+      {{if .ReleaseURL}}<a class="brand-version" href="{{.ReleaseURL}}" aria-label="Beacon {{.VersionLabel}} release on GitHub">{{.VersionLabel}}</a>{{else if .VersionLabel}}<span class="brand-version" aria-label="Beacon version {{.VersionLabel}}">{{.VersionLabel}}</span>{{end}}
     </div>
     <nav class="app-nav" aria-label="Primary">
       <a href="/config" class="nav-link{{if eq .Active "config"}} menu-active{{end}}" hx-boost="true">config</a>
