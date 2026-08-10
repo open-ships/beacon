@@ -1,6 +1,18 @@
 import { expect, test } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
+test('dashboard content is available without JavaScript', async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  const page = await context.newPage();
+
+  await page.goto('/');
+
+  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page.getByRole('heading', { name: 'Data flow' })).toBeVisible();
+  await expect(page.getByText('Add your first source')).toBeVisible();
+  await context.close();
+});
+
 test('operator can create and visually trace a pipeline', async ({ page }) => {
   const runID = Date.now();
   const sourceName = `Playwright source ${runID}`;

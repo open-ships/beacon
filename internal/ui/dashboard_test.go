@@ -483,9 +483,9 @@ func TestDashboardFragMetadataTablesCountEndpointUsage(t *testing.T) {
 	}
 }
 
-// --- Dashboard page shell ---
+// --- Dashboard initial page ---
 
-func TestDashboardPageHostsPollingContainer(t *testing.T) {
+func TestDashboardPageRendersContentBeforePolling(t *testing.T) {
 	srv, _, _, _ := newDashboardTestServer(t)
 
 	resp, err := http.Get(srv.URL + "/dashboard")
@@ -497,18 +497,37 @@ func TestDashboardPageHostsPollingContainer(t *testing.T) {
 	for _, want := range []string{
 		`id="dashboard-panel"`,
 		`hx-get="/frag/dashboard"`,
-		`hx-trigger="load, every 5s"`,
+		`hx-trigger="every 5s"`,
 		`data-live-poll`,
 		`hx-swap="innerHTML"`,
+		`class="home-flow"`,
+		`<h2>Data flow</h2>`,
+		`<h2>Add your first source</h2>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard page missing %q:\n%s", want, body)
 		}
 	}
-	// The dashboard's graph content is fetched client-side, not
-	// server-rendered inline (see dashboard.html's doc comment) — the shell
-	// response itself carries no graph markup.
-	if strings.Contains(body, "dashboard-content") {
-		t.Fatalf("dashboard page shell should not itself contain fragment markers:\n%s", body)
+	if strings.Contains(body, `hx-trigger="load, every 5s"`) {
+		t.Fatalf("dashboard page should not wait for a client-side load request:\n%s", body)
+	}
+}
+
+func TestDashboardPageRendersConfiguredGraphImmediately(t *testing.T) {
+	srv, svc, _, _ := newDashboardTestServer(t)
+	must(t, svc.PutSource(context.Background(), model.Source{
+		ID: "can0", Name: "Main bus", Type: model.SourceSocketCAN, Enabled: true, Interface: "can0",
+	}, true))
+
+	resp, err := http.Get(srv.URL + "/dashboard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, resp, http.StatusOK)
+	body := mustBody(t, resp)
+	for _, want := range []string{`data-dag-node="source:can0"`, `class="dag-node-title">Main bus</div>`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("initial dashboard response missing configured graph content %q:\n%s", want, body)
+		}
 	}
 }

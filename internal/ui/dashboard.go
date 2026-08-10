@@ -1,12 +1,11 @@
 // dashboard.go implements beacon's live home view: the source -> connector
-// -> sink DAG templates/frag_dashboard.html renders, and the GET
-// /frag/dashboard handler templates/dashboard.html polls every 5s
-// (hx-trigger="load, every 5s") — see dashboard.html's comment for why it
-// ships an empty container rather than rendering this fragment inline, the
-// same "ships empty, fetches client-side" shape the overview pages use.
+// -> sink DAG templates/frag_dashboard.html renders into the initial page,
+// while GET /frag/dashboard refreshes that same content every five seconds.
+// See dashboard.html for the progressive-rendering contract.
 package ui
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -240,6 +239,15 @@ type dashboardData struct {
 	EmptyHref         string
 }
 
+// dashboardPageData combines layout.html's page fields with the live data
+// rendered by dashboard-content. The full dashboard response uses this so the
+// operator receives useful content before htmx runs; /frag/dashboard renders
+// the embedded dashboardData alone on later polling refreshes.
+type dashboardPageData struct {
+	pageData
+	dashboardData
+}
+
 // busDeviceRow is one NMEA-2000 device observed on a CAN bus, rendered in the
 // dashboard's "Bus devices" table. Name is formatted as hex so a device is
 // recognizable across address changes.
@@ -301,16 +309,12 @@ func dashboardEmptyState() (title, message, cta, href string) {
 	return "Add your first source", "Connect a source to start receiving data.", "Add a source", "/sources/new"
 }
 
-// handleDashboardFrag serves GET /frag/dashboard: the dashboard page's
-// hx-trigger="load, every 5s" polling target (see templates/dashboard.html).
-// Lists every configured source/sink/connector fresh on every poll — a
-// source/sink/connector created or deleted elsewhere in the UI must show up
-// on the dashboard within one poll interval, the same freshness every other
-// live fragment in this package gives — and combines them with one
-// statuses() snapshot (used for endpoint node state and connector error
-// badges, so both reflect the exact same instant) and reg's live
-// per-connector counters.
-func handleDashboardFrag(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, devices func() []bus.DeviceInfo, runtime RuntimeInfo, log *slog.Logger) http.HandlerFunc {
+// dashboardDataLoader returns the dashboard's current configuration and live
+// state. Both the initial full-page response and later fragment refreshes use
+// the same loader so progressive HTML and enhanced polling cannot drift.
+type dashboardDataLoader func(context.Context) (dashboardData, error)
+
+func newDashboardDataLoader(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, devices func() []bus.DeviceInfo, runtime RuntimeInfo) dashboardDataLoader {
 	var canDetailsMu sync.Mutex
 	var canDetails []sysinfo.CANInterface
 	var canDetailsExpires time.Time
@@ -327,12 +331,10 @@ func handleDashboardFrag(svc *config.Service, reg *stats.Registry, statuses func
 		canDetailsExpires = time.Now().Add(10 * time.Second)
 		return append([]sysinfo.CANInterface(nil), canDetails...)
 	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		cfg, err := svc.Export(r.Context())
+	return func(ctx context.Context) (dashboardData, error) {
+		cfg, err := svc.Export(ctx)
 		if err != nil {
-			log.Error("ui: load dashboard config failed", "err", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
+			return dashboardData{}, err
 		}
 		sources, sinks, connectors := cfg.Sources, cfg.Sinks, cfg.Connectors
 
@@ -369,6 +371,22 @@ func handleDashboardFrag(svc *config.Service, reg *stats.Registry, statuses func
 			data.CanCommitBaseline = true
 		}
 		data.CANInterfaces = loadCANDetails()
+		return data, nil
+	}
+}
+
+// handleDashboardFrag serves GET /frag/dashboard, the dashboard page's
+// refresh-only polling target (see templates/dashboard.html). The initial page
+// already contains dashboard-content; this handler keeps it current every five
+// seconds when htmx is available.
+func handleDashboardFrag(load dashboardDataLoader, log *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		data, err := load(r.Context())
+		if err != nil {
+			log.Error("ui: load dashboard config failed", "err", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 		renderFragment(w, log, "dashboard-content", data)
 	}
 }

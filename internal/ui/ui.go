@@ -75,6 +75,7 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 		runtime = runtimeInfo[0]
 	}
 	mux := http.NewServeMux()
+	loadDashboardData := newDashboardDataLoader(svc, reg, statuses, devices, runtime)
 
 	// The bare admin root lands the operator on the dashboard.
 	redirectToDashboard := func(w http.ResponseWriter, r *http.Request) {
@@ -83,13 +84,20 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 	mux.HandleFunc("GET /{$}", redirectToDashboard)
 
 	mux.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {
+		dashboard, err := loadDashboardData(r.Context())
+		if err != nil {
+			log.Error("ui: load dashboard config failed", "err", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 		// The dashboard is where create handlers land the operator via
 		// HX-Redirect, so it consumes the one-shot flash (see flash.go).
-		data := newPageData("Home", assetVersion, "dashboard")
-		data.Flash = takeFlash(w, r)
+		page := newPageData("Home", assetVersion, "dashboard")
+		page.Flash = takeFlash(w, r)
+		data := dashboardPageData{pageData: page, dashboardData: dashboard}
 		renderPage(w, log, "dashboard", data)
 	})
-	mux.HandleFunc("GET /frag/dashboard", handleDashboardFrag(svc, reg, statuses, devices, runtime, log))
+	mux.HandleFunc("GET /frag/dashboard", handleDashboardFrag(loadDashboardData, log))
 	mux.HandleFunc("POST /n2k/inventory/baseline", func(w http.ResponseWriter, r *http.Request) {
 		if runtime.Inventory == nil {
 			http.Error(w, "inventory unavailable", http.StatusServiceUnavailable)
