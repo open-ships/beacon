@@ -647,6 +647,13 @@ on [GitHub Releases](https://github.com/open-ships/beacon/releases). Physical
 SocketCAN operation requires Linux; the other builds remain useful for USB-CAN,
 remote streams, development, and administration.
 
+After successful CI on the current `main` commit, the exact-version-tagged
+shared Open Ships release policy publishes an annotated tag, the GoReleaser
+archives and checksums, a complete checksum manifest, CycloneDX SBOM, toolchain
+evidence, and separate build-provenance and SBOM attestations. It also publishes
+the versioned and `latest` multi-architecture images to GHCR with BuildKit SBOM
+and provenance attestations plus GitHub build provenance.
+
 Before qualifying a build for constrained or intermittently connected vessel
 hardware, run the repeatable [vessel release gates](docs/vessel-release-gates.md).
 They enforce an idle resource budget and exercise SQLite full-database and
