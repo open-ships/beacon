@@ -24,33 +24,55 @@ const (
 	// samples fall off in FIFO order regardless of any gap between calls.
 	depthRingSize = 60
 	eventRingSize = 80
+
+	// Connector/source event previews and runtime errors are diagnostic text,
+	// not canonical Envelope storage. Bound retained strings even when a remote
+	// endpoint returns an unexpectedly large error or payload.
+	maxEventPayloadBytes = 240
+	maxEventLabelBytes   = 128
+	maxRuntimeErrorBytes = 512
+	maxStageTotals       = 32
+	maxStageNameBytes    = 64
 )
 
 // Snapshot is the point-in-time view of one connector's counters, returned
 // by Snapshot and All. Rates are computed over the trailing 10-second
 // window; totals never decay.
 type Snapshot struct {
-	TotalMessages    int64            `json:"total_messages"`
-	TotalBytes       int64            `json:"total_bytes"`
-	MsgPerSec        float64          `json:"msg_per_sec"`   // over last 10s window
-	BytesPerSec      float64          `json:"bytes_per_sec"` // over last 10s window
-	QueueDepth       int64            `json:"queue_depth"`
-	QueueBytes       int64            `json:"queue_bytes"`
-	RetainedDepth    int64            `json:"retained_depth"`
-	RetainedBytes    int64            `json:"retained_bytes"`
-	QueueCursor      int64            `json:"queue_cursor"`
-	QueueTail        int64            `json:"queue_tail"`
-	OldestPending    *time.Time       `json:"oldest_pending,omitempty"`
-	OldestRetained   *time.Time       `json:"oldest_retained,omitempty"`
-	LimitMessages    int64            `json:"limit_messages,omitempty"`
-	LimitBytes       int64            `json:"limit_bytes,omitempty"`
-	HeadroomMessages int64            `json:"headroom_messages,omitempty"`
-	HeadroomBytes    int64            `json:"headroom_bytes,omitempty"`
-	DeliveryClass    string           `json:"delivery_class,omitempty"`
-	State            string           `json:"state,omitempty"`
-	LastError        string           `json:"last_error,omitempty"`
-	Drops            int64            `json:"drops"`
-	StageTotals      map[string]int64 `json:"stage_totals,omitempty"`
+	TotalMessages           int64            `json:"total_messages"`
+	TotalBytes              int64            `json:"total_bytes"`
+	MsgPerSec               float64          `json:"msg_per_sec"`   // over last 10s window
+	BytesPerSec             float64          `json:"bytes_per_sec"` // over last 10s window
+	QueueDepth              int64            `json:"queue_depth"`
+	QueueBytes              int64            `json:"queue_bytes"`
+	RetainedDepth           int64            `json:"retained_depth"`
+	RetainedBytes           int64            `json:"retained_bytes"`
+	QueueCursor             int64            `json:"queue_cursor"`
+	QueueTail               int64            `json:"queue_tail"`
+	OldestPending           *time.Time       `json:"oldest_pending,omitempty"`
+	OldestRetained          *time.Time       `json:"oldest_retained,omitempty"`
+	LimitMessages           int64            `json:"limit_messages,omitempty"`
+	LimitBytes              int64            `json:"limit_bytes,omitempty"`
+	HeadroomMessages        int64            `json:"headroom_messages,omitempty"`
+	HeadroomBytes           int64            `json:"headroom_bytes,omitempty"`
+	DeliveryClass           string           `json:"delivery_class,omitempty"`
+	State                   string           `json:"state,omitempty"`
+	LastError               string           `json:"last_error,omitempty"`
+	Drops                   int64            `json:"drops"`
+	StageTotals             map[string]int64 `json:"stage_totals,omitempty"`
+	StageTotalsOverflow     int64            `json:"stage_totals_overflow,omitempty"`
+	PreviewDocumentsOmitted int64            `json:"preview_documents_omitted,omitempty"`
+
+	// Source-only diagnostic capacity accounting. Exact source traffic totals
+	// above continue increasing when a novel PGN/sender cannot be admitted to
+	// the bounded rich-diagnostics cache.
+	SourceMetricStreams         int   `json:"source_metric_streams,omitempty"`
+	SourceMetricStreamLimit     int   `json:"source_metric_stream_limit,omitempty"`
+	SourceMetricGlobalStreams   int   `json:"source_metric_global_streams,omitempty"`
+	SourceMetricGlobalLimit     int   `json:"source_metric_global_limit,omitempty"`
+	SourceMetricMessagesOmitted int64 `json:"source_metric_messages_omitted,omitempty"`
+	SourceMetricStreamsExpired  int64 `json:"source_metric_streams_expired,omitempty"`
+	SourceDeviceNamesOmitted    int64 `json:"source_device_names_omitted,omitempty"`
 
 	// DepthHistory is the last depthRingSize QueueDepth readings, oldest
 	// first, as recorded by successive SetQueue calls. Absent (nil/omitted
@@ -59,6 +81,21 @@ type Snapshot struct {
 	// metrics endpoints, the connector detail/dashboard UI fragments) that
 	// don't know this field simply ignore it.
 	DepthHistory []int64 `json:"depth_history,omitempty"`
+}
+
+// SourceMetricCapacity describes the bounded rich-diagnostics cache for one
+// configured source. MessagesOmitted does not mean traffic loss: canonical
+// Envelopes and exact source totals continue while only a novel stream's
+// per-PGN diagnostic state is skipped.
+type SourceMetricCapacity struct {
+	TrackedStreams       int   `json:"tracked_streams"`
+	StreamLimit          int   `json:"stream_limit"`
+	GlobalTrackedStreams int   `json:"global_tracked_streams"`
+	GlobalStreamLimit    int   `json:"global_stream_limit"`
+	MessagesOmitted      int64 `json:"messages_omitted"`
+	StreamsExpired       int64 `json:"streams_expired"`
+	DeviceNamesOmitted   int64 `json:"device_names_omitted"`
+	PreviewDocsOmitted   int64 `json:"preview_documents_omitted"`
 }
 
 type Event struct {
@@ -121,23 +158,24 @@ type counters struct {
 	buckets [numBuckets]bucket
 	head    int // index of the most recently written bucket
 
-	queueDepth       int64
-	queueBytes       int64
-	retainedDepth    int64
-	retainedBytes    int64
-	queueCursor      int64
-	queueTail        int64
-	oldestPending    time.Time
-	oldestRetained   time.Time
-	limitMessages    int64
-	limitBytes       int64
-	headroomMessages int64
-	headroomBytes    int64
-	deliveryClass    string
-	state            string
-	lastError        string
-	drops            int64
-	stageTotals      map[string]int64
+	queueDepth          int64
+	queueBytes          int64
+	retainedDepth       int64
+	retainedBytes       int64
+	queueCursor         int64
+	queueTail           int64
+	oldestPending       time.Time
+	oldestRetained      time.Time
+	limitMessages       int64
+	limitBytes          int64
+	headroomMessages    int64
+	headroomBytes       int64
+	deliveryClass       string
+	state               string
+	lastError           string
+	drops               int64
+	stageTotals         map[string]int64
+	stageTotalsOverflow int64
 
 	// depthRing/depthHead/depthLen implement a fixed-capacity FIFO ring of
 	// queue-depth readings, one per SetQueue call, oldest overwritten first
@@ -218,28 +256,29 @@ func (c *counters) snapshot(now time.Time) Snapshot {
 		bytes += b.bytes
 	}
 	return Snapshot{
-		TotalMessages:    c.totalMessages,
-		TotalBytes:       c.totalBytes,
-		MsgPerSec:        float64(msgs) / window.Seconds(),
-		BytesPerSec:      float64(bytes) / window.Seconds(),
-		QueueDepth:       c.queueDepth,
-		QueueBytes:       c.queueBytes,
-		RetainedDepth:    c.retainedDepth,
-		RetainedBytes:    c.retainedBytes,
-		QueueCursor:      c.queueCursor,
-		QueueTail:        c.queueTail,
-		OldestPending:    timePtr(c.oldestPending),
-		OldestRetained:   timePtr(c.oldestRetained),
-		LimitMessages:    c.limitMessages,
-		LimitBytes:       c.limitBytes,
-		HeadroomMessages: c.headroomMessages,
-		HeadroomBytes:    c.headroomBytes,
-		DeliveryClass:    c.deliveryClass,
-		State:            c.state,
-		LastError:        c.lastError,
-		Drops:            c.drops,
-		StageTotals:      cloneTotals(c.stageTotals),
-		DepthHistory:     c.depthHistoryLocked(),
+		TotalMessages:       c.totalMessages,
+		TotalBytes:          c.totalBytes,
+		MsgPerSec:           float64(msgs) / window.Seconds(),
+		BytesPerSec:         float64(bytes) / window.Seconds(),
+		QueueDepth:          c.queueDepth,
+		QueueBytes:          c.queueBytes,
+		RetainedDepth:       c.retainedDepth,
+		RetainedBytes:       c.retainedBytes,
+		QueueCursor:         c.queueCursor,
+		QueueTail:           c.queueTail,
+		OldestPending:       timePtr(c.oldestPending),
+		OldestRetained:      timePtr(c.oldestRetained),
+		LimitMessages:       c.limitMessages,
+		LimitBytes:          c.limitBytes,
+		HeadroomMessages:    c.headroomMessages,
+		HeadroomBytes:       c.headroomBytes,
+		DeliveryClass:       c.deliveryClass,
+		State:               c.state,
+		LastError:           c.lastError,
+		Drops:               c.drops,
+		StageTotals:         cloneTotals(c.stageTotals),
+		StageTotalsOverflow: c.stageTotalsOverflow,
+		DepthHistory:        c.depthHistoryLocked(),
 	}
 }
 
@@ -302,18 +341,26 @@ func (c *counters) setRuntime(deliveryClass, state string, err error) {
 	if err == nil {
 		c.lastError = ""
 	} else {
-		c.lastError = err.Error()
+		c.lastError, _ = boundedDiagnosticText(err.Error(), maxRuntimeErrorBytes)
 	}
 	c.mu.Unlock()
 }
 
 func (c *counters) recordStage(stage string, n int64) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.stageTotals == nil {
 		c.stageTotals = map[string]int64{}
 	}
-	c.stageTotals[stage] += n
-	c.mu.Unlock()
+	if current, ok := c.stageTotals[stage]; ok {
+		c.stageTotals[stage] = current + n
+		return
+	}
+	if stage == "" || len(stage) > maxStageNameBytes || len(c.stageTotals) >= maxStageTotals {
+		c.stageTotalsOverflow += n
+		return
+	}
+	c.stageTotals[stage] = n
 }
 
 func (c *counters) recordDrops(n int64) {
@@ -367,9 +414,20 @@ type Registry struct {
 	sourcePersistence     *sourceMetricPersistence
 	sourceAddressNames    map[sourceAddressKey]uint64
 	sourceDeviceAddresses map[sourceDeviceKey]uint8
+	sourceDiagnostics     map[string]sourceDiagnosticsState
 	streamSubscribers     map[string]map[uint64]chan []byte
+	streamPreviewOmitted  map[string]int64
 	nextStreamSubscriber  uint64
 	sourceDeviceCount     int
+	sourceStreamCount     int
+	nextSourceStreamSweep time.Time
+}
+
+type sourceDiagnosticsState struct {
+	messagesOmitted    int64
+	streamsExpired     int64
+	deviceNamesOmitted int64
+	trackedStreams     int
 }
 
 // NewRegistry returns an empty Registry using the real wall clock.
@@ -391,7 +449,9 @@ func newRegistryAt(now func() time.Time) *Registry {
 		sourceMetricEvents:    map[string]*sourceMetricEventRing{},
 		sourceAddressNames:    map[sourceAddressKey]uint64{},
 		sourceDeviceAddresses: map[sourceDeviceKey]uint8{},
+		sourceDiagnostics:     map[string]sourceDiagnosticsState{},
 		streamSubscribers:     map[string]map[uint64]chan []byte{},
+		streamPreviewOmitted:  map[string]int64{},
 	}
 }
 
@@ -419,21 +479,26 @@ func (r *Registry) getFrom(m map[string]*counters, id string) *counters {
 }
 
 func eventFromEnvelope(now time.Time, stage, connectorID string, e *msg.Envelope) Event {
+	stage, _ = boundedDiagnosticText(stage, maxStageNameBytes)
+	connectorID, _ = boundedDiagnosticText(connectorID, maxEventLabelBytes)
 	ev := Event{Time: now, Stage: stage, ConnectorID: connectorID}
 	if e == nil {
 		return ev
 	}
 	ev.PGN = e.PGN
-	ev.PGNName = e.PGNName
+	ev.PGNName, _ = boundedDiagnosticText(e.PGNName, maxEventLabelBytes)
 	ev.Source = e.Source
 	ev.Dest = e.Dest
 	ev.Priority = e.Priority
 	ev.Timestamp = e.Timestamp
 	ev.SizeBytes = e.SizeBytes()
 	if len(e.Payload) > 0 {
-		ev.Payload = string(e.Payload)
-		if len(ev.Payload) > 240 {
-			ev.Payload = ev.Payload[:240] + "..."
+		payload := e.Payload
+		if len(payload) > maxEventPayloadBytes {
+			payload = payload[:maxEventPayloadBytes]
+			ev.Payload = string(payload) + "..."
+		} else {
+			ev.Payload = string(payload)
 		}
 	}
 	return ev
@@ -462,9 +527,11 @@ func (r *Registry) RecordSource(source string, e *msg.Envelope) {
 	ev := eventFromEnvelope(now, "received", "", e)
 	r.getSource(source).record(now, 1, int64(ev.SizeBytes))
 	stream, created := r.getSourceStream(source, e)
-	before, after := stream.record(now, e)
-	for _, event := range r.sourceLifecycleEvents(now, source, e, created, before, after) {
-		r.recordSourceMetricEvent(event)
+	if stream != nil {
+		before, after := stream.record(now, e)
+		for _, event := range r.sourceLifecycleEvents(now, source, e, created, before, after) {
+			r.recordSourceMetricEvent(event)
+		}
 	}
 	for _, event := range r.sourceIdentityEvents(now, source, e) {
 		r.recordSourceMetricEvent(event)
@@ -511,14 +578,51 @@ func (r *Registry) SourceSnapshot(source string) (Snapshot, bool) {
 	if r == nil {
 		return Snapshot{}, false
 	}
-	return r.componentSnapshot(r.source, source)
+	snapshot, ok := r.componentSnapshot(r.source, source)
+	if !ok {
+		return Snapshot{}, false
+	}
+	capacity := r.SourceMetricCapacity(source)
+	snapshot.SourceMetricStreams = capacity.TrackedStreams
+	snapshot.SourceMetricStreamLimit = capacity.StreamLimit
+	snapshot.SourceMetricGlobalStreams = capacity.GlobalTrackedStreams
+	snapshot.SourceMetricGlobalLimit = capacity.GlobalStreamLimit
+	snapshot.SourceMetricMessagesOmitted = capacity.MessagesOmitted
+	snapshot.SourceMetricStreamsExpired = capacity.StreamsExpired
+	snapshot.SourceDeviceNamesOmitted = capacity.DeviceNamesOmitted
+	snapshot.PreviewDocumentsOmitted = capacity.PreviewDocsOmitted
+	return snapshot, true
+}
+
+func (r *Registry) SourceMetricCapacity(source string) SourceMetricCapacity {
+	if r == nil {
+		return SourceMetricCapacity{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.sourceDiagnostics[source]
+	out := SourceMetricCapacity{
+		TrackedStreams: state.trackedStreams, StreamLimit: maxSourceStreamsPerSource,
+		GlobalTrackedStreams: r.sourceStreamCount, GlobalStreamLimit: maxSourceStreamsTotal,
+		MessagesOmitted: state.messagesOmitted,
+		StreamsExpired:  state.streamsExpired, DeviceNamesOmitted: state.deviceNamesOmitted,
+		PreviewDocsOmitted: r.streamPreviewOmitted[streamKey("source", source)],
+	}
+	return out
 }
 
 func (r *Registry) SinkSnapshot(sink string) (Snapshot, bool) {
 	if r == nil {
 		return Snapshot{}, false
 	}
-	return r.componentSnapshot(r.sink, sink)
+	snapshot, ok := r.componentSnapshot(r.sink, sink)
+	if !ok {
+		return Snapshot{}, false
+	}
+	r.mu.Lock()
+	snapshot.PreviewDocumentsOmitted = r.streamPreviewOmitted[streamKey("sink", sink)]
+	r.mu.Unlock()
+	return snapshot, true
 }
 
 func (r *Registry) componentSnapshot(m map[string]*counters, id string) (Snapshot, bool) {
@@ -637,8 +741,13 @@ func (r *Registry) RemoveSource(source string) {
 		return
 	}
 	r.mu.Lock()
+	trackedStreams := r.sourceDiagnostics[source].trackedStreams
 	delete(r.source, source)
 	delete(r.events, "source:"+source)
+	delete(r.sourceMetricEvents, source)
+	delete(r.sourceDiagnostics, source)
+	delete(r.streamPreviewOmitted, streamKey("source", source))
+	r.sourceStreamCount -= trackedStreams
 	r.closeStreamLocked("source", source)
 	for key := range r.sourceStreams {
 		if key.source == source {
@@ -666,6 +775,7 @@ func (r *Registry) RemoveSink(sink string) {
 	r.mu.Lock()
 	delete(r.sink, sink)
 	delete(r.events, "sink:"+sink)
+	delete(r.streamPreviewOmitted, streamKey("sink", sink))
 	r.closeStreamLocked("sink", sink)
 	r.mu.Unlock()
 }

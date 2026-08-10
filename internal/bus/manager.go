@@ -20,6 +20,7 @@ import (
 	"github.com/open-ships/beacon/internal/metrics"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/msg"
+	"github.com/open-ships/beacon/internal/retry"
 	"github.com/open-ships/beacon/internal/stats"
 )
 
@@ -38,6 +39,12 @@ const (
 	// tests and specialized deployments can override either value.
 	clientReceiveBuffer = 256
 	clientWriteQueue    = 64
+)
+
+var (
+	busReconnectMin        = 250 * time.Millisecond
+	busReconnectMax        = time.Minute
+	busStableConnectionAge = 30 * time.Second
 )
 
 type Endpoint struct {
@@ -88,11 +95,11 @@ func (ep Endpoint) options() ([]n2k.Option, error) {
 		if err != nil {
 			return nil, fmt.Errorf("tcp endpoint %q: %w", ep.Name, err)
 		}
-		// WithReconnect keeps the gateway transport alive across drops
-		// inside one client, so a brief WiFi blip doesn't force a full
-		// client teardown + re-claim; only a dead client (Receive ending)
-		// falls back to the manager's own reconnect loop.
-		return []n2k.Option{n2k.TCP(ep.Name, f), n2k.WithReconnect(n2k.ReconnectPolicy{})}, nil
+		// The manager owns reconnect policy for every endpoint. Letting n2k's
+		// inner TCP loop reconnect as well would reset its delay after every
+		// short handshake and bypass Beacon's jittered, stable-session backoff.
+		// Rebuilding the client also starts a clean NMEA network epoch and claim.
+		return []n2k.Option{n2k.TCP(ep.Name, f)}, nil
 	default:
 		return nil, fmt.Errorf("unknown CAN endpoint kind %q", ep.Kind)
 	}
@@ -217,20 +224,24 @@ type busSubscriber struct {
 // back off on failure, until cancelled by the last Release.
 func (bc *busClient) run(ctx context.Context) {
 	defer bc.wg.Done()
-	backoff := 250 * time.Millisecond
+	backoff := retry.NewBackoff(busReconnectMin, busReconnectMax)
+	consecutiveFailures := 0
 	for ctx.Err() == nil {
 		if err := bc.ep.preflight(); err != nil {
 			bc.setState("error", err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(backoff):
+			consecutiveFailures++
+			delay := backoff.Next()
+			if consecutiveFailures == 1 || consecutiveFailures%60 == 0 {
+				bc.mgr.log.Warn("NMEA 2000 endpoint unavailable; retrying", "kind", bc.ep.Kind,
+					"endpoint", bc.ep.Name, "err", err, "retry_in", delay,
+					"consecutive_failures", consecutiveFailures)
+			} else {
+				bc.mgr.log.Debug("NMEA 2000 endpoint still unavailable", "kind", bc.ep.Kind,
+					"endpoint", bc.ep.Name, "err", err, "retry_in", delay,
+					"consecutive_failures", consecutiveFailures)
 			}
-			if backoff < 5*time.Second {
-				backoff *= 2
-				if backoff > 5*time.Second {
-					backoff = 5 * time.Second
-				}
+			if !retry.Sleep(ctx, delay) {
+				return
 			}
 			continue
 		}
@@ -250,16 +261,19 @@ func (bc *busClient) run(ctx context.Context) {
 		client, err := bc.newClient(ctx, opts...)
 		if err != nil {
 			bc.setState("error", err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(backoff):
+			consecutiveFailures++
+			delay := backoff.Next()
+			if consecutiveFailures == 1 || consecutiveFailures%60 == 0 {
+				bc.mgr.log.Warn("NMEA 2000 client start failed; retrying", "kind", bc.ep.Kind,
+					"endpoint", bc.ep.Name, "err", err, "retry_in", delay,
+					"consecutive_failures", consecutiveFailures)
+			} else {
+				bc.mgr.log.Debug("NMEA 2000 client still unavailable", "kind", bc.ep.Kind,
+					"endpoint", bc.ep.Name, "err", err, "retry_in", delay,
+					"consecutive_failures", consecutiveFailures)
 			}
-			if backoff < 5*time.Second {
-				backoff *= 2
-				if backoff > 5*time.Second {
-					backoff = 5 * time.Second
-				}
+			if !retry.Sleep(ctx, delay) {
+				return
 			}
 			continue
 		}
@@ -267,7 +281,7 @@ func (bc *busClient) run(ctx context.Context) {
 		bc.client = client
 		bc.mu.Unlock()
 		bc.setState("up", nil)
-		backoff = 250 * time.Millisecond
+		connectedAt := time.Now()
 
 		// n2k's real socketcan/usbcan Bus.Run implementations ignore ctx
 		// (they only unblock when the underlying socket/port is closed), so
@@ -324,16 +338,23 @@ func (bc *busClient) run(ctx context.Context) {
 				err = fmt.Errorf("receive loop ended; reconnecting: %w", receiveErr)
 			}
 			bc.setState("degraded", err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(backoff):
+			if time.Since(connectedAt) >= busStableConnectionAge {
+				backoff.Reset()
+				consecutiveFailures = 0
 			}
-			if backoff < 5*time.Second {
-				backoff *= 2
-				if backoff > 5*time.Second {
-					backoff = 5 * time.Second
-				}
+			consecutiveFailures++
+			delay := backoff.Next()
+			if consecutiveFailures == 1 || consecutiveFailures%60 == 0 {
+				bc.mgr.log.Warn("NMEA 2000 receive loop ended; retrying", "kind", bc.ep.Kind,
+					"endpoint", bc.ep.Name, "err", err, "retry_in", delay,
+					"consecutive_failures", consecutiveFailures)
+			} else {
+				bc.mgr.log.Debug("NMEA 2000 receive loop remains unstable", "kind", bc.ep.Kind,
+					"endpoint", bc.ep.Name, "err", err, "retry_in", delay,
+					"consecutive_failures", consecutiveFailures)
+			}
+			if !retry.Sleep(ctx, delay) {
+				return
 			}
 		}
 	}

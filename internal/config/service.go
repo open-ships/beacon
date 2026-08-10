@@ -12,12 +12,18 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/open-ships/beacon/internal/filter"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/store"
 	"github.com/open-ships/beacon/internal/supervisor"
 )
+
+// reconcileApplyTimeout bounds the synchronous fast path after a durable
+// config write. The Supervisor owns continuous convergence, so timing out a
+// request-side apply does not abandon desired state.
+var reconcileApplyTimeout = 5 * time.Second
 
 // Sentinel errors returned by Service methods. Callers use errors.Is; the
 // HTTP layer (Phase 2 Task 4) maps them to specific status codes.
@@ -74,6 +80,11 @@ type Service struct {
 	// store (load current config, validate the mutated copy, persist) never
 	// interleaves with a concurrent writer racing a stale read.
 	mu sync.Mutex
+
+	// reconcileGate permits at most one detached reconcile call. If an
+	// implementation ignores its context and wedges, later writes remain
+	// bounded without accumulating one stuck goroutine per request.
+	reconcileGate chan struct{}
 }
 
 // NewService builds a Service over st, triggering rec after every
@@ -82,7 +93,7 @@ func NewService(st *store.Store, rec Reconciler, log *slog.Logger) *Service {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Service{st: st, rec: rec, log: log}
+	return &Service{st: st, rec: rec, log: log, reconcileGate: make(chan struct{}, 1)}
 }
 
 // --- Reads ---
@@ -359,11 +370,45 @@ func (s *Service) Import(ctx context.Context, cfg model.Config, replace bool) er
 // build the same merged result Service.Import would, before validating and
 // writing it directly to the store.
 func MergeConfig(base, incoming model.Config) model.Config {
+	settings := cloneSettings(base.Settings)
+	if incoming.Settings != nil {
+		if settings == nil {
+			settings = &model.Settings{}
+		}
+		// Settings sections are independent merge units. An observability-only
+		// import must not silently reset the appliance's physical storage budget,
+		// and a resource-only import must preserve the metrics-cardinality gate.
+		if incoming.Settings.Observability != nil {
+			observability := *incoming.Settings.Observability
+			settings.Observability = &observability
+		}
+		if incoming.Settings.Resources != nil {
+			resources := *incoming.Settings.Resources
+			settings.Resources = &resources
+		}
+	}
 	return model.Config{
 		Sources:    upsert(base.Sources, incoming.Sources, func(v model.Source) string { return v.ID }),
 		Sinks:      upsert(base.Sinks, incoming.Sinks, func(v model.Sink) string { return v.ID }),
 		Connectors: upsert(base.Connectors, incoming.Connectors, func(v model.Connector) string { return v.ID }),
+		Settings:   settings,
 	}
+}
+
+func cloneSettings(in *model.Settings) *model.Settings {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.Observability != nil {
+		observability := *in.Observability
+		out.Observability = &observability
+	}
+	if in.Resources != nil {
+		resources := *in.Resources
+		out.Resources = &resources
+	}
+	return &out
 }
 
 // upsert returns a copy of base with each incoming element replacing the
@@ -395,18 +440,32 @@ func indexOf[T any](items []T, target string, id func(T) string) int {
 // is logged and left for Statuses() to surface; per spec §3.6 it is
 // deliberately NOT returned to the write's caller and NOT rolled back.
 //
-// It runs Reconcile on context.WithoutCancel(ctx), not ctx itself: by this
-// point the config change is already durably persisted in the store, so the
-// reconcile's job is just to make the running system match what's now on
-// disk. ctx is the inbound HTTP request context — if the client disconnects
-// mid-PUT, ctx is cancelled right as (or just after) this call starts, which
-// would abort the reconcile's store read/apply and leave the runtime stale
-// relative to the persisted config. There is no periodic reconcile to catch
-// that later; the next Reconcile only happens on the next write. Detaching
-// from cancellation ensures a persisted config change is always applied,
-// regardless of whether the requester is still around to see it.
+// It detaches from inbound request cancellation because the desired state is
+// already durable, then adds its own deadline. The Supervisor's independent
+// convergence loop picks up any work that outlives this synchronous fast
+// path. The gate bounds even a broken Reconciler that ignores cancellation to
+// one outstanding goroutine rather than one per config request.
 func (s *Service) reconcile(ctx context.Context) {
-	if err := s.rec.Reconcile(context.WithoutCancel(ctx)); err != nil {
-		s.log.Error("reconcile after config write failed", "err", err)
+	applyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconcileApplyTimeout)
+	defer cancel()
+	select {
+	case s.reconcileGate <- struct{}{}:
+	case <-applyCtx.Done():
+		s.log.Warn("reconcile after config write deferred to convergence loop", "err", applyCtx.Err())
+		return
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		defer func() { <-s.reconcileGate }()
+		done <- s.rec.Reconcile(applyCtx)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			s.log.Error("reconcile after config write failed", "err", err)
+		}
+	case <-applyCtx.Done():
+		s.log.Warn("reconcile after config write exceeded request apply budget", "err", applyCtx.Err())
 	}
 }

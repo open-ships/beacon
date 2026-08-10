@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -65,6 +66,10 @@ type Set struct {
 	mu     sync.Mutex
 	depths map[string][2]int64 // connector -> {depth, bytes}
 	states map[gaugeKey]int64
+
+	// sourceDetails gates the expensive async per-PGN snapshot and exposition.
+	// It is changed by config reconciliation and read by Prometheus scrapes.
+	sourceDetails atomic.Bool
 }
 
 func New(registries ...*stats.Registry) (*Set, http.Handler, error) {
@@ -144,6 +149,9 @@ func New(registries ...*stats.Registry) (*Set, http.Handler, error) {
 	if len(registries) > 0 && registries[0] != nil {
 		reg := registries[0]
 		_, err = meter.RegisterCallback(func(_ context.Context, o api.Observer) error {
+			if !s.PrometheusSourceDetailsEnabled() {
+				return nil
+			}
 			observeSourcePGNMetrics(o, s, reg.AllSourcePGNMetrics())
 			return nil
 		}, s.sourcePGNMessages, s.sourcePGNFrequency, s.sourcePGNPeriod,
@@ -159,6 +167,20 @@ func New(registries ...*stats.Registry) (*Set, http.Handler, error) {
 		}
 	}
 	return s, promhttp.HandlerFor(reg, promhttp.HandlerOpts{}), nil
+}
+
+// SetPrometheusSourceDetails enables or disables the high-cardinality per-PGN,
+// decoded-field, and raw-byte Prometheus surface. Ordinary source, delivery,
+// queue, and component metrics remain available in either state.
+func (s *Set) SetPrometheusSourceDetails(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.sourceDetails.Store(enabled)
+}
+
+func (s *Set) PrometheusSourceDetailsEnabled() bool {
+	return s != nil && s.sourceDetails.Load()
 }
 
 func observeSourcePGNMetrics(o api.Observer, set *Set, all map[string][]stats.SourcePGNMetric) {

@@ -15,11 +15,12 @@ import (
 
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/queue"
+	"github.com/open-ships/beacon/internal/retry"
 )
 
 const (
-	postgresInitializeRetry = 5 * time.Second
-	postgresMaxPGN          = 262143
+	postgresMaxPGN        = 262143
+	postgresMaxBatchBytes = 4 << 20
 )
 
 // postgresDB is the small pgxpool surface the sink needs. Keeping this seam
@@ -41,10 +42,15 @@ type postgresSink struct {
 	wg          sync.WaitGroup
 	stop        sync.Once
 
-	initializeMu sync.Mutex
-	stateMu      sync.Mutex
-	ready        bool
-	lastErr      error
+	// initializeSlot serializes schema verification/creation without making a
+	// canceled delivery wait behind the background recovery attempt. A mutex
+	// cannot be acquired with a context and previously let Connector.Stop block
+	// for the full configured database timeout before the sink itself was
+	// canceled later in Supervisor shutdown ordering.
+	initializeSlot chan struct{}
+	stateMu        sync.Mutex
+	ready          bool
+	lastErr        error
 }
 
 func newPostgresSink(ctx context.Context, cfg model.Sink) (Runtime, error) {
@@ -68,7 +74,8 @@ func newPostgresSink(ctx context.Context, cfg model.Sink) (Runtime, error) {
 		id: cfg.ID, db: pool, table: cfg.EffectivePostgresTable(),
 		batchSize: cfg.EffectivePostgresBatchSize(), timeout: cfg.EffectivePostgresWriteTimeout(),
 		autoCreate: cfg.AutoCreateTable, timescaleDB: cfg.TimescaleDB, cancel: cancel,
-		lastErr: errors.New("PostgreSQL connection has not been verified"),
+		initializeSlot: make(chan struct{}, 1),
+		lastErr:        errors.New("PostgreSQL connection has not been verified"),
 	}
 	s.wg.Add(1)
 	go s.initializeLoop(runCtx)
@@ -77,6 +84,7 @@ func newPostgresSink(ctx context.Context, cfg model.Sink) (Runtime, error) {
 
 func (s *postgresSink) ID() string                   { return s.id }
 func (s *postgresSink) BatchSize() int               { return s.batchSize }
+func (s *postgresSink) BatchMaxBytes() int64         { return postgresMaxBatchBytes }
 func (s *postgresSink) DeliveryClass() DeliveryClass { return DeliveryConfirmed }
 
 func (s *postgresSink) State() (string, error) {
@@ -105,18 +113,13 @@ func (s *postgresSink) isReady() bool {
 // run the DDL shown in the UI.
 func (s *postgresSink) initializeLoop(ctx context.Context) {
 	defer s.wg.Done()
+	backoff := retry.NewBackoff(time.Second, time.Minute)
 	for {
 		if err := s.ensureReady(ctx); err == nil {
 			return
 		}
-		timer := time.NewTimer(postgresInitializeRetry)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
+		if !retry.Sleep(ctx, backoff.Next()) {
 			return
-		case <-timer.C:
 		}
 	}
 }
@@ -125,8 +128,12 @@ func (s *postgresSink) ensureReady(ctx context.Context) error {
 	if s.isReady() {
 		return nil
 	}
-	s.initializeMu.Lock()
-	defer s.initializeMu.Unlock()
+	select {
+	case s.initializeSlot <- struct{}{}:
+		defer func() { <-s.initializeSlot }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	if s.isReady() {
 		return nil
 	}
@@ -275,7 +282,7 @@ func postgresInsert(table string, entries []queue.Entry) (string, []any, error) 
 			}
 			payload = string(e.Payload)
 		}
-		envelope, err := json.Marshal(e)
+		envelope, err := e.WireBytes()
 		if err != nil {
 			return "", nil, fmt.Errorf("encode PostgreSQL batch entry %d: %w", i, err)
 		}

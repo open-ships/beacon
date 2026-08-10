@@ -22,7 +22,8 @@ source --> [connector: CEL filters] --> sink
   (`http_sse` / `http_ws`, with replay for reconnecting clients), a remote
   HTTP(S) API (`http_post`, confirmed JSON batches with optional gzip, custom
   authentication headers, and receiver-directed retry timing), a plain
-  `tcp` NDJSON feed (live-only, no replay), an MQTT topic (`mqtt`, live-only),
+  `tcp` NDJSON feed (live-only, no replay), an MQTT topic (`mqtt`, QoS 1
+  broker-confirmed at-least-once delivery),
   a PostgreSQL/TimescaleDB table (`postgres`, confirmed batches), a remote
   NMEA 2000 bus through a claiming TCP gateway client (`tcp_gateway`), or
   intentionally nowhere (`null`, with normal statistics).
@@ -42,7 +43,10 @@ participates on the remote bus. A `file` source takes an absolute
 up and idle. Gzip-compressed captures are detected from their contents, so
 the filename does not need a `.gz` suffix. When the configured path is
 missing, Beacon also tries the same path with `.gz` appended; an existing
-exact path always takes precedence.
+exact path always takes precedence. A compressed replay expands to at most
+128 MiB, and Beacon permits at most two expanded replay copies at once
+(256 MiB process-wide). Decompress larger captures once on the data volume
+and configure the resulting file directly.
 
 ## Running beacon
 
@@ -120,6 +124,14 @@ reports the live state of the entity you just wrote, so you can see the
 effect without a second round trip. See the API page for the full CRUD
 surface, validation errors, and export/import.
 
+The empty `buffer` above is bounded: Beacon independently applies 10,000
+messages and 64 MiB of canonical Envelope JSON. It does not mean unbounded
+retention. Before relying on a connector route through a long disconnected
+interval, measure its peak rate and average Envelope size, then run
+`beacon size-buffer` with `--rate`, `--average-bytes`, and `--outage`. The
+concepts page gives a complete example plus the formula, aggregate SQLite
+budget, and local admission clock used by `max_age`.
+
 ## Where the data comes out
 
 Sink endpoints are served on the data port (`8080` by default), at the
@@ -134,4 +146,13 @@ concepts page for its exact shape) and an `id:` you can hand back as
 `Last-Event-ID` on reconnect to resume where you left off. A `tcp` sink
 instead accepts a plain socket connection (`nc localhost <port>`) streaming
 one JSON envelope per line, live only. An `mqtt` sink publishes the same
-envelope JSON to its configured broker topic, live only.
+envelope JSON to its configured broker topic at QoS 1 and advances its
+Connector route only after broker PUBACK. This confirms broker acceptance,
+not subscriber receipt, and retries can produce duplicates.
+
+For resource-constrained hosts, omitted appliance settings enforce a 1 GiB
+SQLite main-database ceiling with 128 MiB reserved outside logical route
+allocations, plus a 2 GiB aggregate file-sink allocation budget. These defaults
+are safety guards, not measured capacity for a specific vessel computer; use
+the repository's `docs/vessel-release-gates.md` and qualify the target hardware
+under representative traffic and power-loss conditions.

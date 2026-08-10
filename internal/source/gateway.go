@@ -18,6 +18,18 @@ import (
 	"github.com/open-ships/beacon/internal/msg"
 )
 
+// Compressed replay is a convenience path that needs a temporary file because
+// n2k.File accepts a pathname. Bound both each expansion and the number of
+// live copies so configured sources cannot multiply temporary-disk use. Larger
+// captures can be decompressed once by the operator and replayed without a
+// second copy.
+const maxConcurrentCompressedReplays = 2
+
+var (
+	maxCompressedReplayBytes int64 = 128 << 20
+	compressedReplaySlots          = make(chan struct{}, maxConcurrentCompressedReplays)
+)
+
 // runReceive drives one of n2k's read-only sources (file/tcp/udp) through
 // n2k.Receive, converting each decoded message to an envelope. n2k.IncludeUnknown
 // matches beacon's other sources so uncataloged PGNs still flow through as
@@ -128,22 +140,73 @@ func prepareReplayFile(ctx context.Context, path string) (string, func(), error)
 	if err != nil {
 		return "", func() {}, fmt.Errorf("opening gzip capture file %q: %w", path, err)
 	}
+	select {
+	case compressedReplaySlots <- struct{}{}:
+	case <-ctx.Done():
+		_ = zr.Close()
+		return "", func() {}, fmt.Errorf("waiting for compressed replay capacity for %q: %w", path, ctx.Err())
+	}
+	var releaseOnce sync.Once
+	releaseSlot := func() {
+		releaseOnce.Do(func() { <-compressedReplaySlots })
+	}
 
 	tmp, err := os.CreateTemp("", "beacon-replay-*.log")
 	if err != nil {
 		_ = zr.Close()
+		releaseSlot()
 		return "", func() {}, fmt.Errorf("creating temporary file for gzip capture %q: %w", path, err)
 	}
 	tmpPath := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpPath) }
+	cleanupNamed := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		releaseSlot()
+	}
 
-	_, copyErr := io.Copy(tmp, contextReader{ctx: ctx, r: zr})
-	closeErr := errors.Join(zr.Close(), tmp.Close())
-	if err := errors.Join(copyErr, closeErr); err != nil {
-		cleanup()
+	written, copyErr := io.Copy(tmp, io.LimitReader(contextReader{ctx: ctx, r: zr}, maxCompressedReplayBytes+1))
+	if copyErr == nil && written > maxCompressedReplayBytes {
+		copyErr = fmt.Errorf("expanded capture exceeds %d bytes", maxCompressedReplayBytes)
+	}
+	if err := errors.Join(copyErr, zr.Close()); err != nil {
+		cleanupNamed()
 		return "", func() {}, fmt.Errorf("decompressing gzip capture file %q: %w", path, err)
 	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		cleanupNamed()
+		return "", func() {}, fmt.Errorf("rewinding gzip capture file %q: %w", path, err)
+	}
+	if descriptorPath, ok := replayDescriptorPath(tmp); ok {
+		// n2k.File opens lazily, so keep the descriptor alive through replay but
+		// unlink its directory entry now. Linux/macOS will reclaim the blocks on
+		// normal exit, crash, or power loss without a startup orphan sweeper.
+		if err := os.Remove(tmpPath); err == nil {
+			cleanup := func() {
+				_ = tmp.Close()
+				releaseSlot()
+			}
+			return descriptorPath, cleanup, nil
+		}
+	}
+	if err := tmp.Close(); err != nil {
+		cleanupNamed()
+		return "", func() {}, fmt.Errorf("closing gzip capture file %q: %w", path, err)
+	}
+	cleanup := func() {
+		_ = os.Remove(tmpPath)
+		releaseSlot()
+	}
 	return tmpPath, cleanup, nil
+}
+
+func replayDescriptorPath(f *os.File) (string, bool) {
+	for _, directory := range []string{"/proc/self/fd", "/dev/fd"} {
+		candidate := filepath.Join(directory, fmt.Sprintf("%d", f.Fd()))
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, true
+		}
+	}
+	return "", false
 }
 
 type contextReader struct {

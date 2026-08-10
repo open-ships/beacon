@@ -25,6 +25,10 @@ func TestNilSetIsSafe(t *testing.T) {
 	s.SinkClients("sse", 1)
 	s.SinkHTTPRequest(context.Background(), "webhook", "202", "gzip", 2, 100, 250, 10*time.Millisecond)
 	s.SinkHTTPRetryAfter(context.Background(), "webhook", "503", 2*time.Second)
+	s.SetPrometheusSourceDetails(true)
+	if s.PrometheusSourceDetailsEnabled() {
+		t.Fatal("nil metrics set reported source details enabled")
+	}
 	s.RemoveComponent("source", "can0")
 	s.RemoveConnector("c")
 }
@@ -108,7 +112,7 @@ func TestPrometheusExposition(t *testing.T) {
 	}
 }
 
-func TestPrometheusExposesSharedSourcePGNMetrics(t *testing.T) {
+func TestPrometheusSourcePGNMetricsRequireExplicitOptIn(t *testing.T) {
 	reg := stats.NewRegistry()
 	reg.RecordSource("can0", &msg.Envelope{
 		PGN: 127250, PGNName: "Vessel Heading", Source: 12,
@@ -118,12 +122,19 @@ func TestPrometheusExposesSharedSourcePGNMetrics(t *testing.T) {
 			"heading": {Value: 1.5, Unit: "rad"},
 		},
 	})
-	_, handler, err := New(reg)
+	set, handler, err := New(reg)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	if body := rec.Body.String(); strings.Contains(body, "beacon_source_pgn_") {
+		t.Fatalf("default exposition included opt-in source details:\n%s", body)
+	}
+
+	set.SetPrometheusSourceDetails(true)
+	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
 	body := rec.Body.String()
 	for _, want := range []string{
@@ -155,5 +166,12 @@ func TestPrometheusExposesSharedSourcePGNMetrics(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("source PGN exposition missing %q:\n%s", want, body)
 		}
+	}
+
+	set.SetPrometheusSourceDetails(false)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	if body := rec.Body.String(); strings.Contains(body, "beacon_source_pgn_") {
+		t.Fatalf("disabled exposition retained source details:\n%s", body)
 	}
 }

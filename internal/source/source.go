@@ -24,7 +24,7 @@ type Runtime interface {
 }
 
 // New starts the source runtime for cfg. CAN types acquire from mgr;
-// network types dial with reconnect backoff (250ms→5s).
+// network types dial with jittered reconnect backoff (250ms→1m).
 func New(ctx context.Context, cfg model.Source, mgr *bus.Manager, log *slog.Logger, met *metrics.Set, reg *stats.Registry) (Runtime, error) {
 	switch cfg.Type {
 	case model.SourceSocketCAN, model.SourceUSBCAN:

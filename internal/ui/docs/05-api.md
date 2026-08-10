@@ -11,8 +11,9 @@ start from its own documentation rather than this page:
 ## MCP (for AI agents)
 
 Beacon serves the MCP Streamable HTTP transport at `/mcp` on the admin port.
-Configure an MCP client with the local URL; it handles initialization and
-session headers:
+Configure an MCP client with the local URL; it handles normal Streamable HTTP
+initialization. Beacon's synchronous tools use stateless requests, so the
+appliance retains no per-client MCP session between calls:
 
 ```json
 {
@@ -35,14 +36,15 @@ Core traffic counters include every message. Decoded-field and raw-byte
 distributions expose `diagnostic_samples` and are sampled at most once per
 second per source/PGN/address stream.
 
-`get_latest_payloads` returns one exact latest decoded payload for each
-configured-source/sensor/PGN stream. Its `sensor_id` is the stable hexadecimal
-Device NAME when known, or `address:<source_address>` otherwise; the same value
-can be passed back as a filter. Beacon overwrites that one payload on every
-message and does not build a payload history. These process-local values reset
-on restart. `get_config` and `put_connector` return the authored `buffer` plus
-an `effective_buffer`, making the 10,000-message fallback explicit without
-changing the stored configuration.
+`get_latest_payloads` returns a bounded, filterable set of exact latest decoded
+payloads from configured-source/sensor/PGN streams. Its `sensor_id` is the
+stable hexadecimal Device NAME when known, or `address:<source_address>`
+otherwise; the same value can be passed back as a filter. Beacon overwrites
+that one payload on every message and does not build a payload history. These
+process-local values reset on restart. `get_config` and `put_connector` return
+the authored `buffer` plus
+an `effective_buffer`, making the independently applied 10,000-message and
+64 MiB defaults explicit without changing the stored configuration.
 
 Configuration writes persist to SQLite and reconcile immediately through the
 supervisor.
@@ -50,7 +52,13 @@ supervisor.
 MCP needs no cloud relay, separate process, remote schema, or internet access.
 It can change live configuration, so bind the admin listener to localhost or a
 trusted onboard network. Cross-origin browser requests are rejected on every
-MCP method.
+MCP method, and each MCP POST body is capped at 1 MiB.
+
+The admin server, data HTTP server, and configured plain-TCP sink listeners
+share a 128 accepted-connection budget. Both HTTP servers cap headers at
+64 KiB and enforce five-second header, 30-second request-read, and 90-second
+idle deadlines. Typed REST request bodies are capped at 1 MiB as well. Each
+configured SSE/WS/TCP sink also has a nested 32-client admission limit.
 
 What follows is a curl-first walkthrough of the shapes and gotchas that
 aren't obvious from the schema alone.
@@ -150,6 +158,29 @@ second process opening the same file races the running one rather than
 sharing it safely. Against a *running* beacon, use the HTTP
 export/import endpoints above instead.
 
+## Resource settings and aggregate validation
+
+The optional `settings.resources` object controls physical appliance budgets:
+
+```json
+{
+  "settings": {
+    "resources": {
+      "max_database_bytes": 1073741824,
+      "database_reserve_bytes": 134217728,
+      "max_file_store_bytes": 2147483648
+    }
+  }
+}
+```
+
+Those values—1 GiB, 128 MiB, and 2 GiB—are the defaults. Validation sums every
+connector route's effective `max_bytes` and requires the total to fit
+`max_database_bytes - database_reserve_bytes`; omission contributes 64 MiB per
+route. It separately sums `max_file_bytes × max_files` for every file sink and
+requires that allocation to fit `max_file_store_bytes`. A replace or merge that
+violates either aggregate is rejected atomically with `422`.
+
 ## Live metrics
 
 ```
@@ -177,6 +208,21 @@ restarts; bounded lifecycle events persist in SQLite. Prometheus exports
 bounded numeric summaries and finite labels, while raw hexdumps and payload
 fingerprints remain available in the UI and MCP response rather than becoming
 high-cardinality time series.
+
+Rich diagnostics retain at most 256 PGN/sender streams per source and 512
+process-wide; novel streams omitted at either capacity still count in exact
+source totals, and streams idle beyond six hours are reclaimed.
+`get_source_metrics` reports per-source `capacity` with local/global tracked and
+limit values, omitted messages, expired streams, omitted Device NAMEs, and
+preview documents omitted by the 32 KiB observability cap.
+Per-stream responses also expose field, missing-name, 8 KiB latest-payload, and
+raw diagnostic truncation/overflow counts. The caps affect diagnostics only,
+never the canonical Envelope or connector route.
+
+MCP rich-diagnostic calls return 16 streams or latest payloads by default and
+accept an explicit limit up to 32. Responses set `truncated` when more matches
+exist; use source, PGN, address, Device NAME, or sensor filters to narrow a
+follow-up request. Lifecycle events default to 10 per source and cap at 20.
 
 ## Health and system info
 

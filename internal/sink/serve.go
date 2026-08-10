@@ -2,13 +2,13 @@ package sink
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 
@@ -17,7 +17,12 @@ import (
 	"github.com/open-ships/beacon/internal/queue"
 )
 
-const clientBuf = 64
+const (
+	clientBuf              = 64
+	maxServeClients        = 32
+	replayReadLimit        = 8
+	streamClientWriteLimit = 2 * time.Second
+)
 
 type client struct {
 	ch   chan queue.Entry
@@ -29,22 +34,45 @@ type client struct {
 type serveHandler func(s *serveSink, w http.ResponseWriter, r *http.Request)
 
 type serveSink struct {
-	id   string
-	path string
-	ds   *DataServer
-	log  *slog.Logger
-	met  *metrics.Set
+	id     string
+	path   string
+	ds     *DataServer
+	log    *slog.Logger
+	met    *metrics.Set
+	ctx    context.Context
+	cancel context.CancelFunc
 
-	mu      sync.Mutex
-	clients map[*client]bool
-	replays map[string]ReplayReader
-	stopped bool
+	mu       sync.Mutex
+	clients  map[*client]bool
+	replays  map[string]ReplayReader
+	reserved int
+	stopped  bool
+	handlers sync.WaitGroup
 }
 
 func newServeSink(cfg model.Sink, ds *DataServer, log *slog.Logger, met *metrics.Set, h serveHandler) (Runtime, error) {
+	ctx, cancel := context.WithCancel(ds.runCtx)
 	s := &serveSink{id: cfg.ID, path: cfg.Path, ds: ds, log: log, met: met,
-		clients: map[*client]bool{}, replays: map[string]ReplayReader{}}
-	ds.SetRoute(cfg.Path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { h(s, w, r) }))
+		ctx: ctx, cancel: cancel, clients: map[*client]bool{}, replays: map[string]ReplayReader{}}
+	ds.SetRoute(cfg.Path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.beginHandler() {
+			http.NotFound(w, r)
+			return
+		}
+		defer s.handlers.Done()
+
+		// A stream belongs to both the client request and this configured sink
+		// generation. Cancelling either one must end replay database reads and
+		// live writes; otherwise a handler that already entered replay could
+		// outlive route removal and overlap a replacement sink at the same path.
+		ctx, cancel := context.WithCancel(s.ctx)
+		stopRequestCancel := context.AfterFunc(r.Context(), cancel)
+		defer func() {
+			stopRequestCancel()
+			cancel()
+		}()
+		h(s, w, r.WithContext(ctx))
+	}))
 	return s, nil
 }
 
@@ -58,11 +86,27 @@ func (s *serveSink) Stop() {
 	s.ds.RemoveRoute(s.path)
 	s.mu.Lock()
 	s.stopped = true
+	s.cancel()
 	for c := range s.clients {
 		close(c.ch)
 		delete(s.clients, c)
 	}
 	s.mu.Unlock()
+	// beginHandler adds to handlers while holding mu and refuses additions once
+	// stopped is set, so Wait cannot race a new zero-to-one Add. Replay readers
+	// receive the cancelled sink context and streaming writes are independently
+	// bounded by streamClientWriteLimit.
+	s.handlers.Wait()
+}
+
+func (s *serveSink) beginHandler() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped {
+		return false
+	}
+	s.handlers.Add(1)
+	return true
 }
 
 // clientCount reports connected clients (test hook, like bus.Manager's).
@@ -117,8 +161,37 @@ func (s *serveSink) Broadcast(entries []queue.Entry) BroadcastReport {
 }
 
 func (s *serveSink) addClient(drop func()) (*client, bool) {
+	if !s.reserveClient() {
+		return nil, false
+	}
+	return s.activateReservedClient(drop)
+}
+
+func (s *serveSink) reserveClient() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stopped || len(s.clients)+s.reserved >= maxServeClients {
+		return false
+	}
+	s.reserved++
+	return true
+}
+
+func (s *serveSink) releaseClientReservation() {
+	s.mu.Lock()
+	if s.reserved > 0 {
+		s.reserved--
+	}
+	s.mu.Unlock()
+}
+
+func (s *serveSink) activateReservedClient(drop func()) (*client, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reserved == 0 {
+		return nil, false
+	}
+	s.reserved--
 	if s.stopped {
 		return nil, false
 	}
@@ -173,7 +246,9 @@ func (s *serveSink) replayEntries(ctx context.Context, cursors map[string]int64,
 		}
 		cur := after
 		for {
-			entries, err := reader.Read(ctx, cur, 256)
+			// Keep replay memory bounded even when every retained Envelope is
+			// near the remote wire limit and all client slots are occupied.
+			entries, err := reader.Read(ctx, cur, replayReadLimit)
 			if err != nil {
 				return err
 			}
@@ -195,38 +270,53 @@ func eventID(e queue.Entry) string {
 	return fmt.Sprintf("%s:%d", e.Env.ConnectorID, e.Seq)
 }
 
+func writeSSEChunk(controller *http.ResponseController, write func() error) error {
+	if err := controller.SetWriteDeadline(time.Now().Add(streamClientWriteLimit)); err != nil {
+		return err
+	}
+	if err := write(); err != nil {
+		return err
+	}
+	return controller.Flush()
+}
+
 func serveSSE(s *serveSink, w http.ResponseWriter, r *http.Request) {
-	fl, ok := w.(http.Flusher)
+	_, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
+	c, ok := s.addClient(func() {})
+	if !ok {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "stream client limit reached", http.StatusServiceUnavailable)
+		return
+	}
+	defer s.removeClient(c)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.WriteHeader(http.StatusOK)
-	fl.Flush()
+	controller := http.NewResponseController(w)
+	if err := writeSSEChunk(controller, func() error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	}); err != nil {
+		return
+	}
 
 	writeEvent := func(e queue.Entry) error {
-		doc, err := json.Marshal(e.Env)
+		doc, err := e.Env.WireBytes()
 		if err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(w, "id: %s\ndata: %s\n\n", eventID(e), doc); err != nil {
+		return writeSSEChunk(controller, func() error {
+			_, err := fmt.Fprintf(w, "id: %s\ndata: %s\n\n", eventID(e), doc)
 			return err
-		}
-		fl.Flush()
-		return nil
+		})
 	}
 
 	// Subscribe live first, then replay: duplicates over gaps (at-least-once).
 	ctx := r.Context()
-	c, ok := s.addClient(func() {})
-	if !ok {
-		return
-	}
-	defer s.removeClient(c)
-
 	cursors := parseAfter(r.Header.Get("Last-Event-ID"), r.URL.Query().Get("after"))
 	if err := s.replayEntries(ctx, cursors, writeEvent); err != nil {
 		return
@@ -247,11 +337,28 @@ func serveSSE(s *serveSink, w http.ResponseWriter, r *http.Request) {
 }
 
 func serveWS(s *serveSink, w http.ResponseWriter, r *http.Request) {
+	if !s.reserveClient() {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "stream client limit reached", http.StatusServiceUnavailable)
+		return
+	}
+	reserved := true
+	defer func() {
+		if reserved {
+			s.releaseClientReservation()
+		}
+	}()
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
 	if err != nil {
 		return
 	}
 	defer func() { _ = conn.CloseNow() }()
+	c, ok := s.activateReservedClient(func() { _ = conn.Close(websocket.StatusPolicyViolation, "client too slow") })
+	reserved = false
+	if !ok {
+		return
+	}
+	defer s.removeClient(c)
 	// CloseRead spawns the read pump this write-only handler otherwise
 	// lacks: it services control frames (ping/pong/close) and returns a
 	// context cancelled when the connection dies or r.Context() is
@@ -261,18 +368,14 @@ func serveWS(s *serveSink, w http.ResponseWriter, r *http.Request) {
 	ctx := conn.CloseRead(r.Context())
 
 	writeEvent := func(e queue.Entry) error {
-		doc, err := json.Marshal(e.Env)
+		doc, err := e.Env.WireBytes()
 		if err != nil {
 			return err
 		}
-		return conn.Write(ctx, websocket.MessageText, doc)
+		writeCtx, cancel := context.WithTimeout(ctx, streamClientWriteLimit)
+		defer cancel()
+		return conn.Write(writeCtx, websocket.MessageText, doc)
 	}
-
-	c, ok := s.addClient(func() { _ = conn.Close(websocket.StatusPolicyViolation, "client too slow") })
-	if !ok {
-		return
-	}
-	defer s.removeClient(c)
 
 	if err := s.replayEntries(ctx, parseAfter(r.URL.Query().Get("after")), writeEvent); err != nil {
 		return

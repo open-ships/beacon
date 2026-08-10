@@ -234,6 +234,34 @@ func TestEnvelopeJSONShape(t *testing.T) {
 	}
 }
 
+func TestWireBytesAreCachedAcrossConsumers(t *testing.T) {
+	e, err := FromPGN(heading(15708))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := e.WireBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := e.WireBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) == 0 || len(second) == 0 || &first[0] != &second[0] {
+		t.Fatal("WireBytes did not reuse the cached canonical encoding")
+	}
+	if got := e.SizeBytes(); got != len(first) {
+		t.Fatalf("SizeBytes = %d, want cached wire length %d", got, len(first))
+	}
+	marshaled, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(marshaled, first) {
+		t.Fatalf("MarshalJSON diverged from cached wire bytes\n got: %s\nwant: %s", marshaled, first)
+	}
+}
+
 func TestEnvelopeJSONRoundTripRestoresInternalFields(t *testing.T) {
 	e, err := FromPGN(heading(15708))
 	if err != nil {

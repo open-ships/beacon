@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/store"
@@ -24,6 +25,39 @@ func seedStore(t *testing.T, dbPath string, cfg model.Config) {
 	}
 }
 
+func TestSizeOutageBuffer(t *testing.T) {
+	got, err := sizeOutageBuffer(20, 1_000, 24*time.Hour, 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MaxMessages != 2_160_000 || got.MaxBytes != 2_160_000_000 || got.MaxAge != 30*time.Hour {
+		t.Fatalf("sizeOutageBuffer = %+v", got)
+	}
+}
+
+func TestSizeOutageBufferRejectsInvalidAndOverflowingPlans(t *testing.T) {
+	tests := []struct {
+		name    string
+		rate    float64
+		bytes   int64
+		outage  time.Duration
+		reserve float64
+	}{
+		{name: "zero rate", bytes: 1, outage: time.Second},
+		{name: "zero bytes", rate: 1, outage: time.Second},
+		{name: "zero outage", rate: 1, bytes: 1},
+		{name: "negative reserve", rate: 1, bytes: 1, outage: time.Second, reserve: -1},
+		{name: "overflow", rate: 1e30, bytes: 1, outage: time.Hour},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := sizeOutageBuffer(tc.rate, tc.bytes, tc.outage, tc.reserve); err == nil {
+				t.Fatal("sizeOutageBuffer succeeded, want error")
+			}
+		})
+	}
+}
+
 func sampleConfig() model.Config {
 	return model.Config{
 		Sources: []model.Source{
@@ -35,6 +69,9 @@ func sampleConfig() model.Config {
 		Connectors: []model.Connector{
 			{ID: "c1", Name: "C1", SourceID: "s1", SinkID: "k1", Enabled: true, Filters: []string{"msg.pgn == 127250"}},
 		},
+		Settings: &model.Settings{Observability: &model.ObservabilityConfig{
+			PrometheusSourceDetails: true,
+		}},
 	}
 }
 
@@ -59,6 +96,9 @@ func TestRunExport(t *testing.T) {
 	}
 	if len(got.Connectors) != 1 || got.Connectors[0].ID != "c1" {
 		t.Fatalf("exported connectors = %+v", got.Connectors)
+	}
+	if !got.PrometheusSourceDetailsEnabled() {
+		t.Fatalf("exported settings = %+v", got.Settings)
 	}
 }
 
@@ -123,6 +163,9 @@ func TestRunImportReplace(t *testing.T) {
 	if len(cfg.Sinks) != 1 || cfg.Sinks[0].ID != "k2" {
 		t.Fatalf("sinks after replace = %+v, want only k2", cfg.Sinks)
 	}
+	if cfg.Settings != nil {
+		t.Fatalf("settings after replace = %+v, want omitted/default-off", cfg.Settings)
+	}
 }
 
 func TestRunImportMerge(t *testing.T) {
@@ -162,6 +205,9 @@ func TestRunImportMerge(t *testing.T) {
 	}
 	if len(cfg.Connectors) != 1 {
 		t.Fatalf("connectors after merge = %+v, want untouched 1", cfg.Connectors)
+	}
+	if !cfg.PrometheusSourceDetailsEnabled() {
+		t.Fatalf("settings after merge = %+v, want preserved opt-in", cfg.Settings)
 	}
 }
 

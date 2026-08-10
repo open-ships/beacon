@@ -1,6 +1,8 @@
 package api_test
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -253,6 +255,23 @@ func TestExportEmptyStoreReturnsEmptyArraysNotNull(t *testing.T) {
 	}
 }
 
+func TestConfigAPIImportsAndExportsObservabilitySettings(t *testing.T) {
+	srv, _, _ := newStatsServer(t)
+	want := model.Config{Settings: &model.Settings{Observability: &model.ObservabilityConfig{
+		PrometheusSourceDetails: true,
+	}}}
+	resp := doJSON(t, http.MethodPost, srv.URL+"/api/v1/config/import", want)
+	mustStatus(t, resp, http.StatusOK)
+
+	resp = doJSON(t, http.MethodGet, srv.URL+"/api/v1/config/export", nil)
+	mustStatus(t, resp, http.StatusOK)
+	var got model.Config
+	decodeInto(t, resp, &got)
+	if !got.PrometheusSourceDetailsEnabled() {
+		t.Fatalf("exported settings = %+v", got.Settings)
+	}
+}
+
 func TestExportImportRoundTrip(t *testing.T) {
 	srv, _, _ := newStatsServer(t)
 	seedConfig(t, srv)
@@ -379,5 +398,46 @@ func TestGetHealthAPI(t *testing.T) {
 	decodeInto(t, resp, &body)
 	if body.Status != "degraded" {
 		t.Fatalf("status = %q, want degraded", body.Status)
+	}
+}
+
+func TestGetHealthAPIReturnsUnavailableWhenLocalStoreIsNotReady(t *testing.T) {
+	srv, _, _ := newStatsServer(t, api.RuntimeInfo{Ready: func(context.Context) error {
+		return errors.New("store unavailable")
+	}})
+
+	resp := doJSON(t, http.MethodGet, srv.URL+"/api/v1/health", nil)
+	mustStatus(t, resp, http.StatusServiceUnavailable)
+	var body struct {
+		Status     string              `json:"status"`
+		Components []supervisor.Status `json:"components"`
+	}
+	decodeInto(t, resp, &body)
+	if body.Status != "degraded" {
+		t.Fatalf("status = %q, want degraded", body.Status)
+	}
+	if len(body.Components) != 1 || body.Components[0].Kind != "system" ||
+		body.Components[0].ID != "store" || body.Components[0].State != "error" {
+		t.Fatalf("components = %+v, want store readiness error", body.Components)
+	}
+}
+
+func TestGetHealthAPIIncludesNonBlockingLocalAdvisories(t *testing.T) {
+	srv, _, _ := newStatsServer(t, api.RuntimeInfo{Advisories: func() []supervisor.Status {
+		return []supervisor.Status{{
+			Kind: "system", ID: "store_maintenance", State: "degraded", Err: "checkpoint delayed",
+		}}
+	}})
+
+	resp := doJSON(t, http.MethodGet, srv.URL+"/api/v1/health", nil)
+	mustStatus(t, resp, http.StatusOK)
+	var body struct {
+		Status     string              `json:"status"`
+		Components []supervisor.Status `json:"components"`
+	}
+	decodeInto(t, resp, &body)
+	if body.Status != "degraded" || len(body.Components) != 1 ||
+		body.Components[0].ID != "store_maintenance" {
+		t.Fatalf("advisory health = %+v, want HTTP 200 degraded maintenance status", body)
 	}
 }

@@ -9,6 +9,7 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
@@ -30,6 +31,18 @@ type RuntimeInfo struct {
 	Buses     func() []bus.EndpointStatus
 	Inventory *inventory.Registry
 	Statuses  func() []supervisor.Status
+	// Readiness reports failures of local capabilities required to accept work
+	// (store and serving listeners). It returns only failing system statuses;
+	// expected remote connectivity outages remain in Statuses and do not make
+	// the API unavailable.
+	Readiness func(context.Context) []supervisor.Status
+	// Ready is the legacy single-store readiness seam retained for embeddings.
+	// New composition roots should provide Readiness so all local failures have
+	// the same component identity as the top-level health endpoint.
+	Ready func(context.Context) error
+	// Advisories are local degradation statuses that should be visible in the
+	// same health body but do not make the process unable to accept work.
+	Advisories func() []supervisor.Status
 }
 
 // New builds beacon's config REST API: a chi router with huma registered
@@ -85,7 +98,7 @@ func New(svc *config.Service, reg *stats.Registry, version string, log *slog.Log
 	registerCommissioningRoutes(humaAPI, runtime, reg)
 	registerMetricsRoutes(humaAPI, svc, reg, log)
 	registerConfigIORoutes(humaAPI, svc, log)
-	registerHealthRoutes(humaAPI, svc)
+	registerHealthRoutes(humaAPI, svc, runtime)
 	registerDocsRoutes(router)
 
 	return router, humaAPI

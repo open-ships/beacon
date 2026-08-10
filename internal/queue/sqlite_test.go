@@ -24,18 +24,20 @@ func testQueue(t *testing.T, limits model.BufferLimits) Queue {
 
 func env(pgn uint32, ts time.Time) *msg.Envelope {
 	return &msg.Envelope{PGN: pgn, Source: 1, Dest: 255, Priority: 3,
-		Timestamp: ts, Payload: json.RawMessage(`{"x":1}`)}
+		Timestamp: ts, ObservedAt: ts, Payload: json.RawMessage(`{"x":1}`)}
 }
 
-func appendN(t *testing.T, q Queue, n int, start time.Time) {
+func appendN(t *testing.T, q Queue, n int, start time.Time) PruneResult {
 	t.Helper()
 	var batch []*msg.Envelope
 	for i := 0; i < n; i++ {
 		batch = append(batch, env(uint32(127000+i), start.Add(time.Duration(i)*time.Second)))
 	}
-	if err := q.Append(context.Background(), batch); err != nil {
+	pruned, err := q.Append(context.Background(), batch)
+	if err != nil {
 		t.Fatal(err)
 	}
+	return pruned
 }
 
 func TestAppendReadAck(t *testing.T) {
@@ -103,13 +105,12 @@ func TestStatsSeparatesPendingFromRetainedHistory(t *testing.T) {
 func TestPruneByCount(t *testing.T) {
 	q := testQueue(t, model.BufferLimits{MaxMessages: 3})
 	ctx := context.Background()
-	appendN(t, q, 10, time.Now())
-	pruned, err := q.Prune(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	pruned := appendN(t, q, 10, time.Now())
 	if pruned.Total != 7 || pruned.Pending != 7 {
 		t.Fatalf("pruned %+v, want total/pending 7", pruned)
+	}
+	if pruned.TotalBytes == 0 || pruned.PendingBytes != pruned.TotalBytes {
+		t.Fatalf("pruned bytes = %+v, want pending bytes reported", pruned)
 	}
 	st, _ := q.Stats(ctx)
 	if st.Depth != 3 {
@@ -118,7 +119,7 @@ func TestPruneByCount(t *testing.T) {
 }
 
 func TestPruneReportsRetainedVersusPendingLoss(t *testing.T) {
-	q := testQueue(t, model.BufferLimits{MaxMessages: 3})
+	q := testQueue(t, model.BufferLimits{MaxMessages: 10})
 	ctx := context.Background()
 	appendN(t, q, 10, time.Now())
 	entries, err := q.Read(ctx, 0, 20)
@@ -128,6 +129,7 @@ func TestPruneReportsRetainedVersusPendingLoss(t *testing.T) {
 	if err := q.Ack(ctx, entries[len(entries)-1].Seq); err != nil {
 		t.Fatal(err)
 	}
+	q.(*sqliteQueue).limits.MaxMessages = 3
 	pruned, err := q.Prune(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -139,25 +141,44 @@ func TestPruneReportsRetainedVersusPendingLoss(t *testing.T) {
 
 func TestPruneByAge(t *testing.T) {
 	q := testQueue(t, model.BufferLimits{MaxAge: model.Duration(time.Hour)})
-	ctx := context.Background()
 	old := time.Now().Add(-2 * time.Hour)
-	appendN(t, q, 4, old)        // all stale
-	appendN(t, q, 3, time.Now()) // fresh
-	pruned, err := q.Prune(ctx)
+	pruned := appendN(t, q, 4, old) // all stale
+	appendN(t, q, 3, time.Now())    // fresh
+	if pruned.Total != 4 || pruned.Pending != 4 {
+		t.Fatalf("pruned %+v, want total/pending 4", pruned)
+	}
+}
+
+func TestPruneByAgeUsesLocalObservationNotWireTimestamp(t *testing.T) {
+	q := testQueue(t, model.BufferLimits{MaxAge: model.Duration(time.Hour)})
+	ctx := context.Background()
+	now := time.Now().UTC()
+	replay := env(1, now.Add(-24*time.Hour))
+	replay.ObservedAt = now
+	futureClock := env(2, now.Add(24*time.Hour))
+	futureClock.ObservedAt = now.Add(-2 * time.Hour)
+	pruned, err := q.Append(ctx, []*msg.Envelope{replay, futureClock})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pruned.Total != 4 || pruned.Pending != 4 {
-		t.Fatalf("pruned %+v, want total/pending 4", pruned)
+	if pruned.Total != 1 || pruned.Pending != 1 {
+		t.Fatalf("pruned %+v, want only the locally stale observation", pruned)
+	}
+	entries, err := q.Read(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Env.PGN != replay.PGN || !entries[0].Env.Timestamp.Equal(replay.Timestamp) {
+		t.Fatalf("retained entries = %+v, want recent replay with canonical wire timestamp", entries)
 	}
 }
 
 func TestPruneByBytes(t *testing.T) {
 	q := testQueue(t, model.BufferLimits{MaxBytes: 1}) // absurdly small: keep nothing but newest
 	ctx := context.Background()
-	appendN(t, q, 5, time.Now())
-	if _, err := q.Prune(ctx); err != nil {
-		t.Fatal(err)
+	pruned := appendN(t, q, 5, time.Now())
+	if pruned.Total != 5 || pruned.Pending != 5 {
+		t.Fatalf("pruned = %+v, want every oversized row removed", pruned)
 	}
 	st, _ := q.Stats(ctx)
 	if st.Depth > 1 {
@@ -203,7 +224,7 @@ func TestQueuesAreIsolated(t *testing.T) {
 	qa := NewSQLite(st, "a", model.BufferLimits{MaxMessages: 100})
 	qb := NewSQLite(st, "b", model.BufferLimits{MaxMessages: 100})
 	ctx := context.Background()
-	_ = qa.Append(ctx, []*msg.Envelope{env(1, time.Now())})
+	_, _ = qa.Append(ctx, []*msg.Envelope{env(1, time.Now())})
 	entries, _ := qb.Read(ctx, 0, 10)
 	if len(entries) != 0 {
 		t.Fatal("queue b sees queue a's entries")
@@ -250,10 +271,10 @@ func TestStatsOldestUsesQueueOrderForOutOfOrderTimestamps(t *testing.T) {
 	ctx := context.Background()
 	first := time.Unix(200, 0)
 	second := time.Unix(100, 0)
-	if err := q.Append(ctx, []*msg.Envelope{env(1, first)}); err != nil {
+	if _, err := q.Append(ctx, []*msg.Envelope{env(1, first)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.Append(ctx, []*msg.Envelope{env(2, second)}); err != nil {
+	if _, err := q.Append(ctx, []*msg.Envelope{env(2, second)}); err != nil {
 		t.Fatal(err)
 	}
 	stats, err := q.Stats(ctx)

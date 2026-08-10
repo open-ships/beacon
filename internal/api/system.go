@@ -298,7 +298,8 @@ func registerConfigIORoutes(api huma.API, svc *config.Service, log *slog.Logger)
 // --- Health ---
 
 type healthOutput struct {
-	Body struct {
+	Status int
+	Body   struct {
 		Status     string              `json:"status" doc:"\"ok\" when every component is up, \"degraded\" otherwise."`
 		Components []supervisor.Status `json:"components"`
 	}
@@ -308,15 +309,48 @@ type healthOutput struct {
 // the admin server's top-level /health (spec §5 lists health under the API
 // surface too), built from the same Statuses() the admin handler reads —
 // just reached through config.Service rather than the supervisor directly.
-func registerHealthRoutes(api huma.API, svc *config.Service) {
+func registerHealthRoutes(api huma.API, svc *config.Service, runtime RuntimeInfo) {
 	huma.Register(api, huma.Operation{
 		OperationID: "get-health",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/health",
 		Summary:     "Get overall health",
+		Errors:      []int{http.StatusServiceUnavailable},
 	}, func(ctx context.Context, _ *struct{}) (*healthOutput, error) {
 		statuses := svc.Statuses()
 		out := &healthOutput{}
+		out.Status = http.StatusOK
+		for _, status := range statuses {
+			if status.Kind == "system" && status.State != "up" {
+				out.Status = http.StatusServiceUnavailable
+				break
+			}
+		}
+		if runtime.Readiness != nil {
+			readyCtx, cancel := context.WithTimeout(ctx, time.Second)
+			critical := runtime.Readiness(readyCtx)
+			cancel()
+			statuses = append(statuses, critical...)
+			for _, status := range critical {
+				if status.State != "up" {
+					out.Status = http.StatusServiceUnavailable
+					break
+				}
+			}
+		} else if runtime.Ready != nil {
+			readyCtx, cancel := context.WithTimeout(ctx, time.Second)
+			err := runtime.Ready(readyCtx)
+			cancel()
+			if err != nil {
+				out.Status = http.StatusServiceUnavailable
+				statuses = append(statuses, supervisor.Status{
+					Kind: "system", ID: "store", State: "error", Err: err.Error(),
+				})
+			}
+		}
+		if runtime.Advisories != nil {
+			statuses = append(statuses, runtime.Advisories()...)
+		}
 		out.Body.Status = supervisor.RollupHealth(statuses)
 		out.Body.Components = statuses
 		return out, nil

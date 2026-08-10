@@ -34,13 +34,18 @@ type Stats struct {
 }
 
 type PruneResult struct {
-	Total   int64
-	Pending int64
+	Total        int64
+	TotalBytes   int64
+	Pending      int64
+	PendingBytes int64
 }
 
 type Queue interface {
-	// Append persists envelopes in order. Seq is assigned by the queue.
-	Append(ctx context.Context, envs []*msg.Envelope) error
+	// Append persists envelopes in order and enforces retention in the same
+	// transaction. Seq is assigned by the queue. The result makes any
+	// retention loss visible immediately to the connector rather than waiting
+	// for a periodic maintenance pass.
+	Append(ctx context.Context, envs []*msg.Envelope) (PruneResult, error)
 	// Read returns up to limit entries with Seq > after, ascending.
 	Read(ctx context.Context, after int64, limit int) ([]Entry, error)
 	// Cursor returns the delivery checkpoint (0 if none).

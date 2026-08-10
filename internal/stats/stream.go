@@ -7,30 +7,44 @@ import (
 	"github.com/open-ships/beacon/internal/msg"
 )
 
+const (
+	// Preview streams share the canonical serialized Envelope, but their
+	// retention is strictly bounded: callers cannot request giant channels or
+	// create an unlimited fan-out set for one source/sink.
+	maxStreamSubscriberBuffer     = 8
+	maxStreamSubscribersPerEntity = 8
+	maxStreamPreviewDocumentBytes = 32 << 10
+)
+
 // SubscribeStream subscribes to future source-received or sink-sent
-// envelopes. It is an observability tap: publishers never block and drop a
+// envelopes. It is an observability tap: publishers never block and drop
 // older preview data when a subscriber cannot keep up. Each message is the
 // canonical three-key consumer envelope JSON.
 func (r *Registry) SubscribeStream(kind, id string, buffer int) (<-chan []byte, func()) {
 	if buffer < 1 {
 		buffer = 1
 	}
+	if buffer > maxStreamSubscriberBuffer {
+		buffer = maxStreamSubscriberBuffer
+	}
 	if r == nil || id == "" || (kind != "source" && kind != "sink") {
-		ch := make(chan []byte)
-		close(ch)
-		return ch, func() {}
+		return closedStreamSubscription()
 	}
 
 	key := streamKey(kind, id)
 	r.mu.Lock()
-	subscriberID := r.nextStreamSubscriber
-	r.nextStreamSubscriber++
-	ch := make(chan []byte, buffer)
 	subscribers := r.streamSubscribers[key]
+	if len(subscribers) >= maxStreamSubscribersPerEntity {
+		r.mu.Unlock()
+		return closedStreamSubscription()
+	}
 	if subscribers == nil {
 		subscribers = map[uint64]chan []byte{}
 		r.streamSubscribers[key] = subscribers
 	}
+	subscriberID := r.nextStreamSubscriber
+	r.nextStreamSubscriber++
+	ch := make(chan []byte, buffer)
 	subscribers[subscriberID] = ch
 	r.mu.Unlock()
 
@@ -51,6 +65,12 @@ func (r *Registry) SubscribeStream(kind, id string, buffer int) (<-chan []byte, 
 	}
 }
 
+func closedStreamSubscription() (<-chan []byte, func()) {
+	ch := make(chan []byte)
+	close(ch)
+	return ch, func() {}
+}
+
 func (r *Registry) publishStream(kind, id string, envelope *msg.Envelope) {
 	if r == nil || envelope == nil {
 		return
@@ -64,9 +84,17 @@ func (r *Registry) publishStream(kind, id string, envelope *msg.Envelope) {
 	if !hasSubscribers {
 		return
 	}
+	if len(envelope.Payload)+len(envelope.Raw) > maxStreamPreviewDocumentBytes {
+		r.recordStreamPreviewOmission(key)
+		return
+	}
 
 	document, err := json.Marshal(envelope)
 	if err != nil {
+		return
+	}
+	if len(document) > maxStreamPreviewDocumentBytes {
+		r.recordStreamPreviewOmission(key)
 		return
 	}
 
@@ -87,6 +115,12 @@ func (r *Registry) publishStream(kind, id string, envelope *msg.Envelope) {
 			}
 		}
 	}
+	r.mu.Unlock()
+}
+
+func (r *Registry) recordStreamPreviewOmission(key string) {
+	r.mu.Lock()
+	r.streamPreviewOmitted[key]++
 	r.mu.Unlock()
 }
 

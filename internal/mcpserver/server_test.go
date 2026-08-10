@@ -169,8 +169,30 @@ func TestToolCatalogAndSchemas(t *testing.T) {
 	if !strings.Contains(string(getConfigSchema), "effective_buffer") {
 		t.Fatalf("get_config output schema is missing effective_buffer: %s", getConfigSchema)
 	}
+	if !strings.Contains(string(getConfigSchema), "prometheus_source_details") {
+		t.Fatalf("get_config output schema is missing observability settings: %s", getConfigSchema)
+	}
 	if got := tm.client.InitializeResult().ServerInfo.Name; got != "beacon" {
 		t.Fatalf("server name = %q, want beacon", got)
+	}
+}
+
+func TestGetConfigExposesPersistedSettings(t *testing.T) {
+	tm := newTestMCP(t)
+	cfg := model.Config{Settings: &model.Settings{Observability: &model.ObservabilityConfig{
+		PrometheusSourceDetails: true,
+	}}}
+	if err := tm.svc.Import(context.Background(), cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	result := callTool(t, tm.client, "get_config", map[string]any{})
+	if result.IsError {
+		t.Fatalf("get_config: %s", toolErrorText(result))
+	}
+	got := decodeStructured[getConfigOutput](t, result)
+	if got.Settings == nil || got.Settings.Observability == nil ||
+		!got.Settings.Observability.PrometheusSourceDetails {
+		t.Fatalf("get_config settings = %+v", got.Settings)
 	}
 }
 
@@ -400,6 +422,20 @@ func TestGetSourceMetricsReturnsAndFiltersSharedPGNStore(t *testing.T) {
 	if out.GeneratedAt.IsZero() {
 		t.Fatal("generated_at was not populated")
 	}
+	if capacity := out.Capacity["can0"]; capacity.TrackedStreams != 2 || capacity.StreamLimit == 0 || capacity.MessagesOmitted != 0 {
+		t.Fatalf("source metric capacity = %+v", capacity)
+	}
+	limitedResult := callTool(t, tm.client, "get_source_metrics", map[string]any{
+		"source_id": "can0", "limit": 1, "event_limit": 100,
+	})
+	if limitedResult.IsError {
+		t.Fatalf("limited get_source_metrics: %s", toolErrorText(limitedResult))
+	}
+	limited := decodeStructured[sourceMetricsOutput](t, limitedResult)
+	if len(limited.Sources["can0"]) != 1 || !limited.Truncated ||
+		len(limited.Events["can0"]) > maxSourceEventResults {
+		t.Fatalf("bounded source metrics = %+v", limited)
+	}
 
 	result = callTool(t, tm.client, "get_source_metrics", map[string]any{"source_id": "missing"})
 	if !result.IsError || !strings.Contains(toolErrorText(result), config.ErrNotFound.Error()) {
@@ -447,6 +483,16 @@ func TestGetLatestPayloadsReturnsEverySensorPGNAndSupportsScopedFilters(t *testi
 	}
 	if out.Payloads[2].SensorID != "address:44" || out.Payloads[2].PGN != 128259 {
 		t.Fatalf("fallback sensor id payload = %+v", out.Payloads[2])
+	}
+	limitedResult := callTool(t, tm.client, "get_latest_payloads", map[string]any{
+		"source_id": "can0", "limit": 1,
+	})
+	if limitedResult.IsError {
+		t.Fatalf("limited get_latest_payloads: %s", toolErrorText(limitedResult))
+	}
+	limited := decodeStructured[latestPayloadsOutput](t, limitedResult)
+	if len(limited.Payloads) != 1 || !limited.Truncated {
+		t.Fatalf("bounded latest payloads = %+v", limited)
 	}
 
 	result = callTool(t, tm.client, "get_latest_payloads", map[string]any{
@@ -542,6 +588,26 @@ func TestStreamableHTTPAndOriginProtection(t *testing.T) {
 		if resp.StatusCode != http.StatusForbidden {
 			t.Fatalf("%s cross-origin status = %d, want 403", method, resp.StatusCode)
 		}
+	}
+}
+
+func TestMCPRequestBodyLimit(t *testing.T) {
+	server := httptest.NewServer(Handler(nil, nil, "test", slog.New(slog.NewTextHandler(io.Discard, nil))))
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL,
+		strings.NewReader(strings.Repeat("x", maxMCPRequestBytes+1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized MCP request status = %d, want 413", resp.StatusCode)
 	}
 }
 

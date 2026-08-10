@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/msg"
 	"github.com/open-ships/beacon/internal/n2kcatalog"
 	"github.com/open-ships/beacon/internal/store"
@@ -112,6 +113,9 @@ func TestSourceMetricEventsSurviveRestart(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	st, err := store.Open(dbPath)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReplaceConfig(t.Context(), model.Config{Sources: []model.Source{{ID: "can0"}}}); err != nil {
 		t.Fatal(err)
 	}
 	reg := newRegistryAt(func() time.Time { return now })

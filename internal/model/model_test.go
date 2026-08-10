@@ -2,7 +2,9 @@ package model
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -29,6 +31,36 @@ func TestValidateOK(t *testing.T) {
 	cfg := validConfig()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
+	}
+}
+
+func TestPrometheusSourceDetailsConfigCompatibility(t *testing.T) {
+	legacy := []byte(`{"sources":[],"sinks":[],"connectors":[]}`)
+	var cfg Config
+	if err := json.Unmarshal(legacy, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PrometheusSourceDetailsEnabled() {
+		t.Fatal("legacy config enabled rich Prometheus source details")
+	}
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != string(legacy) {
+		t.Fatalf("legacy config JSON = %s, want %s", encoded, legacy)
+	}
+
+	cfg.Settings = &Settings{Observability: &ObservabilityConfig{PrometheusSourceDetails: true}}
+	if !cfg.PrometheusSourceDetailsEnabled() {
+		t.Fatal("explicit opt-in did not enable rich Prometheus source details")
+	}
+	encoded, err = json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"settings":{"observability":{"prometheus_source_details":true}}`) {
+		t.Fatalf("opt-in config JSON = %s", encoded)
 	}
 }
 
@@ -80,6 +112,159 @@ func TestValidateMQTTSourceAndSinkOK(t *testing.T) {
 	}
 	if got := NormalizeMQTTBrokerURL("mqtts://broker.local:8883"); got != "ssl://broker.local:8883" {
 		t.Fatalf("NormalizeMQTTBrokerURL = %q", got)
+	}
+}
+
+func TestValidateResourceCardinalityCaps(t *testing.T) {
+	cfg := validConfig()
+	for i := len(cfg.Sources); i <= MaxSources; i++ {
+		cfg.Sources = append(cfg.Sources, Source{ID: fmt.Sprintf("source-%d", i), Type: SourceSocketCAN, Interface: "can0"})
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("configuration above source cap validated")
+	}
+
+	connector := Connector{ID: "bounded", SourceID: "src", SinkID: "sink"}
+	connector.Filters = make([]string, MaxConnectorFilters+1)
+	if err := connector.Validate(); err == nil {
+		t.Fatal("connector above filter count cap validated")
+	}
+	connector.Filters = []string{strings.Repeat("x", MaxFilterExpressionLen+1)}
+	if err := connector.Validate(); err == nil {
+		t.Fatal("connector above filter byte cap validated")
+	}
+}
+
+func TestDirectValidationTextBoundaries(t *testing.T) {
+	name := strings.Repeat("n", MaxEntityNameBytes)
+	endpoint := strings.Repeat("e", MaxEndpointTextBytes)
+	topic := strings.Repeat("t", MaxTopicBytes)
+	headerName := strings.Repeat("X", MaxHeaderNameBytes)
+	headerValue := strings.Repeat("v", MaxHeaderValueBytes)
+
+	newSource := func() Source {
+		return Source{
+			ID: "source", Name: name, Type: SourceSocketCAN, Interface: endpoint,
+			Port: endpoint, URL: endpoint, Topic: topic, FilePath: endpoint,
+			Address: endpoint, Headers: map[string]string{headerName: headerValue},
+		}
+	}
+	if err := newSource().Validate(); err != nil {
+		t.Fatalf("source at text boundaries rejected: %v", err)
+	}
+	sourceCases := []struct {
+		name   string
+		mutate func(*Source)
+	}{
+		{"name", func(s *Source) { s.Name += "x" }},
+		{"interface", func(s *Source) { s.Interface += "x" }},
+		{"port", func(s *Source) { s.Port += "x" }},
+		{"url", func(s *Source) { s.URL += "x" }},
+		{"file_path", func(s *Source) { s.FilePath += "x" }},
+		{"address", func(s *Source) { s.Address += "x" }},
+		{"topic", func(s *Source) { s.Topic += "x" }},
+		{"header_name", func(s *Source) { s.Headers = map[string]string{headerName + "x": headerValue} }},
+		{"header_value", func(s *Source) { s.Headers = map[string]string{headerName: headerValue + "x"} }},
+	}
+	for _, tc := range sourceCases {
+		t.Run("source_"+tc.name, func(t *testing.T) {
+			source := newSource()
+			tc.mutate(&source)
+			if err := source.Validate(); err == nil {
+				t.Fatal("over-limit source text accepted")
+			}
+		})
+	}
+
+	newSink := func() Sink {
+		return Sink{
+			ID: "sink", Name: name, Type: SinkNull, Interface: endpoint,
+			Port: endpoint, Path: endpoint, Address: endpoint, URL: endpoint,
+			Topic: topic, FilePath: endpoint, Headers: map[string]string{headerName: headerValue},
+		}
+	}
+	if err := newSink().Validate(); err != nil {
+		t.Fatalf("sink at text boundaries rejected: %v", err)
+	}
+	sinkCases := []struct {
+		name   string
+		mutate func(*Sink)
+	}{
+		{"name", func(s *Sink) { s.Name += "x" }},
+		{"interface", func(s *Sink) { s.Interface += "x" }},
+		{"port", func(s *Sink) { s.Port += "x" }},
+		{"path", func(s *Sink) { s.Path += "x" }},
+		{"address", func(s *Sink) { s.Address += "x" }},
+		{"url", func(s *Sink) { s.URL += "x" }},
+		{"file_path", func(s *Sink) { s.FilePath += "x" }},
+		{"topic", func(s *Sink) { s.Topic += "x" }},
+		{"header_name", func(s *Sink) { s.Headers = map[string]string{headerName + "x": headerValue} }},
+		{"header_value", func(s *Sink) { s.Headers = map[string]string{headerName: headerValue + "x"} }},
+	}
+	for _, tc := range sinkCases {
+		t.Run("sink_"+tc.name, func(t *testing.T) {
+			sink := newSink()
+			tc.mutate(&sink)
+			if err := sink.Validate(); err == nil {
+				t.Fatal("over-limit sink text accepted")
+			}
+		})
+	}
+
+	connector := Connector{
+		ID: "connector", Name: name,
+		SourceID: strings.Repeat("s", MaxEntityIDBytes),
+		SinkID:   strings.Repeat("k", MaxEntityIDBytes),
+	}
+	if err := connector.Validate(); err != nil {
+		t.Fatalf("connector at text boundaries rejected: %v", err)
+	}
+	connector.Name += "x"
+	if err := connector.Validate(); err == nil {
+		t.Fatal("over-limit connector name accepted")
+	}
+	connector.Name = name
+	connector.SourceID += "x"
+	if err := connector.Validate(); err == nil {
+		t.Fatal("over-limit connector reference accepted")
+	}
+}
+
+func TestAuthoredConfigTextBudgetBoundary(t *testing.T) {
+	cfg := validConfig()
+	cfg.Connectors[0].Filters = nil
+	used, ok := authoredConfigTextBytes(&cfg, MaxAuthoredConfigTextBytes)
+	if !ok {
+		t.Fatalf("small valid config unexpectedly exceeds authored-text budget")
+	}
+	remaining := MaxAuthoredConfigTextBytes - used
+	for remaining > 0 {
+		chunk := min(remaining, MaxFilterExpressionLen)
+		cfg.Connectors[0].Filters = append(cfg.Connectors[0].Filters, strings.Repeat("x", chunk))
+		remaining -= chunk
+	}
+	if len(cfg.Connectors[0].Filters) > MaxConnectorFilters {
+		t.Fatalf("test fixture needs %d filters, maximum is %d", len(cfg.Connectors[0].Filters), MaxConnectorFilters)
+	}
+	if got, within := authoredConfigTextBytes(&cfg, MaxAuthoredConfigTextBytes); !within || got != MaxAuthoredConfigTextBytes {
+		t.Fatalf("authored text = %d/%t, want exact limit %d", got, within, MaxAuthoredConfigTextBytes)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("configuration at authored-text boundary rejected: %v", err)
+	}
+
+	cfg.Sources[0].Name += "x"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "authored text") {
+		t.Fatalf("configuration above authored-text boundary error = %v", err)
+	}
+}
+
+func TestAuthoredConfigTextCountDoesNotAllocate(t *testing.T) {
+	cfg := validConfig()
+	if allocs := testing.AllocsPerRun(100, func() {
+		_, _ = authoredConfigTextBytes(&cfg, MaxAuthoredConfigTextBytes)
+	}); allocs != 0 {
+		t.Fatalf("authored config text count allocated %v objects per call", allocs)
 	}
 }
 
@@ -177,6 +362,7 @@ func TestValidatePostgresSink(t *testing.T) {
 		{"negative batch", func(s *Sink) { s.BatchSize = -1 }},
 		{"oversize batch", func(s *Sink) { s.BatchSize = MaxPostgresBatchSize + 1 }},
 		{"negative timeout", func(s *Sink) { s.WriteTimeout = -1 }},
+		{"oversize timeout", func(s *Sink) { s.WriteTimeout = MaxPostgresWriteTimeout + 1 }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -282,6 +468,20 @@ func TestValidateRejects(t *testing.T) {
 			c.Sinks = append(c.Sinks, Sink{ID: "log", Name: "Log", Type: SinkFile, Enabled: true,
 				FilePath: absoluteFilePath, Format: FileFormatNDJSON, MaxFiles: -1})
 		}},
+		{"file sink excessive max_files", func(c *Config) {
+			c.Sinks = append(c.Sinks, Sink{ID: "log", Name: "Log", Type: SinkFile, Enabled: true,
+				FilePath: absoluteFilePath, Format: FileFormatNDJSON, MaxFiles: MaxFileCount + 1})
+		}},
+		{"file sinks duplicate path", func(c *Config) {
+			c.Sinks = append(c.Sinks,
+				Sink{ID: "log-a", Name: "A", Type: SinkFile, Enabled: true, FilePath: absoluteFilePath, Format: FileFormatNDJSON},
+				Sink{ID: "log-b", Name: "B", Type: SinkFile, Enabled: true, FilePath: absoluteFilePath, Format: FileFormatNDJSON})
+		}},
+		{"file sinks overlapping rotation paths", func(c *Config) {
+			c.Sinks = append(c.Sinks,
+				Sink{ID: "log-a", Name: "A", Type: SinkFile, Enabled: true, FilePath: absoluteFilePath, Format: FileFormatNDJSON},
+				Sink{ID: "log-b", Name: "B", Type: SinkFile, Enabled: true, FilePath: absoluteFilePath + ".1", Format: FileFormatNDJSON})
+		}},
 		{"mqtt sink without broker", func(c *Config) {
 			c.Sinks = append(c.Sinks, Sink{ID: "mqtt-out", Name: "MQTT", Type: SinkMQTT, Enabled: true, Topic: "vessels/main/engine/json"})
 		}},
@@ -306,13 +506,43 @@ func TestValidateRejects(t *testing.T) {
 
 func TestBufferDefaults(t *testing.T) {
 	l := BufferLimits{}.ApplyDefaults()
-	if l.MaxMessages != DefaultMaxMessages {
-		t.Fatalf("default MaxMessages = %d, want %d", l.MaxMessages, DefaultMaxMessages)
+	if l.MaxMessages != DefaultMaxMessages || l.MaxBytes != DefaultBufferMaxBytes {
+		t.Fatalf("default buffer = %+v, want messages=%d bytes=%d", l, DefaultMaxMessages, DefaultBufferMaxBytes)
 	}
-	// explicit limit is preserved, no default injected
+	// Explicit values are preserved while independent safety guards are added.
 	l = BufferLimits{MaxAge: Duration(time.Hour)}.ApplyDefaults()
-	if l.MaxMessages != 0 || time.Duration(l.MaxAge) != time.Hour {
+	if l.MaxMessages != DefaultMaxMessages || l.MaxBytes != DefaultBufferMaxBytes || time.Duration(l.MaxAge) != time.Hour {
 		t.Fatalf("explicit limits mangled: %+v", l)
+	}
+}
+
+func TestEntityIDLengthIsBoundedAtDiagnosticIdentityLimit(t *testing.T) {
+	if err := validSlug(strings.Repeat("a", MaxEntityIDBytes)); err != nil {
+		t.Fatalf("maximum-length id rejected: %v", err)
+	}
+	if err := validSlug(strings.Repeat("a", MaxEntityIDBytes+1)); err == nil {
+		t.Fatal("overlong id accepted")
+	}
+}
+
+func TestResourceDefaultsAndAggregateBudgets(t *testing.T) {
+	cfg := validConfig()
+	resources := cfg.EffectiveResources()
+	if resources.MaxDatabaseBytes != DefaultMaxDatabaseBytes ||
+		resources.DatabaseReserveBytes != DefaultDatabaseReserve ||
+		resources.MaxFileStoreBytes != DefaultMaxFileStoreBytes {
+		t.Fatalf("resource defaults = %+v", resources)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("default resource budget rejected: %v", err)
+	}
+
+	cfg.Settings = &Settings{Resources: &ResourceConfig{
+		MaxDatabaseBytes: MinDatabaseBytes, DatabaseReserveBytes: MinDatabaseBytes / 2,
+		MaxFileStoreBytes: DefaultMaxFileStoreBytes,
+	}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "connector route max_bytes total") {
+		t.Fatalf("undersized aggregate database budget error = %v", err)
 	}
 }
 

@@ -15,7 +15,15 @@ import (
 	"github.com/open-ships/beacon/internal/store"
 )
 
-const onlineWindow = 90 * time.Second
+const (
+	onlineWindow             = 90 * time.Second
+	inventoryPersistInterval = 5 * time.Minute
+	// One NMEA 2000 network has only 254 source addresses. Keeping four full
+	// networks of uncommissioned history is generous while preventing a noisy
+	// or spoofed bus from growing RAM and SQLite without bound. Operator-
+	// approved commissioning records are never evicted by this policy.
+	maxUncommissionedDevices = 1024
+)
 
 type Record struct {
 	bus.DeviceInfo
@@ -45,14 +53,24 @@ type fingerprint struct {
 }
 
 type Registry struct {
-	st      *store.Store
-	mu      sync.RWMutex
-	records []Record
+	st            *store.Store
+	mu            sync.RWMutex
+	records       []Record
+	latest        map[string]bus.DeviceInfo
+	persistedSeen map[string]time.Time
+	persistedFP   map[string]fingerprint
 }
 
-func New(st *store.Store) *Registry { return &Registry{st: st, records: []Record{}} }
+func New(st *store.Store) *Registry {
+	return &Registry{
+		st: st, records: []Record{}, latest: map[string]bus.DeviceInfo{},
+		persistedSeen: map[string]time.Time{}, persistedFP: map[string]fingerprint{},
+	}
+}
 
 func nameKey(name uint64) string { return fmt.Sprintf("%016X", name) }
+
+func deviceKey(endpoint string, name uint64) string { return endpoint + "\x00" + nameKey(name) }
 
 func fp(device bus.DeviceInfo) fingerprint {
 	return fingerprint{
@@ -70,27 +88,102 @@ func fp(device bus.DeviceInfo) fingerprint {
 
 func (r *Registry) Observe(ctx context.Context, devices []bus.DeviceInfo) error {
 	now := time.Now().UTC()
+	normalized := make([]bus.DeviceInfo, 0, len(devices))
+
+	r.mu.Lock()
+	known := make(map[string]bus.DeviceInfo, len(r.records)+len(r.latest))
+	for _, record := range r.records {
+		known[deviceKey(record.Endpoint, record.Name)] = record.DeviceInfo
+	}
+	for key, device := range r.latest {
+		known[key] = device
+	}
+	persisted := make(map[string]time.Time, len(r.persistedSeen))
+	for key, seen := range r.persistedSeen {
+		persisted[key] = seen
+	}
+	persistedFingerprints := make(map[string]fingerprint, len(r.persistedFP))
+	for key, fingerprint := range r.persistedFP {
+		persistedFingerprints[key] = fingerprint
+	}
 	for _, device := range devices {
 		if device.LastSeen.IsZero() {
 			device.LastSeen = now
 		} else {
 			device.LastSeen = device.LastSeen.UTC()
 		}
+		key := deviceKey(device.Endpoint, device.Name)
+		if previous, ok := known[key]; ok && device.LastSeen.Before(previous.LastSeen) {
+			continue
+		}
+		r.latest[key] = device
+		normalized = append(normalized, device)
+	}
+	r.applyLatestLocked(now)
+	r.mu.Unlock()
+
+	type observation struct {
+		device bus.DeviceInfo
+		doc    string
+	}
+	writes := make([]observation, 0, len(normalized))
+	for _, device := range normalized {
+		key := deviceKey(device.Endpoint, device.Name)
+		lastPersisted, persistedBefore := persisted[key]
+		persistedFingerprint, fingerprintExists := persistedFingerprints[key]
+		// Compare against durable state, not r.latest. If the previous write
+		// failed, r.latest already contains this observation; comparing to it
+		// would postpone the retry until the five-minute heartbeat.
+		meaningfulChange := !fingerprintExists || persistedFingerprint != fp(device)
+		heartbeatDue := !persistedBefore || device.LastSeen.Sub(lastPersisted) >= inventoryPersistInterval
+		if !meaningfulChange && !heartbeatDue {
+			continue
+		}
 		current, err := json.Marshal(device)
 		if err != nil {
 			return err
 		}
-		seen := device.LastSeen.UnixNano()
-		_, err = r.st.DB().ExecContext(ctx, `
+		writes = append(writes, observation{device: device, doc: string(current)})
+	}
+	if len(writes) == 0 {
+		return nil
+	}
+
+	tx, err := r.st.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.PrepareContext(ctx, `
 			INSERT INTO device_inventory(endpoint, device_name, first_seen, last_seen, current_doc)
 			VALUES (?, ?, ?, ?, ?)
 			ON CONFLICT(endpoint, device_name) DO UPDATE SET
 			  last_seen = excluded.last_seen, current_doc = excluded.current_doc
-			WHERE excluded.last_seen >= device_inventory.last_seen`,
-			device.Endpoint, nameKey(device.Name), seen, seen, string(current))
-		if err != nil {
-			return fmt.Errorf("observe device %s/%s: %w", device.Endpoint, nameKey(device.Name), err)
+			WHERE excluded.last_seen > device_inventory.last_seen
+			   OR (excluded.last_seen = device_inventory.last_seen
+			       AND excluded.current_doc <> device_inventory.current_doc)`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stmt.Close() }()
+	for _, item := range writes {
+		seen := item.device.LastSeen.UnixNano()
+		if _, err := stmt.ExecContext(ctx, item.device.Endpoint, nameKey(item.device.Name), seen, seen, item.doc); err != nil {
+			return fmt.Errorf("observe device %s/%s: %w", item.device.Endpoint, nameKey(item.device.Name), err)
 		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM device_inventory
+		WHERE expected = 0 AND rowid IN (
+		  SELECT rowid FROM device_inventory
+		  WHERE expected = 0
+		  ORDER BY last_seen DESC
+		  LIMIT -1 OFFSET ?
+		)`, maxUncommissionedDevices); err != nil {
+		return fmt.Errorf("bound uncommissioned inventory: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	return r.Refresh(ctx)
 }
@@ -105,6 +198,8 @@ func (r *Registry) Refresh(ctx context.Context) error {
 	defer func() { _ = rows.Close() }()
 	now := time.Now().UTC()
 	records := []Record{}
+	persistedSeen := map[string]time.Time{}
+	persistedFingerprints := map[string]fingerprint{}
 	for rows.Next() {
 		var first, last int64
 		var expected int
@@ -117,6 +212,9 @@ func (r *Registry) Refresh(ctx context.Context) error {
 			return err
 		}
 		device.LastSeen = time.Unix(0, last).UTC()
+		key := deviceKey(device.Endpoint, device.Name)
+		persistedSeen[key] = device.LastSeen
+		persistedFingerprints[key] = fp(device)
 		currentFP, _ := json.Marshal(fp(device))
 		changed := expected != 0 && baselineDoc != "" && baselineDoc != string(currentFP)
 		status := "historical"
@@ -139,8 +237,43 @@ func (r *Registry) Refresh(ctx context.Context) error {
 	}
 	r.mu.Lock()
 	r.records = records
+	r.persistedSeen = persistedSeen
+	r.persistedFP = persistedFingerprints
+	for key := range r.latest {
+		if _, retained := persistedSeen[key]; !retained {
+			delete(r.latest, key)
+		}
+	}
+	r.applyLatestLocked(now)
 	r.mu.Unlock()
 	return nil
+}
+
+func (r *Registry) applyLatestLocked(now time.Time) {
+	for i := range r.records {
+		record := &r.records[i]
+		if latest, ok := r.latest[deviceKey(record.Endpoint, record.Name)]; ok &&
+			!latest.LastSeen.Before(record.LastSeen) {
+			record.DeviceInfo = latest
+		}
+		record.Status = recordStatus(*record, now)
+	}
+}
+
+func recordStatus(record Record, now time.Time) string {
+	online := now.Sub(record.LastSeen) <= onlineWindow
+	switch {
+	case !record.Expected && online:
+		return "new"
+	case record.Expected && !online:
+		return "missing"
+	case record.Expected && record.Changed:
+		return "changed"
+	case record.Expected:
+		return "online"
+	default:
+		return "historical"
+	}
 }
 
 func (r *Registry) Records() []Record {

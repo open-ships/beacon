@@ -71,6 +71,10 @@ test-browser-ui:
 test-race:
     go test -race ./...
 
+# run Linux vessel resource and SQLite recovery release gates
+vessel-gate:
+    bash scripts/vessel-release-gate.sh
+
 # run the binary (pass args after --)
 run *args:
     go run {{cmd}} {{args}}

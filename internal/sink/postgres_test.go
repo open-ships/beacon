@@ -27,6 +27,13 @@ type fakePostgresDB struct {
 	closed bool
 }
 
+func testPostgresSink(db postgresDB, table string) *postgresSink {
+	return &postgresSink{
+		id: "db", db: db, table: table, batchSize: 100, timeout: time.Second,
+		initializeSlot: make(chan struct{}, 1),
+	}
+}
+
 func (db *fakePostgresDB) Exec(_ context.Context, statement string, args ...any) (pgconn.CommandTag, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -45,6 +52,19 @@ func (db *fakePostgresDB) snapshot() []postgresExecCall {
 	defer db.mu.Unlock()
 	return append([]postgresExecCall(nil), db.calls...)
 }
+
+type blockingPostgresDB struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (db *blockingPostgresDB) Exec(ctx context.Context, _ string, _ ...any) (pgconn.CommandTag, error) {
+	db.once.Do(func() { close(db.started) })
+	<-ctx.Done()
+	return pgconn.CommandTag{}, ctx.Err()
+}
+
+func (*blockingPostgresDB) Close() {}
 
 func TestPostgresDDL(t *testing.T) {
 	regular := PostgresDDL("telemetry.envelopes", false)
@@ -90,10 +110,8 @@ func TestPostgresEnsureReadyCreatesOrVerifiesSchema(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := &fakePostgresDB{}
-			s := &postgresSink{
-				id: "db", db: db, table: "public.beacon_envelopes", timeout: time.Second,
-				autoCreate: tc.autoCreate, timescaleDB: tc.timescale,
-			}
+			s := testPostgresSink(db, "public.beacon_envelopes")
+			s.autoCreate, s.timescaleDB = tc.autoCreate, tc.timescale
 			if err := s.ensureReady(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -108,9 +126,43 @@ func TestPostgresEnsureReadyCreatesOrVerifiesSchema(t *testing.T) {
 	}
 }
 
+func TestPostgresEnsureReadyCanceledWaiterDoesNotBlockBehindRecovery(t *testing.T) {
+	db := &blockingPostgresDB{started: make(chan struct{})}
+	s := testPostgresSink(db, "public.beacon_envelopes")
+	s.timeout = time.Minute
+
+	recoveryCtx, cancelRecovery := context.WithCancel(context.Background())
+	recoveryDone := make(chan error, 1)
+	go func() { recoveryDone <- s.ensureReady(recoveryCtx) }()
+	select {
+	case <-db.started:
+	case <-time.After(time.Second):
+		cancelRecovery()
+		t.Fatal("background recovery did not acquire initialization admission")
+	}
+
+	waiterCtx, cancelWaiter := context.WithCancel(context.Background())
+	cancelWaiter()
+	started := time.Now()
+	err := s.ensureReady(waiterCtx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled waiter error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("canceled waiter took %v behind recovery, want prompt return", elapsed)
+	}
+
+	cancelRecovery()
+	select {
+	case <-recoveryDone:
+	case <-time.After(time.Second):
+		t.Fatal("background recovery did not stop after cancellation")
+	}
+}
+
 func TestPostgresPushBatchWritesQueryableAndCanonicalData(t *testing.T) {
 	db := &fakePostgresDB{}
-	s := &postgresSink{id: "db", db: db, table: "telemetry.envelopes", batchSize: 100, timeout: time.Second}
+	s := testPostgresSink(db, "telemetry.envelopes")
 	s.setState(true, nil)
 	observed := time.Date(2026, 8, 8, 12, 0, 0, 0, time.FixedZone("EDT", -4*60*60))
 	deviceName := uint64(0xfedcba9876543210)
@@ -158,7 +210,7 @@ func TestPostgresPushBatchWritesQueryableAndCanonicalData(t *testing.T) {
 
 func TestPostgresPushBatchRejectsOutOfRangePGN(t *testing.T) {
 	db := &fakePostgresDB{}
-	s := &postgresSink{id: "db", db: db, table: "public.beacon_envelopes", timeout: time.Second}
+	s := testPostgresSink(db, "public.beacon_envelopes")
 	s.setState(true, nil)
 	entry := queue.Entry{Seq: 1, Env: &msg.Envelope{
 		ConnectorID: "route", PGN: postgresMaxPGN + 1,
@@ -176,7 +228,7 @@ func TestPostgresPushBatchRejectsOutOfRangePGN(t *testing.T) {
 
 func TestPostgresPushFailureDegradesAndReinitializes(t *testing.T) {
 	db := &fakePostgresDB{err: errors.New("connection reset")}
-	s := &postgresSink{id: "db", db: db, table: "public.beacon_envelopes", timeout: time.Second}
+	s := testPostgresSink(db, "public.beacon_envelopes")
 	s.setState(true, nil)
 	entry := queue.Entry{Seq: 1, Env: &msg.Envelope{
 		ConnectorID: "route", PGN: 127250, Timestamp: time.Now(), ObservedAt: time.Now(),

@@ -2,6 +2,7 @@ package filter
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +87,41 @@ func TestCompileErrorRejected(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsNonBooleanResult(t *testing.T) {
+	for _, expr := range []string{`1`, `"heading"`, `msg.payload`, `[msg.pgn]`} {
+		t.Run(expr, func(t *testing.T) {
+			if _, err := Compile([]string{expr}); err == nil {
+				t.Fatalf("non-boolean filter %q accepted", expr)
+			} else if got := err.Error(); !strings.Contains(got, "must return bool") {
+				t.Fatalf("error = %q, want boolean-result explanation", got)
+			}
+		})
+	}
+}
+
+func TestOptionalPayloadFieldPresenceGuard(t *testing.T) {
+	c, err := Compile([]string{`!has(msg.payload.heading) || double(msg.payload.heading) > 1.0`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{name: "absent passes", payload: `{}`, want: true},
+		{name: "present passes comparison", payload: `{"heading": 2}`, want: true},
+		{name: "present fails comparison", payload: `{"heading": 0.5}`, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := c.Match(env(127250, 1, tc.payload))
+			if err != nil || got != tc.want {
+				t.Fatalf("Match() = %v, %v; want %v, nil", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestEmptyChainMatchesAll(t *testing.T) {
 	c, err := Compile(nil)
 	if err != nil {
@@ -117,5 +153,19 @@ func TestDiagnoseReturnsOffendingTokenRanges(t *testing.T) {
 	unknown := diagnostics[2]
 	if unknown.Expression != 3 || exprs[3][unknown.Column:unknown.EndColumn] != "unknown2" {
 		t.Fatalf("unknown-identifier diagnostic = %+v, range %q", unknown, exprs[3][unknown.Column:unknown.EndColumn])
+	}
+}
+
+func TestDiagnoseRejectsNonBooleanResult(t *testing.T) {
+	diagnostics, err := Diagnose([]string{"msg.pgn", "msg.pgn == 127250"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnostics) != 1 {
+		t.Fatalf("diagnostics = %+v, want one non-boolean result", diagnostics)
+	}
+	if got := diagnostics[0]; got.Expression != 0 || got.Column != 0 || got.EndColumn != len("msg.pgn") ||
+		!strings.Contains(got.Message, "must return bool") {
+		t.Fatalf("non-boolean diagnostic = %+v", got)
 	}
 }

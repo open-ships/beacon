@@ -96,6 +96,29 @@ func TestSSEDialerReceivesAndReconnects(t *testing.T) {
 	}
 }
 
+func TestSSEHandshakeThatNeverReturnsHeadersIsBounded(t *testing.T) {
+	oldTimeout := sourceHTTPAttemptTimeout
+	sourceHTTPAttemptTimeout = 25 * time.Millisecond
+	t.Cleanup(func() { sourceHTTPAttemptTimeout = oldTimeout })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	connected := false
+	started := time.Now()
+	err := runSSE(t.Context(), model.Source{URL: srv.URL}, func(*msg.Envelope) {}, func() { connected = true })
+	if err == nil {
+		t.Fatal("header-stalled SSE connection returned no error")
+	}
+	if connected {
+		t.Fatal("header-stalled SSE connection reported connected")
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("header-stalled SSE attempt took %s, want an explicit handshake bound", elapsed)
+	}
+}
+
 // A source whose endpoint never comes up (bad host, missing port) must report
 // "degraded" for its entire life and never flash "up" — the dialer must not
 // optimistically claim health before a connection is actually established.
@@ -165,6 +188,47 @@ func TestDialerReportsUpOnlyAfterConnect(t *testing.T) {
 	close(release) // drop the connection
 	if !eventuallyState(rt, "degraded", time.Second) {
 		t.Fatal("source did not return to degraded after disconnect")
+	}
+}
+
+func TestDialerShortHandshakeFlapsRetainExponentialBackoff(t *testing.T) {
+	oldMin, oldMax, oldStableAge := sourceReconnectMin, sourceReconnectMax, sourceStableConnectionAge
+	sourceReconnectMin = 2 * time.Millisecond
+	sourceReconnectMax = 64 * time.Millisecond
+	sourceStableConnectionAge = time.Second
+	t.Cleanup(func() {
+		sourceReconnectMin, sourceReconnectMax, sourceStableConnectionAge = oldMin, oldMax, oldStableAge
+	})
+
+	attempts := make(chan time.Time, 16)
+	run := func(runCtx context.Context, _ model.Source, _ func(*msg.Envelope), connected func()) error {
+		select {
+		case attempts <- time.Now():
+		case <-runCtx.Done():
+			return runCtx.Err()
+		}
+		connected()
+		return errors.New("handshake immediately dropped")
+	}
+	rt, err := newDialerSource(context.Background(), model.Source{ID: "flap", Type: model.SourceHTTPSSE},
+		slog.Default(), nil, nil, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop()
+
+	times := make([]time.Time, 0, 6)
+	for len(times) < cap(times) {
+		select {
+		case attemptedAt := <-attempts:
+			times = append(times, attemptedAt)
+		case <-time.After(time.Second):
+			t.Fatalf("only observed %d reconnect attempts", len(times))
+		}
+	}
+	lastInterval := times[5].Sub(times[4])
+	if lastInterval < 10*time.Millisecond {
+		t.Fatalf("fifth short-flap retry interval = %s, want retained exponential backoff", lastInterval)
 	}
 }
 

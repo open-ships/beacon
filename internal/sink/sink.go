@@ -1,7 +1,7 @@
-// Package sink runs configured sinks. CAN/file/null sinks push-confirm each
-// message, HTTP POST and PostgreSQL sinks confirm batches, and serve-mode
-// HTTP/TCP sinks broadcast to connected clients, with replay served straight
-// from connector queues (SSE/WS only).
+// Package sink runs configured sinks. CAN/file/null sinks and MQTT QoS 1
+// broker acknowledgements confirm each message, HTTP POST and PostgreSQL sinks
+// confirm batches, and serve-mode HTTP/TCP sinks broadcast to connected
+// clients, with replay served straight from connector queues (SSE/WS only).
 package sink
 
 import (
@@ -76,11 +76,15 @@ func DeliveryClassOf(r Runtime) DeliveryClass {
 	if _, ok := r.(BatchPusher); ok {
 		return DeliveryConfirmed
 	}
+	if _, ok := r.(SelectiveBatchPusher); ok {
+		return DeliveryConfirmed
+	}
 	return DeliveryBestEffort
 }
 
-// Pusher sinks confirm each delivery (CAN). ErrSkip means "cannot carry
-// this message, count it and move on" (e.g. envelope without raw bytes).
+// Pusher sinks confirm each delivery (for example CAN writes or MQTT broker
+// PUBACKs). ErrSkip means "cannot carry this message, count it and move on"
+// (e.g. an envelope without raw bytes).
 type Pusher interface {
 	Push(ctx context.Context, e *msg.Envelope) error
 }
@@ -92,6 +96,25 @@ type Pusher interface {
 type BatchPusher interface {
 	BatchSize() int
 	PushBatch(ctx context.Context, entries []queue.Entry) error
+}
+
+// BatchByteLimiter lets a batch sink bound the transient request/SQL shape in
+// addition to its message-count maximum. The Connector partitions at an
+// Envelope boundary and always sends at least one entry.
+type BatchByteLimiter interface {
+	BatchMaxBytes() int64
+}
+
+// SelectiveBatchPusher amortizes one durable flush across an ordered group
+// while preserving permanent per-envelope skip reporting. A nil error
+// confirms every non-skipped entry and Skipped must have len(entries).
+type SelectiveBatchPusher interface {
+	BatchSize() int
+	PushBatchSelective(ctx context.Context, entries []queue.Entry) (BatchPushReport, error)
+}
+
+type BatchPushReport struct {
+	Skipped []bool
 }
 
 // WirePusher preserves the envelope's original N2K source identity and raw
@@ -133,7 +156,7 @@ func New(ctx context.Context, cfg model.Sink, mgr *bus.Manager, ds *DataServer, 
 	case model.SinkHTTPPost:
 		return newHTTPPostSink(cfg, met)
 	case model.SinkTCP:
-		return newTCPSink(cfg, log, met)
+		return newTCPSink(cfg, ds, log, met)
 	case model.SinkFile:
 		return newFileSink(cfg, log)
 	case model.SinkMQTT:

@@ -61,8 +61,32 @@ type pushSink struct {
 type batchSink struct {
 	mu        sync.Mutex
 	batchSize int
+	maxBytes  int64
 	failures  int
 	batches   [][]queue.Entry
+}
+
+type selectiveBatchSink struct {
+	mu      sync.Mutex
+	count   int
+	skipPGN uint32
+}
+
+func (s *selectiveBatchSink) ID() string             { return "fake-selective-batch" }
+func (s *selectiveBatchSink) Stop()                  {}
+func (s *selectiveBatchSink) State() (string, error) { return "up", nil }
+func (s *selectiveBatchSink) BatchSize() int         { return 64 }
+func (s *selectiveBatchSink) PushBatchSelective(_ context.Context, entries []queue.Entry) (sink.BatchPushReport, error) {
+	report := sink.BatchPushReport{Skipped: make([]bool, len(entries))}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, entry := range entries {
+		report.Skipped[i] = entry.Env.PGN == s.skipPGN
+		if !report.Skipped[i] {
+			s.count++
+		}
+	}
+	return report, nil
 }
 
 type delayedRetryError struct{ delay time.Duration }
@@ -70,10 +94,29 @@ type delayedRetryError struct{ delay time.Duration }
 func (e delayedRetryError) Error() string             { return "retry later" }
 func (e delayedRetryError) RetryAfter() time.Duration { return e.delay }
 
+type deadlineAckQueue struct {
+	queue.Queue
+	started     chan struct{}
+	startedOnce sync.Once
+	mu          sync.Mutex
+	hadDeadline bool
+}
+
+func (q *deadlineAckQueue) Ack(ctx context.Context, _ int64) error {
+	q.startedOnce.Do(func() { close(q.started) })
+	_, hadDeadline := ctx.Deadline()
+	q.mu.Lock()
+	q.hadDeadline = hadDeadline
+	q.mu.Unlock()
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func (b *batchSink) ID() string             { return "fake-batch" }
 func (b *batchSink) Stop()                  {}
 func (b *batchSink) State() (string, error) { return "up", nil }
 func (b *batchSink) BatchSize() int         { return b.batchSize }
+func (b *batchSink) BatchMaxBytes() int64   { return b.maxBytes }
 func (b *batchSink) PushBatch(_ context.Context, entries []queue.Entry) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -416,7 +459,7 @@ func TestBatchPushUsesConfiguredChunksRetriesAndCheckpoints(t *testing.T) {
 	defer func() { _ = st.Close() }()
 	q := queue.NewSQLite(st, "conn1", model.BufferLimits{MaxMessages: 1000})
 	envelopes := []*msg.Envelope{env(1), env(2), env(3), env(4), env(5)}
-	if err := q.Append(context.Background(), envelopes); err != nil {
+	if _, err := q.Append(context.Background(), envelopes); err != nil {
 		t.Fatal(err)
 	}
 	all, err := q.Read(context.Background(), 0, 10)
@@ -451,6 +494,67 @@ func TestBatchPushUsesConfiguredChunksRetriesAndCheckpoints(t *testing.T) {
 	}
 }
 
+func TestSelectiveBatchReportsSkipsAndCheckpointsWholeChunk(t *testing.T) {
+	q := testQueue(t)
+	if _, err := q.Append(context.Background(), []*msg.Envelope{env(1), env(999), env(2)}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := q.Read(context.Background(), 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain, _ := filter.Compile(nil)
+	reg := stats.NewRegistry()
+	snk := &selectiveBatchSink{skipPGN: 999}
+	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true},
+		&fakeSource{}, snk, q, chain, slog.Default(), nil, reg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	wantCursor := all[len(all)-1].Seq
+	waitFor(t, 3*time.Second, func() bool {
+		cursor, _ := q.Cursor(context.Background())
+		return cursor == wantCursor
+	}, "selective batch checkpoint")
+	c.Stop()
+
+	snk.mu.Lock()
+	confirmed := snk.count
+	snk.mu.Unlock()
+	if confirmed != 2 {
+		t.Fatalf("confirmed = %d, want 2", confirmed)
+	}
+	snapshot, ok := reg.Snapshot("conn1")
+	if !ok || snapshot.StageTotals["skipped"] != 1 || snapshot.StageTotals["confirmed"] != 2 {
+		t.Fatalf("connector stages = %+v", snapshot.StageTotals)
+	}
+}
+
+func TestBatchPushPartitionsTransientBodyByBytes(t *testing.T) {
+	q := testQueue(t)
+	if _, err := q.Append(context.Background(), []*msg.Envelope{env(1), env(2), env(3)}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := q.Read(context.Background(), 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maxBytes := int64(all[0].Env.SizeBytes() + all[1].Env.SizeBytes())
+	snk := &batchSink{batchSize: 10, maxBytes: maxBytes}
+	chain, _ := filter.Compile(nil)
+	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true},
+		&fakeSource{}, snk, q, chain, slog.Default(), nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	waitFor(t, 3*time.Second, func() bool { return snk.count() == 3 }, "byte-bounded batch delivery")
+	c.Stop()
+	batches := snk.snapshot()
+	if len(batches) != 2 || len(batches[0]) != 2 || len(batches[1]) != 1 {
+		t.Fatalf("byte-bounded batches = %+v, want lengths [2 1]", batches)
+	}
+}
+
 func TestRetryDelayHonorsSinkMinimum(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -459,6 +563,7 @@ func TestRetryDelayHonorsSinkMinimum(t *testing.T) {
 		wantDelay time.Duration
 	}{
 		{name: "server delay is longer", err: delayedRetryError{delay: 3 * time.Second}, backoff: time.Second, wantDelay: 3 * time.Second},
+		{name: "server delay is capped", err: delayedRetryError{delay: 24 * time.Hour}, backoff: time.Second, wantDelay: maxRetryAfterDelay},
 		{name: "connector backoff is longer", err: delayedRetryError{delay: time.Second}, backoff: 3 * time.Second, wantDelay: 3 * time.Second},
 		{name: "ordinary error", err: errors.New("offline"), backoff: time.Second, wantDelay: time.Second},
 	} {
@@ -666,6 +771,41 @@ func TestStopMidRetryCheckpointsPartialProgress(t *testing.T) {
 	}
 }
 
+func TestStopBoundsFinalCheckpoint(t *testing.T) {
+	oldTimeout := finalAckTimeout
+	finalAckTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { finalAckTimeout = oldTimeout })
+
+	base := testQueue(t)
+	if _, err := base.Append(context.Background(), []*msg.Envelope{env(1)}); err != nil {
+		t.Fatal(err)
+	}
+	q := &deadlineAckQueue{Queue: base, started: make(chan struct{})}
+	chain, _ := filter.Compile(nil)
+	snk := &pushSink{}
+	c := New(model.Connector{ID: "conn1", SourceID: "s", SinkID: "k", Enabled: true},
+		&fakeSource{}, snk, q, chain, slog.Default(), nil, nil)
+	c.Start(context.Background())
+	waitFor(t, time.Second, func() bool { return snk.count() == 1 }, "queued entry delivery")
+
+	started := time.Now()
+	c.Stop()
+	if elapsed := time.Since(started); elapsed > 300*time.Millisecond {
+		t.Fatalf("Stop waited %v for final Ack, want a bounded checkpoint", elapsed)
+	}
+	select {
+	case <-q.started:
+	default:
+		t.Fatal("final Ack was not attempted")
+	}
+	q.mu.Lock()
+	hadDeadline := q.hadDeadline
+	q.mu.Unlock()
+	if !hadDeadline {
+		t.Fatal("final Ack context had no deadline")
+	}
+}
+
 // Regression: a just-started (idle, no deliveries yet) connector must show
 // up in the stats registry as soon as Start returns, not only after the
 // first prune tick (pruneInterval later) — the UI dashboard's live tiles
@@ -710,7 +850,7 @@ func TestBacklogQueueDepthAppearsPromptlyAfterStart(t *testing.T) {
 	q := queue.NewSQLite(st, "conn1", model.BufferLimits{MaxMessages: 1000})
 	// Pre-fill a backlog before the connector starts, simulating a restart
 	// (e.g. a config-change reconcile) over undelivered entries.
-	if err := q.Append(context.Background(), []*msg.Envelope{env(1), env(2), env(3)}); err != nil {
+	if _, err := q.Append(context.Background(), []*msg.Envelope{env(1), env(2), env(3)}); err != nil {
 		t.Fatal(err)
 	}
 
