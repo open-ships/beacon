@@ -39,10 +39,10 @@ func mustPage(files ...string) *template.Template {
 // Sources/sinks/connectors pages additionally parse their table and form
 // fragment templates so direct /new fallbacks, edit pages, modal fragments,
 // and validation responses all use the same source-/sink-/connector-form
-// markup. Dashboard and overview pages need no such form fragments. Their
-// empty polling containers fetch live fragments immediately after page load.
+// markup. The dashboard also parses its fragment so the first response and
+// later polling refreshes render the same dashboard-content template.
 var pages = map[string]*template.Template{
-	"dashboard": mustPage("dashboard.html"),
+	"dashboard": mustPage("dashboard.html", "frag_dashboard.html"),
 	"sources": mustPage(
 		"sources.html",
 		"frag_source_table.html",

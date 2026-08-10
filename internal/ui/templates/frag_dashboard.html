@@ -1,14 +1,8 @@
-{{/* Data: internal/ui/dashboard.go's dashboardData. Rendered at GET
-     /frag/dashboard, hx-swap="innerHTML"'d into dashboard.html's
-     #dashboard-panel container on load and every 2s
-     (hx-trigger="load, every 2s") — see dashboard.html and pages.go's
-     "dashboard" pages map entry doc comment for why the initial page ships
-     this fragment empty rather than server-rendering it inline. This
-     fragment renders only #dashboard-panel's children, not the polling
-     container itself — same reason frag_connector_stats.html's
-     "connector-stats" template stops at the ".stat" tiles (see its
-     comment): the polling container already exists in dashboard.html, so
-     re-rendering it here would double-wrap it after the first swap. */}}
+{{/* Data: internal/ui/dashboard.go's dashboardData or dashboardPageData.
+     dashboard.html renders dashboard-content inside #dashboard-panel on the
+     first response. GET /frag/dashboard renders the same template for htmx to
+     swap into that container on later refreshes. This template therefore
+     emits only the panel's children, never the polling container itself. */}}
 {{define "dashboard-endpoint-node"}}
 <a class="dag-node dag-node-{{.Kind}} component-status-surface state-{{.State}}{{if .Unused}} dag-node-unused dag-node-unused-{{.Kind}}{{end}}"
    href="/{{.Kind}}s/{{.ID}}/" data-node-id="{{.ID}}" data-dag-node="{{.Kind}}:{{.ID}}">
