@@ -34,6 +34,10 @@ func (fakeReconciler) Statuses() []supervisor.Status       { return nil }
 // The handler itself owns the bare-root redirect and every root-level UI
 // route; app registers the more-specific API, MCP, health, and metrics paths.
 func newAppMountedServer(t *testing.T) *httptest.Server {
+	return newAppMountedServerWithVersion(t, "test")
+}
+
+func newAppMountedServerWithVersion(t *testing.T, version string) *httptest.Server {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -41,7 +45,7 @@ func newAppMountedServer(t *testing.T) *httptest.Server {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	svc := config.NewService(st, fakeReconciler{}, nil)
-	handler := ui.Handler(svc, stats.NewRegistry(), fakeReconciler{}.Statuses, nil, "test", nil)
+	handler := ui.Handler(svc, stats.NewRegistry(), fakeReconciler{}.Statuses, nil, version, nil)
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -268,6 +272,26 @@ func TestDashboardPageIsSelfContained(t *testing.T) {
 	}
 	if ext := externalURLs(html); len(ext) != 1 || ext[0] != "https://openships.ai" {
 		t.Fatalf("dashboard page external links = %v, want only https://openships.ai", ext)
+	}
+}
+
+func TestHeaderVersionLinksToMatchingGitHubRelease(t *testing.T) {
+	srv := newAppMountedServerWithVersion(t, "1.3.0")
+	resp, err := http.Get(srv.URL + "/dashboard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusOK)
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	want := `<a class="brand-version" href="https://github.com/open-ships/beacon/releases/tag/v1.3.0" aria-label="Beacon v1.3.0 release on GitHub">v1.3.0</a>`
+	if !strings.Contains(html, want) {
+		t.Fatalf("dashboard header missing release link %q:\n%s", want, html)
 	}
 }
 

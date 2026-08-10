@@ -3,6 +3,7 @@ package ui
 import (
 	"embed"
 	"html/template"
+	"strings"
 
 	"github.com/open-ships/beacon/internal/mcpserver"
 )
@@ -80,11 +81,13 @@ var fragTemplates = template.Must(template.ParseFS(templatesFS, "templates/frag_
 
 // pageData is layout.html's template data; every page's own data embeds
 // this (see sourcesPageData/sinksPageData in forms.go) so ExecuteTemplate
-// against "layout.html" always finds Title/AssetVersion/Active regardless
-// of what other fields that page's data type adds.
+// against "layout.html" always finds Title/AssetVersion/VersionLabel/
+// ReleaseURL/Active regardless of what other fields that page's data type adds.
 type pageData struct {
 	Title        string
 	AssetVersion string
+	VersionLabel string
+	ReleaseURL   string
 	Active       string
 	// Flash is a one-shot success banner shown once on a full page load,
 	// carried across a create handler's HX-Redirect by the flash cookie (see
@@ -106,11 +109,51 @@ type breadcrumbItem struct {
 // newPageData builds the pageData common to every full-page render. active
 // is a pages map key and also highlights the matching navItem.
 func newPageData(title, assetVersion, active string) pageData {
+	versionLabel, releaseURL := versionMetadata(assetVersion)
 	return pageData{
 		Title:        title,
 		AssetVersion: assetVersion,
+		VersionLabel: versionLabel,
+		ReleaseURL:   releaseURL,
 		Active:       active,
 	}
+}
+
+// versionMetadata turns the build version into compact header copy and, for
+// release builds, a link to the exact GitHub release. Development versions
+// include an asset hash ("dev-...") for cache busting; they remain visibly
+// identified as dev without pointing at a release that cannot exist.
+func versionMetadata(version string) (label, releaseURL string) {
+	version = strings.TrimSpace(version)
+	if version == "" || version == "dev" || strings.HasPrefix(version, "dev-") {
+		return "dev", ""
+	}
+
+	number := strings.TrimPrefix(version, "v")
+	parts := strings.Split(number, ".")
+	if len(parts) != 3 {
+		return version, ""
+	}
+	for _, part := range parts {
+		if !isNumericVersionPart(part) {
+			return version, ""
+		}
+	}
+
+	tag := "v" + number
+	return tag, "https://github.com/open-ships/beacon/releases/tag/" + tag
+}
+
+func isNumericVersionPart(part string) bool {
+	if part == "" {
+		return false
+	}
+	for _, r := range part {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (d pageData) withBreadcrumbs(items ...breadcrumbItem) pageData {
