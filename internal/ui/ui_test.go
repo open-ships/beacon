@@ -436,11 +436,19 @@ func TestNoInlineStylingInTemplates(t *testing.T) {
 // TestDocsSidebarListsAllPages fails loud on drift in either direction.
 var wantDocPages = []struct{ slug, title string }{
 	{"getting-started", "Getting started"},
-	{"can-setup", "CAN setup"},
-	{"concepts", "Concepts"},
-	{"filters", "Filters"},
-	{"api", "API (for agents and scripts)"},
-	{"troubleshooting", "Troubleshooting"},
+	{"sources", "Sources"},
+	{"sinks", "Sinks"},
+	{"connectors", "Connectors"},
+	{"concepts", "Messages and inspection"},
+	{"filters", "Filter messages"},
+	{"delivery-and-replay", "Control delivery and replay"},
+	{"storage-and-limits", "Manage storage and limits"},
+	{"metrics-and-monitoring", "Metrics and monitoring"},
+	{"can-setup", "Set up CAN"},
+	{"api", "Use the API"},
+	{"mcp", "Use MCP"},
+	{"examples", "Examples"},
+	{"troubleshooting", "Troubleshoot Beacon"},
 }
 
 func TestDocsIndexRedirectsToFirstPage(t *testing.T) {
@@ -489,6 +497,151 @@ func TestDocPageServesKnownSlug(t *testing.T) {
 	}
 }
 
+func TestDocsExamplesPageIncludesOperationalExamples(t *testing.T) {
+	srv := newAppMountedServer(t)
+	resp, err := http.Get(srv.URL + "/docs/examples")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusOK)
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	for _, want := range []string{
+		`<h1 id="examples">Examples</h1>`,
+		"Create a test route without CAN hardware",
+		"Create the same route with the REST API",
+		"Size a connector buffer",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("examples page does not contain %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestDocsSeparateAPIAndMCPReferences(t *testing.T) {
+	srv := newAppMountedServer(t)
+	cases := []struct {
+		slug string
+		h1   string
+		want string
+	}{
+		{"api", `<h1 id="use-the-api">Use the API</h1>`, "/api/openapi.json"},
+		{"mcp", `<h1 id="use-mcp">Use MCP</h1>`, "get_source_metrics"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.slug, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/docs/" + tc.slug)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			mustStatus(t, resp, http.StatusOK)
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			html := string(body)
+			for _, want := range []string{tc.h1, tc.want} {
+				if !strings.Contains(html, want) {
+					t.Errorf("%s page does not contain %q:\n%s", tc.slug, want, html)
+				}
+			}
+		})
+	}
+}
+
+func TestDocsMetricsPageCoversPrometheusMonitoring(t *testing.T) {
+	srv := newAppMountedServer(t)
+	resp, err := http.Get(srv.URL + "/docs/metrics-and-monitoring")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusOK)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	for _, want := range []string{
+		`<h1 id="metrics-and-monitoring">Metrics and monitoring</h1>`,
+		"/metrics",
+		"beacon_connector_queue_depth",
+		"prometheus_source_details",
+		"scrape_configs",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("metrics page does not contain %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestGettingStartedStaysFocusedOnCANToSSE(t *testing.T) {
+	srv := newAppMountedServer(t)
+	resp, err := http.Get(srv.URL + "/docs/getting-started")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusOK)
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	for _, want := range []string{"SocketCAN can0", "SSE /events", "curl -N http://localhost:8080/events"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("getting-started page does not contain %q:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, "<table>") {
+		t.Errorf("getting-started page contains a component matrix; keep that detail on component pages:\n%s", html)
+	}
+}
+
+func TestComponentDocsListAllTypes(t *testing.T) {
+	srv := newAppMountedServer(t)
+	cases := []struct {
+		slug  string
+		types []string
+	}{
+		{"sources", []string{"socketcan", "usbcan", "http_sse", "http_ws", "mqtt", "file", "tcp", "udp"}},
+		{"sinks", []string{"socketcan", "usbcan", "http_sse", "http_ws", "http_post", "tcp", "mqtt", "postgres", "file", "tcp_gateway", "null"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.slug, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/docs/" + tc.slug)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			mustStatus(t, resp, http.StatusOK)
+
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			html := string(body)
+			if !strings.Contains(html, "<table>") {
+				t.Fatalf("%s page does not contain a type table:\n%s", tc.slug, html)
+			}
+			for _, typ := range tc.types {
+				if !strings.Contains(html, "<code>"+typ+"</code>") {
+					t.Errorf("%s page does not list type %q", tc.slug, typ)
+				}
+			}
+		})
+	}
+}
+
 func TestDocPageUnknownSlugIs404(t *testing.T) {
 	srv := newAppMountedServer(t)
 	resp, err := http.Get(srv.URL + "/docs/does-not-exist")
@@ -504,7 +657,7 @@ func TestDocPageUnknownSlugIs404(t *testing.T) {
 // so a page whose title went blank or got swapped fails here even though
 // its slug link would still be present — appears on a single rendered docs
 // page (the sidebar is identical across every page; see docs.html), and
-// that wantDocPages above names exactly the six pages actually shipped
+// that wantDocPages above names exactly the fourteen pages actually shipped
 // (neither list a stray extra nor missing one).
 func TestDocsSidebarListsAllPages(t *testing.T) {
 	srv := newAppMountedServer(t)
@@ -530,6 +683,96 @@ func TestDocsSidebarListsAllPages(t *testing.T) {
 		anchor := regexp.MustCompile(`<a href="/docs/` + regexp.QuoteMeta(p.slug) + `"[^>]*>` + regexp.QuoteMeta(p.title) + `</a>`)
 		if !anchor.MatchString(html) {
 			t.Fatalf("sidebar missing anchor for slug %q with title %q:\n%s", p.slug, p.title, html)
+		}
+	}
+}
+
+func TestDocsSidebarGroupsPagesByTask(t *testing.T) {
+	srv := newAppMountedServer(t)
+	resp, err := http.Get(srv.URL + "/docs/getting-started")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	mustStatus(t, resp, http.StatusOK)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+
+	if !strings.Contains(html, `<nav class="docs-nav" aria-label="Onboard manual"`) {
+		t.Fatalf("docs sidebar is not an accessible navigation landmark:\n%s", html)
+	}
+	if !strings.Contains(html, `<details class="docs-sidebar" open>`) {
+		t.Fatalf("docs sidebar disclosure is not open by default:\n%s", html)
+	}
+	if !regexp.MustCompile(`<a href="/docs/getting-started"[^>]*aria-current="page"`).MatchString(html) {
+		t.Fatalf("active docs link does not have aria-current=page:\n%s", html)
+	}
+
+	groups := []struct {
+		id    string
+		title string
+		pages []string
+	}{
+		{"start", "Start", []string{"getting-started"}},
+		{"components", "Components", []string{"sources", "sinks", "connectors"}},
+		{"operation", "Operation", []string{"concepts", "filters", "delivery-and-replay", "storage-and-limits", "metrics-and-monitoring"}},
+		{"reference-help", "Reference and help", []string{"can-setup", "api", "mcp", "examples", "troubleshooting"}},
+	}
+
+	previousGroup := -1
+	for _, group := range groups {
+		marker := `data-docs-group="` + group.id + `"`
+		start := strings.Index(html, marker)
+		if start < 0 {
+			t.Errorf("docs sidebar does not contain group %q", group.title)
+			continue
+		}
+		if start <= previousGroup {
+			t.Errorf("docs sidebar group %q is out of order", group.title)
+		}
+		previousGroup = start
+		endOffset := strings.Index(html[start:], "</section>")
+		if endOffset < 0 {
+			t.Fatalf("docs sidebar group %q has no closing section", group.title)
+		}
+		section := html[start : start+endOffset]
+		if !strings.Contains(section, ">"+group.title+"</h2>") {
+			t.Errorf("docs sidebar group %q has no visible label", group.title)
+		}
+		previousPage := -1
+		for _, slug := range group.pages {
+			page := strings.Index(section, `href="/docs/`+slug+`"`)
+			if page < 0 {
+				t.Errorf("docs sidebar group %q does not contain page %q", group.title, slug)
+				continue
+			}
+			if page <= previousPage {
+				t.Errorf("page %q is out of order in docs sidebar group %q", slug, group.title)
+			}
+			previousPage = page
+		}
+	}
+}
+
+func TestDocsSidebarUsesDistinctGroupAndPageTypography(t *testing.T) {
+	css, err := os.ReadFile(filepath.Join("styles", "app.css"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(css)
+	groupRule := regexp.MustCompile(`(?s)\.docs-nav-group-title\s*\{[^}]*font-size:\s*0\.78rem;[^}]*font-weight:\s*800;`)
+	pageRule := regexp.MustCompile(`(?s)\.docs-nav-items a\s*\{[^}]*font-size:\s*1rem;[^}]*font-weight:\s*500;`)
+	activeRule := regexp.MustCompile(`(?s)\.docs-nav-items a\.menu-active\s*\{[^}]*font-weight:\s*750;`)
+	for name, rule := range map[string]*regexp.Regexp{
+		"group label": groupRule,
+		"page link":   pageRule,
+		"active link": activeRule,
+	} {
+		if !rule.MatchString(source) {
+			t.Errorf("docs sidebar %s typography rule is missing", name)
 		}
 	}
 }

@@ -174,23 +174,76 @@ type docNavItem struct {
 	Title string
 }
 
+// docNavGroup is one labeled subsection in the manual sidebar. Grouping is
+// explicit rather than inferred from filenames so page order and information
+// architecture can change independently.
+type docNavGroup struct {
+	ID    string
+	Title string
+	Pages []docNavItem
+}
+
+type docNavGroupSpec struct {
+	ID    string
+	Title string
+	Slugs []string
+}
+
+var docNavGroupSpecs = []docNavGroupSpec{
+	{ID: "start", Title: "Start", Slugs: []string{"getting-started"}},
+	{ID: "components", Title: "Components", Slugs: []string{"sources", "sinks", "connectors"}},
+	{ID: "operation", Title: "Operation", Slugs: []string{"concepts", "filters", "delivery-and-replay", "storage-and-limits", "metrics-and-monitoring"}},
+	{ID: "reference-help", Title: "Reference and help", Slugs: []string{"can-setup", "api", "mcp", "examples", "troubleshooting"}},
+}
+
+var docNavGroups = mustBuildDocNavGroups(docPages, docNavGroupSpecs)
+
 // docsPageData is templates/docs.html's data: pageData (for layout.html's
 // chrome and main nav — Active is always "docs", set by handleDocPage)
 // plus the manual's own sub-nav and the current page's rendered body.
 type docsPageData struct {
 	pageData
-	Pages      []docNavItem // every manual page, in sidebar order
-	ActiveSlug string       // highlights the current page within Pages
-	Body       template.HTML
+	Groups      []docNavGroup // every manual page, grouped in sidebar order
+	ActiveSlug  string        // highlights the current page within Groups
+	ActiveTitle string        // labels the collapsed sidebar on small screens
+	Body        template.HTML
 }
 
-// docNavItems builds docsPageData.Pages from docPages.
-func docNavItems() []docNavItem {
-	items := make([]docNavItem, len(docPages))
-	for i, p := range docPages {
-		items[i] = docNavItem{Slug: p.Slug, Title: p.Title}
+// mustBuildDocNavGroups builds the manual sidebar and verifies that each
+// embedded page appears in exactly one group. A missing, duplicate, or unknown
+// slug is a build bug, so initialization fails instead of shipping an
+// unreachable or misleading navigation entry.
+func mustBuildDocNavGroups(pages []docPage, specs []docNavGroupSpec) []docNavGroup {
+	bySlug := make(map[string]docPage, len(pages))
+	for _, page := range pages {
+		bySlug[page.Slug] = page
 	}
-	return items
+
+	seen := make(map[string]struct{}, len(pages))
+	groups := make([]docNavGroup, 0, len(specs))
+	for _, spec := range specs {
+		group := docNavGroup{ID: spec.ID, Title: spec.Title, Pages: make([]docNavItem, 0, len(spec.Slugs))}
+		for _, slug := range spec.Slugs {
+			page, ok := bySlug[slug]
+			if !ok {
+				panic("docs navigation references unknown slug: " + slug)
+			}
+			if _, duplicate := seen[slug]; duplicate {
+				panic("docs navigation repeats slug: " + slug)
+			}
+			seen[slug] = struct{}{}
+			group.Pages = append(group.Pages, docNavItem{Slug: page.Slug, Title: page.Title})
+		}
+		groups = append(groups, group)
+	}
+	if len(seen) != len(pages) {
+		for _, page := range pages {
+			if _, ok := seen[page.Slug]; !ok {
+				panic("docs navigation omits slug: " + page.Slug)
+			}
+		}
+	}
+	return groups
 }
 
 // handleDocsIndex serves GET /docs: a 302 to the first manual page (the
@@ -218,10 +271,11 @@ func handleDocPage(version string, log *slog.Logger) http.HandlerFunc {
 			return
 		}
 		data := docsPageData{
-			pageData:   newPageData(p.Title, version, "docs"),
-			Pages:      docNavItems(),
-			ActiveSlug: p.Slug,
-			Body:       renderDoc(p),
+			pageData:    newPageData(p.Title, version, "docs"),
+			Groups:      docNavGroups,
+			ActiveSlug:  p.Slug,
+			ActiveTitle: p.Title,
+			Body:        renderDoc(p),
 		}
 		renderPage(w, log, "docs", data)
 	}
