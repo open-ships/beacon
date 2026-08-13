@@ -4,6 +4,11 @@ Start at the source. Then, check the connector and the sink. Use the component
 state, counters, queue measurements, and logs to identify the boundary that
 does not operate correctly.
 
+[![Decision flow for tracing missing messages from source reception through connector filtering and queueing, sink delivery, and the client cursor](/assets/manual/route-triage.svg)](/assets/manual/route-triage.svg)
+
+_Follow the route in message order. The first boundary without evidence of
+progress is usually where the useful error or counter lives._
+
 ## No messages arrive
 
 1. For SocketCAN, run `ip -details link show can0`.

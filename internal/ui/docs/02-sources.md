@@ -21,6 +21,11 @@ must refer to the source.
 
 All sources also have `id`, `name`, `type`, and `enabled` settings.
 
+[![Beacon Add source dialog filled out for an enabled SocketCAN interface named can0](/assets/manual/source-dialog.png)](/assets/manual/source-dialog.png)
+
+_Choose the source type first; Beacon then shows only the fields that apply to
+that endpoint._
+
 ## SocketCAN source
 
 Set `interface` to a Linux CAN network-interface name, such as `can0` or

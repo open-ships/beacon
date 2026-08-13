@@ -6,6 +6,8 @@
 package ui
 
 import (
+	"io/fs"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -60,6 +62,26 @@ func TestDocsMarkdownRendersGFMTables(t *testing.T) {
 	html := testRenderDoc(t, docPage{filename: "test-table.md", source: []byte("| a | b |\n|---|---|\n| 1 | 2 |\n")})
 	if !strings.Contains(html, "<table>") {
 		t.Fatalf("GFM table did not render as <table>: %s", html)
+	}
+}
+
+func TestDocsManualVisualsHaveAltTextAndEmbeddedAssets(t *testing.T) {
+	imageRE := regexp.MustCompile(`!\[([^]]*)\]\((/assets/manual/[^)]+)\)`)
+	visuals := 0
+	for _, page := range docPages {
+		for _, match := range imageRE.FindAllSubmatch(page.source, -1) {
+			visuals++
+			if strings.TrimSpace(string(match[1])) == "" {
+				t.Errorf("%s contains a manual visual without alt text", page.filename)
+			}
+			assetPath := "assets/" + strings.TrimPrefix(string(match[2]), "/assets/")
+			if _, err := fs.Stat(assetsFS, assetPath); err != nil {
+				t.Errorf("%s references missing embedded asset %q: %v", page.filename, assetPath, err)
+			}
+		}
+	}
+	if visuals < 9 {
+		t.Fatalf("manual contains %d visuals, want at least 9", visuals)
 	}
 }
 

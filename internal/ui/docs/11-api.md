@@ -11,6 +11,11 @@ Use these onboard references for the current Beacon version:
 Use the onboard OpenAPI document as the source of truth for request and
 response schemas.
 
+[![Beacon's embedded interactive API reference showing resource operations, the configuration export endpoint, a curl example, and response schema](/assets/manual/api-reference.png)](/assets/manual/api-reference.png)
+
+_The interactive reference is served by the running Beacon process and matches
+that binary's API schema. It remains available without internet access._
+
 ## Manage REST resources
 
 Sources, sinks, and connectors use these resource paths:

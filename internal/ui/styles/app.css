@@ -373,6 +373,38 @@ a.brand-version:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.docs-article img[src^="/assets/manual/"] {
+  width: 100%;
+  height: auto;
+  margin: var(--space-6) 0 var(--space-2);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+}
+
+.docs-article img[src^="/assets/manual/"][src$=".svg"] {
+  border: 1px solid var(--border);
+}
+
+.docs-article img[src^="/assets/manual/"][src$=".png"] {
+  box-shadow: 0 10px 28px rgba(96, 115, 159, 0.14);
+}
+
+.docs-article a:has(> img[src^="/assets/manual/"]) {
+  display: block;
+  border-radius: var(--radius);
+}
+
+.docs-article a:has(> img[src^="/assets/manual/"]):focus-visible {
+  outline: 3px solid rgba(35, 55, 255, 0.16);
+  outline-offset: 3px;
+}
+
+.docs-article p:has(img[src^="/assets/manual/"]) + p > em:only-child {
+  color: var(--muted-foreground);
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
 .app-content {
   width: 100%;
   max-width: 1440px;
@@ -2647,6 +2679,18 @@ code.stream-message-content {
 @media (min-width: 40rem) {
   .sm\:stats-horizontal {
     grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  }
+}
+
+@media (max-width: 63.999rem) {
+  .docs-sidebar-summary {
+    display: block;
+  }
+
+  .docs-sidebar[open] .docs-nav {
+    max-height: 40dvh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 }
 

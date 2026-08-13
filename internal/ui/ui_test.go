@@ -344,6 +344,8 @@ func TestAssetsServed(t *testing.T) {
 		{"app.js", "javascript", 1024},
 		{"app.css", "css", 1024},
 		{"favicon.svg", "image/svg", 1024},
+		{"manual/dashboard.png", "image/png", 1024},
+		{"manual/routing-topology.svg", "image/svg", 1024},
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {

@@ -58,6 +58,12 @@ For example, accept Vessel Heading, PGN 127250:
 msg.pgn == 127250
 ```
 
+[![Beacon connector editor showing source and sink selection, semantic bridge mode, a validated CEL navigation filter, and buffer limits](/assets/manual/connector-dialog.png)](/assets/manual/connector-dialog.png)
+
+_The editor keeps route selection, bridge behavior, filtering, and retention
+in one place. A green `filters OK` result means the expression compiles; it
+does not mean matching traffic has arrived._
+
 Use the Filters page for variables, optional fields, raw values, and more
 examples.
 

@@ -110,6 +110,11 @@ The inspector is best effort and does not block a connector queue. The browser
 keeps the latest 200 messages in the current tab. The captured count continues
 for the full browser session.
 
+[![Beacon source stream inspector actively capturing JSONL messages with filter, display, export, and copy controls](/assets/manual/stream-inspector.png)](/assets/manual/stream-inspector.png)
+
+_The inspector observes future messages at one component boundary. It is a
+browser-local diagnostic view, not another connector or delivery queue._
+
 ## Display and export formats
 
 - **JSONL** shows one compact `payload` object on each line.
