@@ -135,11 +135,11 @@ func TestFirstHeading(t *testing.T) {
 // permanently unreachable — the later one in docPages order would shadow
 // the earlier in any map keyed by slug, and docBySlug's linear scan would
 // always return the first, silently stranding the second), and the count
-// matches the six-file manual this task ships (a page accidentally
+// matches the fourteen-file manual this task ships (a page accidentally
 // dropped, or an extra stray file picked up, both fail loud here rather
 // than only being noticed by a human skimming the sidebar).
 func TestDocPagesContentSanity(t *testing.T) {
-	const wantPages = 6
+	const wantPages = 14
 	if len(docPages) != wantPages {
 		t.Fatalf("len(docPages) = %d, want %d", len(docPages), wantPages)
 	}

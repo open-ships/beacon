@@ -5,13 +5,28 @@
      passed through — see docsMarkdown's doc comment), safe to emit
      unescaped as template.HTML. */}}
 {{define "content"}}
-<div class="flex flex-col lg:flex-row gap-6">
-  <ul class="menu bg-base-200 text-base-content rounded-box w-full lg:w-64 shrink-0 gap-1 h-fit" hx-boost="true">
-    {{range .Pages}}
-    <li><a href="/docs/{{.Slug}}"{{if eq .Slug $.ActiveSlug}} class="menu-active"{{end}}>{{.Title}}</a></li>
-    {{end}}
-  </ul>
-  <article class="prose max-w-none min-w-0">
+<div class="docs-layout">
+  <details class="docs-sidebar" open>
+    <summary class="docs-sidebar-summary">
+      <span>Manual</span>
+      <strong>{{.ActiveTitle}}</strong>
+    </summary>
+    <nav class="docs-nav" aria-label="Onboard manual" hx-boost="true">
+      <div class="docs-nav-groups">
+        {{range .Groups}}
+        <section class="docs-nav-group" data-docs-group="{{.ID}}" aria-labelledby="docs-nav-{{.ID}}">
+          <h2 id="docs-nav-{{.ID}}" class="docs-nav-group-title">{{.Title}}</h2>
+          <ul class="docs-nav-items">
+            {{range .Pages}}
+            <li><a href="/docs/{{.Slug}}"{{if eq .Slug $.ActiveSlug}} class="menu-active" aria-current="page"{{end}}>{{.Title}}</a></li>
+            {{end}}
+          </ul>
+        </section>
+        {{end}}
+      </div>
+    </nav>
+  </details>
+  <article class="docs-article prose">
     {{.Body}}
   </article>
 </div>
