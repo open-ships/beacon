@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 300" role="img" aria-labelledby="title description">
+  <title id="title">Retained history, checkpoint, and replay cursor</title>
+  <desc id="description">Messages behind the checkpoint are retained history; messages after it are pending delivery. A replay cursor after sequence 103 starts at 104.</desc>
+  <rect width="960" height="300" rx="16" fill="#f6f8fb"/>
+  <text x="48" y="48" fill="#0f1219" font-family="Inter, system-ui, sans-serif" font-size="20" font-weight="800">The queue has two views: delivery and replay</text>
+  <text x="198" y="84" text-anchor="middle" fill="#555555" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="800">RETAINED HISTORY</text>
+  <text x="721" y="84" text-anchor="middle" fill="#a65f00" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="800">PENDING DELIVERY</text>
+  <g font-family="ui-monospace, monospace" font-size="16" font-weight="700" text-anchor="middle">
+    <rect x="48" y="105" width="88" height="58" rx="7" fill="#eef2f7"/><text x="92" y="141" fill="#222939">101</text>
+    <rect x="145" y="105" width="88" height="58" rx="7" fill="#eef2f7"/><text x="189" y="141" fill="#222939">102</text>
+    <rect x="242" y="105" width="88" height="58" rx="7" fill="#eef2f7"/><text x="286" y="141" fill="#222939">103</text>
+    <rect x="339" y="105" width="88" height="58" rx="7" fill="#e8f7ef" stroke="#9fd7bd"/><text x="383" y="141" fill="#0f7a4f">104</text>
+    <rect x="436" y="105" width="88" height="58" rx="7" fill="#e8f7ef" stroke="#0f7a4f" stroke-width="2"/><text x="480" y="141" fill="#0f7a4f">105</text>
+    <rect x="533" y="105" width="88" height="58" rx="7" fill="#fff4df" stroke="#ddb977"/><text x="577" y="141" fill="#a65f00">106</text>
+    <rect x="630" y="105" width="88" height="58" rx="7" fill="#fff4df" stroke="#ddb977"/><text x="674" y="141" fill="#a65f00">107</text>
+    <rect x="727" y="105" width="88" height="58" rx="7" fill="#fff4df" stroke="#ddb977"/><text x="771" y="141" fill="#a65f00">108</text>
+  </g>
+  <path d="M 480 92 V 177" stroke="#0f7a4f" stroke-width="3"/>
+  <text x="480" y="199" text-anchor="middle" fill="#0f7a4f" font-family="Inter, system-ui, sans-serif" font-size="14" font-weight="800">CHECKPOINT 105</text>
+  <path d="M 286 172 V 220 H 383" fill="none" stroke="#2337ff" stroke-width="3"/>
+  <circle cx="286" cy="172" r="5" fill="#2337ff"/>
+  <text x="48" y="249" fill="#2337ff" font-family="ui-monospace, monospace" font-size="14" font-weight="700">after=navigation:103</text>
+  <text x="250" y="249" fill="#222939" font-family="Inter, system-ui, sans-serif" font-size="14">replays from 104 while it is still retained</text>
+  <text x="533" y="249" fill="#555555" font-family="Inter, system-ui, sans-serif" font-size="14">Limits can prune either side of the checkpoint.</text>
+</svg>

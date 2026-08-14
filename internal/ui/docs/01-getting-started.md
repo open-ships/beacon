@@ -3,9 +3,10 @@
 This example reads NMEA 2000 messages from one CAN bus and publishes them at
 an SSE endpoint.
 
-```text
-SocketCAN can0 --> connector --> SSE /events
-```
+[![SocketCAN can0 through a connector with CEL filters and a durable buffer to SSE /events](/assets/manual/routing-topology.svg)](/assets/manual/routing-topology.svg)
+
+_The connector is the policy and durability boundary between one source and
+one sink._
 
 ## Before you start
 
@@ -57,6 +58,11 @@ Open `http://localhost:2112` in a browser.
 6. Keep the filter list empty.
 7. Enable the connector.
 8. Save the connector.
+
+[![Beacon dashboard showing one running source fanning out through two connector routes to two sinks](/assets/manual/dashboard.png)](/assets/manual/dashboard.png)
+
+_The dashboard traces every configured route from left to right. Dotted lines
+connect shared endpoints without hiding which connector owns each route._
 
 ## Read the SSE stream
 

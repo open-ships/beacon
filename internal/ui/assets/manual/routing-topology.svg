@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 330" role="img" aria-labelledby="title description">
+  <title id="title">Beacon source, connector, and sink topology</title>
+  <desc id="description">Messages move from one source through a connector with filters and a durable buffer to one sink.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#40577f"/>
+    </marker>
+  </defs>
+  <rect width="960" height="330" rx="16" fill="#f6f8fb"/>
+  <text x="64" y="52" fill="#555555" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="800">INGRESS</text>
+  <text x="371" y="52" fill="#555555" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="800">ROUTE POLICY</text>
+  <text x="759" y="52" fill="#555555" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="800">DELIVERY</text>
+  <path d="M 259 157 C 304 157, 318 157, 354 157" fill="none" stroke="#40577f" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M 645 157 C 687 157, 706 157, 743 157" fill="none" stroke="#40577f" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <rect x="48" y="92" width="211" height="130" rx="10" fill="#ffffff" stroke="#c8d2e1"/>
+  <text x="68" y="122" fill="#555555" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="800">SOURCE</text>
+  <text x="68" y="157" fill="#0f1219" font-family="Inter, system-ui, sans-serif" font-size="20" font-weight="800">CAN bus</text>
+  <text x="68" y="187" fill="#555555" font-family="ui-monospace, monospace" font-size="14">socketcan · can0</text>
+  <rect x="354" y="72" width="291" height="190" rx="10" fill="#ffffff" stroke="#2337ff" stroke-width="2"/>
+  <text x="377" y="105" fill="#555555" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="800">CONNECTOR</text>
+  <text x="377" y="140" fill="#0f1219" font-family="Inter, system-ui, sans-serif" font-size="20" font-weight="800">CAN to SSE</text>
+  <rect x="377" y="164" width="112" height="34" rx="6" fill="#eef2f7"/>
+  <text x="393" y="186" fill="#222939" font-family="Inter, system-ui, sans-serif" font-size="14" font-weight="700">CEL filters</text>
+  <rect x="503" y="164" width="119" height="34" rx="6" fill="#eef2f7"/>
+  <text x="520" y="186" fill="#222939" font-family="Inter, system-ui, sans-serif" font-size="14" font-weight="700">bridge mode</text>
+  <rect x="377" y="211" width="245" height="32" rx="6" fill="#e8f7ef" stroke="#9fd7bd"/>
+  <text x="395" y="232" fill="#0f7a4f" font-family="Inter, system-ui, sans-serif" font-size="14" font-weight="750">durable route buffer + checkpoint</text>
+  <rect x="743" y="92" width="169" height="130" rx="10" fill="#ffffff" stroke="#c8d2e1"/>
+  <text x="763" y="122" fill="#555555" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="800">SINK</text>
+  <text x="763" y="157" fill="#0f1219" font-family="Inter, system-ui, sans-serif" font-size="20" font-weight="800">SSE feed</text>
+  <text x="763" y="187" fill="#555555" font-family="ui-monospace, monospace" font-size="14">http_sse · /events</text>
+  <text x="480" y="298" text-anchor="middle" fill="#555555" font-family="Inter, system-ui, sans-serif" font-size="14">A source and sink exchange nothing until an enabled connector names both.</text>
+</svg>

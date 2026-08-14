@@ -60,3 +60,11 @@ CDN dependencies.
 Copied from `../site/public/favicon.svg` so Beacon uses the same browser icon
 as the Open Ships site while still serving all UI assets from the embedded
 binary.
+
+## manual/
+
+Screenshots and explanatory SVG diagrams used by the onboard manual. The PNGs
+are captures of a running Beacon instance, not static UI mockups. The SVGs use
+the product tokens from `DESIGN.md` and keep routing, checkpoint, replay, and
+troubleshooting concepts legible at any display density. All manual visuals
+are embedded and served locally with the rest of the UI.

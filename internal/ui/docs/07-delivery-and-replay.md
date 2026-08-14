@@ -12,6 +12,11 @@ that gives the guarantee that your application needs.
 | Best effort | Plain TCP | Dispatch completes; Beacon does not know if the client received the message |
 | Observe only | `observe` bridge mode | Local inspection completes without a sink call |
 
+[![Message flow through a CEL filter and SQLite route buffer to a sink boundary, followed by checkpoint advancement](/assets/manual/delivery-checkpoint.svg)](/assets/manual/delivery-checkpoint.svg)
+
+_Persist first, deliver second, checkpoint last. A failed delivery leaves the
+message pending so the connector can retry it._
+
 At-least-once delivery can produce duplicates. A consumer of a confirmed sink
 must tolerate duplicate messages.
 
@@ -190,6 +195,12 @@ connector, sink, byte, rate, and inspector statistics. It has no
 endpoint-specific configuration and no external effect.
 
 ## Replay cursor
+
+[![Queue timeline showing retained messages 101 through 105, pending messages 106 through 108, checkpoint 105, and replay beginning after cursor 103](/assets/manual/replay-window.svg)](/assets/manual/replay-window.svg)
+
+_The checkpoint separates acknowledged history from pending delivery. A
+replay cursor can still address acknowledged messages while retention keeps
+them available._
 
 Beacon identifies a replay position with `connector:sequence`. The connector
 ID is necessary because one sink can serve multiple connectors.
