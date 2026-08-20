@@ -1,6 +1,6 @@
 module github.com/open-ships/beacon
 
-go 1.25.12
+go 1.26.6
 
 require (
 	github.com/brutella/can v0.0.2
@@ -11,7 +11,7 @@ require (
 	github.com/google/cel-go v0.29.2
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
-	github.com/open-ships/n2k v1.0.0
+	github.com/open-ships/n2k v1.2.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/cobra v1.10.2
 	github.com/yuin/goldmark v1.8.4

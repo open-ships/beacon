@@ -30,6 +30,6 @@ jobs:
       commit-sha: ${{ github.event.workflow_run.head_sha }}
       project-name: beacon
       distribution: goreleaser
-      go-version: 1.25.12
+      go-version: 1.26.6
       release-title-with-date: true
       container-image: ghcr.io/open-ships/beacon
