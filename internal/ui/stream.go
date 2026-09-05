@@ -108,7 +108,7 @@ func handleComponentStream(svc *config.Service, reg *stats.Registry, kind string
 						log.Debug("ui: skip malformed stream envelope", "kind", kind, "id", id, "err", err)
 						continue
 					}
-					matches, err := streamFilter.Match(&envelope)
+					matches, err := streamFilter.MatchContext(r.Context(), &envelope)
 					if err != nil {
 						log.Debug("ui: skip stream envelope after CEL evaluation error", "kind", kind, "id", id, "err", err)
 						continue

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -200,6 +201,18 @@ func TestMQTTSinkWaitsForQoS1PUBACK(t *testing.T) {
 }
 
 func TestMQTTSinkConnectionLossCannotConfirmPublishWithoutPUBACK(t *testing.T) {
+	testMQTTSinkUnacknowledgedPublish(t, "connection-loss")
+}
+
+func TestMQTTSinkPUBACKTimeoutRetiresGenerationAndRetries(t *testing.T) {
+	testMQTTSinkUnacknowledgedPublish(t, "puback-timeout")
+}
+
+func testMQTTSinkUnacknowledgedPublish(t *testing.T, failure string) {
+	t.Helper()
+	oldTimeout := mqttPublishAckTimeout
+	mqttPublishAckTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { mqttPublishAckTimeout = oldTimeout })
 	oldMin, oldMax := mqttReconnectMin, mqttReconnectMax
 	mqttReconnectMin, mqttReconnectMax = 5*time.Millisecond, 20*time.Millisecond
 	t.Cleanup(func() { mqttReconnectMin, mqttReconnectMax = oldMin, oldMax })
@@ -254,7 +267,19 @@ func TestMQTTSinkConnectionLossCannotConfirmPublishWithoutPUBACK(t *testing.T) {
 			}
 			if packet.header>>4 == 3 {
 				firstPublish <- packet
-				_ = first.Close() // lose the connection without PUBACK
+				if failure == "puback-timeout" {
+					// Keep the connection responsive while withholding PUBACK.
+					for {
+						next, readErr := readMQTTPacket(r)
+						if readErr != nil || next.header>>4 == 14 {
+							break
+						}
+						if next.header>>4 == 12 {
+							_, _ = first.Write([]byte{0xD0, 0})
+						}
+					}
+				}
+				_ = first.Close() // the publish remains unacknowledged
 				break
 			}
 		}
@@ -326,7 +351,13 @@ func TestMQTTSinkConnectionLossCannotConfirmPublishWithoutPUBACK(t *testing.T) {
 	select {
 	case err := <-firstResult:
 		if err == nil {
-			t.Fatal("connection loss confirmed publish without PUBACK")
+			t.Fatal("failed attempt confirmed publish without PUBACK")
+		}
+		if failure == "puback-timeout" && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("timeout error = %v", err)
+		}
+		if !firstGeneration.invalidated() {
+			t.Fatal("ambiguous generation remains active")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("connection loss did not fail the ambiguous publish")

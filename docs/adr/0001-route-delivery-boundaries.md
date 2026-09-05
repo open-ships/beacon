@@ -18,7 +18,13 @@ library auto-reconnect and gives each explicit broker connection a fresh client
 generation. A loss atomically invalidates that generation and every outstanding
 Push. With automatic reconnect disabled, a successful QoS 1 publish token is
 possible only after an observed PUBACK; any publish still outstanding at loss
-is retried on a newly constructed client. HTTP POST retries use a deterministic
+is retried on a newly constructed client. A broker that keeps its connection
+alive but withholds PUBACK also loses its generation after 30 seconds; the
+connector retains the unconfirmed message for retry. CONNECT and SUBSCRIBE
+waits are limited to 15 seconds. Beacon owns transport cleanup as well as Paho
+cleanup so a stalled handshake cannot retain an orphan socket.
+
+HTTP POST retries use a deterministic
 batch idempotency key, but remain at-least-once because the receiver decides
 whether to honor it. Receiver `Retry-After` guidance can lengthen, but never
 shorten, the connector's retry delay and is capped at one minute. Per-attempt
@@ -30,6 +36,13 @@ unbounded. Age retention uses Beacon's local `observed_at`/admission time, not
 the upstream wire timestamp. Retention may prune pending delivery, so these
 guards are safety budgets rather than outage guarantees and must be sized from
 observed Envelope rate, size, and the supported disconnected interval.
+
+Connector shutdown unsubscribes before taking a fixed snapshot of buffered
+input. It flushes batches of at most 64 within one five-second grace period,
+including any batch interrupted by cancellation. Unpersisted messages at the
+deadline contribute to `intake_loss`; an active source cannot extend the drain.
+Count retention locates the oldest excess rows instead of scanning across the
+retained history on every saturated append.
 
 Remote-source, physical NMEA-endpoint, and confirmed-delivery retries run
 continuously with equal-jitter exponential delay from a 250 ms initial ceiling

@@ -110,6 +110,29 @@ func TestRecordSupportedPGNsKeepsBothSortedLists(t *testing.T) {
 	}
 }
 
+func TestDiscoveryCachesBoundDeviceNameChurnAndExpireTogether(t *testing.T) {
+	bc := &busClient{supported: map[uint64]SupportedPGNs{}, requested: map[uint64]time.Time{}}
+	tx := uint64(pgn.TransmitPGNList)
+	for name := uint64(1); name <= 10_000; name++ {
+		bc.recordSupportedPGNs(name, &pgn.ParameterGroupNumberListTransmitAndReceive{FunctionCode: &tx})
+		bc.mu.Lock()
+		bc.requested[name] = time.Now()
+		if len(bc.supported) > maxCachedDeviceNames || len(bc.requested) > maxCachedDeviceNames || len(bc.deviceSeen) > maxCachedDeviceNames {
+			t.Fatalf("discovery caches grew beyond %d", maxCachedDeviceNames)
+		}
+		bc.mu.Unlock()
+	}
+	if _, ok := bc.supported[10_000]; !ok {
+		t.Fatal("newest discovery evicted")
+	}
+	bc.mu.Lock()
+	bc.touchDeviceLocked(10_001, time.Now().Add(deviceCacheRetention+time.Minute))
+	bc.mu.Unlock()
+	if len(bc.supported) != 0 || len(bc.requested) != 0 || len(bc.deviceSeen) != 1 {
+		t.Fatalf("expired caches = %d, %d, %d", len(bc.supported), len(bc.requested), len(bc.deviceSeen))
+	}
+}
+
 func TestWriteEncodesToBus(t *testing.T) {
 	fake := busfake.New()
 	m := testManager(t, fake)

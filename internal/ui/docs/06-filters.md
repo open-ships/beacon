@@ -6,6 +6,12 @@ connector `filters` field is a list of CEL expressions.
 Beacon evaluates each expression for each message from the connector source.
 All expressions must return `true`. An empty list accepts all messages.
 
+Each expression has a 10,000-unit CEL evaluation cost limit. The complete
+filter chain has a 50 ms evaluation deadline and stops when its connector or
+inspection request is canceled. A budget violation is an evaluation error:
+the connector drops that message and increments `filter_error`. Prefer direct
+field comparisons and avoid nested searches over large payload arrays.
+
 ## Use the `msg` variable
 
 Each expression uses one variable named `msg`.

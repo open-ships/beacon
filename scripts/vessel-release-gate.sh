@@ -218,7 +218,8 @@ cat >"$load_config" <<EOF
   }],
   "connectors": [{
     "id": "release-route", "name": "Release route", "source_id": "release-replay",
-    "sink_id": "release-null", "enabled": true, "filters": [], "buffer": {}
+    "sink_id": "release-null", "enabled": true, "filters": [],
+    "buffer": {"max_messages": $load_rate}
   }]
 }
 EOF
@@ -303,6 +304,19 @@ if ! awk -v before="$load_messages" -v after="$load_messages_after" \
 fi
 printf 'representative workload progressed during sampling: %s -> %s messages\n' \
   "$load_messages" "$load_messages_after"
+
+# Retain one second of traffic so this short gate exercises saturated pruning
+# instead of spending its entire run below the default 10,000-message limit.
+load_pruned="$(
+  curl --fail --silent --show-error --max-time 2 "http://$admin_addr/metrics" 2>/dev/null |
+    awk '$1 ~ /^beacon_connector_messages_total\{/ &&
+         $1 ~ /[,{]connector="release-route"[,}]/ &&
+         $1 ~ /[,{]stage="pruned"[,}]/ { print $2; exit }'
+)" || load_pruned=""
+if ! awk -v pruned="$load_pruned" 'BEGIN { exit !((pruned + 0) > 0) }'; then
+  die "representative workload never exercised saturated count retention"
+fi
+printf 'saturated retention exercised: %s messages pruned\n' "$load_pruned"
 
 kill -TERM "$beacon_pid"
 for ((i = 0; i < shutdown_timeout * 10; i++)); do

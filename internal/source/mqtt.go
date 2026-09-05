@@ -5,16 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
+	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
 	"github.com/open-ships/beacon/internal/model"
+	"github.com/open-ships/beacon/internal/mqtttransport"
 	"github.com/open-ships/beacon/internal/msg"
 )
+
+var mqttHandshakeTimeout = 15 * time.Second
 
 func runMQTT(ctx context.Context, cfg model.Source, publish func(*msg.Envelope), connected func()) error {
 	lost := make(chan error, 1)
 	opts := mqtt.NewClientOptions()
+	closeTransport := mqtttransport.Configure(opts)
 	opts.AddBroker(model.NormalizeMQTTBrokerURL(cfg.URL))
 	opts.SetClientID(mqttClientID("beacon-source", cfg.ID))
 	opts.SetCleanSession(true)
@@ -34,15 +40,28 @@ func runMQTT(ctx context.Context, cfg model.Source, publish func(*msg.Envelope),
 	})
 
 	client := mqtt.NewClient(opts)
-	// Disconnect also aborts an in-progress Connect. Register cleanup before
-	// waiting so cancellation cannot return from waitMQTTToken while Paho keeps
-	// an unowned dial alive (or completes it after this source has stopped).
-	defer client.Disconnect(250)
+	var deliveryMu sync.Mutex
+	accepting := true
+	// Retire callbacks before returning to the source owner, which can then
+	// delete its metrics safely. Paho's Disconnect has a bounded quiesce wait
+	// and can return while a handler or CONNECT is still unwinding.
+	defer func() {
+		deliveryMu.Lock()
+		accepting = false
+		deliveryMu.Unlock()
+		closeTransport()
+		client.Disconnect(250)
+	}()
 	if err := waitMQTTToken(ctx, client.Connect()); err != nil {
 		return err
 	}
 
 	handler := func(_ mqtt.Client, m mqtt.Message) {
+		deliveryMu.Lock()
+		defer deliveryMu.Unlock()
+		if !accepting || ctx.Err() != nil {
+			return
+		}
 		if len(m.Payload()) > msg.MaxWireEnvelopeBytes {
 			return
 		}
@@ -69,6 +88,8 @@ func runMQTT(ctx context.Context, cfg model.Source, publish func(*msg.Envelope),
 }
 
 func waitMQTTToken(ctx context.Context, token mqtt.Token) error {
+	ctx, cancel := context.WithTimeout(ctx, mqttHandshakeTimeout)
+	defer cancel()
 	select {
 	case <-token.Done():
 		return token.Error()

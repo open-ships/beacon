@@ -3,6 +3,7 @@ package metrics
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http/httptest"
 	"strings"
@@ -31,6 +32,55 @@ func TestNilSetIsSafe(t *testing.T) {
 	}
 	s.RemoveComponent("source", "can0")
 	s.RemoveConnector("c")
+	s.RemoveSource("can0")
+	s.RemoveSourceDrops("bus:socketcan:can0")
+	s.RemoveSink("sse")
+}
+
+func TestCumulativeMetricsRetireDeletedEntitiesWithoutOverflow(t *testing.T) {
+	s, handler, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	record := func(id string) {
+		s.ConnectorMessages(ctx, id, "received", 1)
+		s.ConnectorBytes(ctx, id, 100)
+		s.SourceMessages(ctx, id, 1)
+		s.SourceDrops(ctx, id, 1)
+		s.SourceDrops(ctx, "bus:"+id, 1)
+		s.SinkClients(id, 1)
+		s.SinkHTTPRequest(ctx, id, "503", "gzip", 2, 100, 200, time.Second)
+		s.SinkHTTPRetryAfter(ctx, id, "503", time.Second)
+	}
+	// Surpass the SDK's default cumulative cardinality limit. After deletion,
+	// neither counters nor histogram buckets may occupy historical series.
+	for i := range 2100 {
+		id := fmt.Sprintf("removed-%d", i)
+		record(id)
+		s.RemoveConnector(id)
+		s.RemoveSource(id)
+		s.RemoveSourceDrops("bus:" + id)
+		s.RemoveSink(id)
+	}
+	record("active")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body := rec.Body.String()
+	body = strings.ReplaceAll(body, `otel_scope_name="beacon",otel_scope_schema_url="",otel_scope_version="",`, "")
+	if strings.Contains(body, "removed-") || strings.Contains(body, "otel_metric_overflow") {
+		t.Fatalf("retired/overflow series survived:\n%s", body)
+	}
+	for _, want := range []string{
+		`beacon_connector_messages_total{connector="active",stage="received"} 1`,
+		`beacon_source_messages_total{source="active"} 1`,
+		`beacon_sink_http_payload_size_bytes_count{encoding="gzip",sink="active",status="503"} 1`,
+		`beacon_sink_http_retry_after_seconds_count{sink="active",status="503"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing active series %s:\n%s", want, body)
+		}
+	}
 }
 
 func TestPrometheusExposesHTTPSinkMetrics(t *testing.T) {

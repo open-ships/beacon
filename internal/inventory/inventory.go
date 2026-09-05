@@ -119,6 +119,7 @@ func (r *Registry) Observe(ctx context.Context, devices []bus.DeviceInfo) error 
 		r.latest[key] = device
 		normalized = append(normalized, device)
 	}
+	r.boundLatestLocked()
 	r.applyLatestLocked(now)
 	r.mu.Unlock()
 
@@ -186,6 +187,40 @@ func (r *Registry) Observe(ctx context.Context, devices []bus.DeviceInfo) error 
 		return err
 	}
 	return r.Refresh(ctx)
+}
+
+// boundLatestLocked is independent of persistence success. A full or failing
+// database must not let changing Device NAMEs grow the observation cache.
+// Commissioned records remain protected, just as in the durable inventory.
+func (r *Registry) boundLatestLocked() {
+	if len(r.latest) <= maxUncommissionedDevices {
+		return
+	}
+	expected := make(map[string]bool)
+	for _, record := range r.records {
+		if record.Expected {
+			expected[deviceKey(record.Endpoint, record.Name)] = true
+		}
+	}
+	keys := make([]string, 0, len(r.latest))
+	for key := range r.latest {
+		if !expected[key] {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) <= maxUncommissionedDevices {
+		return
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		left, right := r.latest[keys[i]].LastSeen, r.latest[keys[j]].LastSeen
+		if left.Equal(right) {
+			return keys[i] < keys[j]
+		}
+		return left.After(right)
+	})
+	for _, key := range keys[maxUncommissionedDevices:] {
+		delete(r.latest, key)
+	}
 }
 
 func (r *Registry) Refresh(ctx context.Context) error {

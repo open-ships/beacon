@@ -300,9 +300,11 @@ func (q *sqliteQueue) pruneTx(ctx context.Context, tx *sql.Tx) (PruneResult, err
 
 	if n := q.limits.MaxMessages; n > 0 && retainedCount > n {
 		var cutoff int64
+		// Walk only the excess oldest rows. Walking backward past the entire
+		// retained window made every steady-state append O(retention size).
 		if err := tx.QueryRowContext(ctx,
-			`SELECT id FROM queue WHERE connector_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?`,
-			q.connectorID, n).Scan(&cutoff); err != nil {
+			`SELECT id FROM queue WHERE connector_id = ? ORDER BY id ASC LIMIT 1 OFFSET ?`,
+			q.connectorID, retainedCount-n-1).Scan(&cutoff); err != nil {
 			return result, err
 		}
 		if err := remove(false, cutoff); err != nil {
