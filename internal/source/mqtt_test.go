@@ -4,14 +4,133 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/open-ships/beacon/internal/model"
+	"github.com/open-ships/beacon/internal/msg"
 )
+
+func TestMQTTHandshakeTimeoutClosesStalledConnection(t *testing.T) {
+	oldTimeout := mqttHandshakeTimeout
+	mqttHandshakeTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { mqttHandshakeTimeout = oldTimeout })
+	for _, stage := range []string{"connect", "subscribe"} {
+		t.Run(stage, func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = ln.Close() }()
+			closed := make(chan struct{})
+			go func() {
+				defer close(closed)
+				conn, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+				r := bufio.NewReader(conn)
+				for {
+					header, _, err := readMQTTPacket(r)
+					if err != nil || header>>4 == 14 {
+						return
+					}
+					if header>>4 == 1 && stage == "subscribe" {
+						_, _ = conn.Write([]byte{0x20, 2, 0, 0})
+					}
+					if header>>4 == 12 {
+						_, _ = conn.Write([]byte{0xD0, 0})
+					}
+				}
+			}()
+			connected := false
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			err = runMQTT(ctx, model.Source{ID: "timeout", URL: "mqtt://" + ln.Addr().String(), Topic: "beacon/input"}, func(*msg.Envelope) {}, func() { connected = true })
+			if !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil || connected {
+				t.Fatalf("handshake = %v, parent error %v, connected %v", err, ctx.Err(), connected)
+			}
+			select {
+			case <-closed:
+			case <-time.After(time.Second):
+				t.Fatal("timed-out client retained broker connection")
+			}
+		})
+	}
+}
+
+func TestMQTTStopWaitsForActiveDeliveryCallback(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+		r := bufio.NewReader(conn)
+		for {
+			header, body, err := readMQTTPacket(r)
+			if err != nil || header>>4 == 14 {
+				return
+			}
+			switch header >> 4 {
+			case 1:
+				_, _ = conn.Write([]byte{0x20, 2, 0, 0})
+			case 8:
+				if len(body) < 2 {
+					return
+				}
+				_, _ = conn.Write([]byte{0x90, 3, body[0], body[1], 0})
+				payload := append([]byte{0, 1, 't'}, envelopeJSON(127250)...)
+				_, _ = conn.Write(mqttPacket(0x30, payload))
+			}
+		}
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	go func() {
+		done <- runMQTT(ctx, model.Source{ID: "callback", URL: "mqtt://" + ln.Addr().String(), Topic: "t"}, func(*msg.Envelope) {
+			close(entered)
+			<-release
+		}, func() {})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("callback never started")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		t.Fatalf("source returned while delivery callback could still write metrics: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	unblock()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("source did not finish after callback retired")
+	}
+}
 
 func readMQTTPacket(r *bufio.Reader) (byte, []byte, error) {
 	header, err := r.ReadByte()

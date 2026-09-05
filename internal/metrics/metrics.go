@@ -1,4 +1,4 @@
-// Package metrics owns the OTel instrument set. A nil *Set no-ops every
+// Package metrics owns Beacon's Prometheus and OTel instruments. A nil *Set no-ops every
 // method so components never need nil checks around instrumentation.
 package metrics
 
@@ -23,20 +23,20 @@ import (
 type gaugeKey struct{ kind, id string }
 
 type Set struct {
-	connectorMessages      api.Int64Counter
-	connectorBytes         api.Int64Counter
-	sourceMessages         api.Int64Counter
-	subscriberDrops        api.Int64Counter
+	connectorMessages      *prometheus.CounterVec
+	connectorBytes         *prometheus.CounterVec
+	sourceMessages         *prometheus.CounterVec
+	subscriberDrops        *prometheus.CounterVec
 	queueDepth             api.Int64ObservableGauge
 	queueBytes             api.Int64ObservableGauge
 	componentState         api.Int64ObservableGauge
-	sinkClients            api.Int64UpDownCounter
-	sinkHTTPRequests       api.Int64Counter
-	sinkHTTPEnvelopes      api.Int64Counter
-	sinkHTTPPayloadBytes   api.Int64Histogram
-	sinkHTTPOriginalBytes  api.Int64Histogram
-	sinkHTTPLatency        api.Float64Histogram
-	sinkHTTPRetryAfter     api.Float64Histogram
+	sinkClients            *prometheus.GaugeVec
+	sinkHTTPRequests       *prometheus.CounterVec
+	sinkHTTPEnvelopes      *prometheus.CounterVec
+	sinkHTTPPayloadBytes   *prometheus.HistogramVec
+	sinkHTTPOriginalBytes  *prometheus.HistogramVec
+	sinkHTTPLatency        *prometheus.HistogramVec
+	sinkHTTPRetryAfter     *prometheus.HistogramVec
 	sourcePGNMessages      api.Int64ObservableCounter
 	sourcePGNFrequency     api.Float64ObservableGauge
 	sourcePGNPeriod        api.Float64ObservableGauge
@@ -82,26 +82,7 @@ func New(registries ...*stats.Registry) (*Set, http.Handler, error) {
 	meter := provider.Meter("beacon")
 
 	s := &Set{depths: map[string][2]int64{}, states: map[gaugeKey]int64{}}
-	s.connectorMessages, _ = meter.Int64Counter("beacon.connector.messages")
-	s.connectorBytes, _ = meter.Int64Counter("beacon.connector.bytes")
-	s.sourceMessages, _ = meter.Int64Counter("beacon.source.messages")
-	s.subscriberDrops, _ = meter.Int64Counter("beacon.subscriber.dropped")
-	s.sinkClients, _ = meter.Int64UpDownCounter("beacon.sink.clients")
-	s.sinkHTTPRequests, _ = meter.Int64Counter("beacon.sink.http.requests",
-		api.WithDescription("HTTP sink request attempts, including retries"))
-	s.sinkHTTPEnvelopes, _ = meter.Int64Counter("beacon.sink.http.payload.envelopes",
-		api.WithDescription("Canonical envelopes included in HTTP sink request attempts"))
-	payloadBuckets := api.WithExplicitBucketBoundaries(512, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304)
-	s.sinkHTTPPayloadBytes, _ = meter.Int64Histogram("beacon.sink.http.payload.size.bytes",
-		api.WithDescription("HTTP sink request payload size on the wire"), payloadBuckets)
-	s.sinkHTTPOriginalBytes, _ = meter.Int64Histogram("beacon.sink.http.payload.uncompressed_size.bytes",
-		api.WithDescription("HTTP sink request payload size before optional compression"), payloadBuckets)
-	s.sinkHTTPLatency, _ = meter.Float64Histogram("beacon.sink.http.request.latency.seconds",
-		api.WithDescription("HTTP sink request latency through response-body read"),
-		api.WithExplicitBucketBoundaries(.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30))
-	s.sinkHTTPRetryAfter, _ = meter.Float64Histogram("beacon.sink.http.retry_after.seconds",
-		api.WithDescription("Valid Retry-After delay returned by an HTTP sink endpoint"),
-		api.WithExplicitBucketBoundaries(0, .25, .5, 1, 2, 5, 10, 30, 60, 300, 900, 3600))
+	s.registerCumulativeMetrics(reg)
 	s.queueDepth, _ = meter.Int64ObservableGauge("beacon.connector.queue.depth")
 	s.queueBytes, _ = meter.Int64ObservableGauge("beacon.connector.queue.bytes")
 	s.componentState, _ = meter.Int64ObservableGauge("beacon.component.state")
@@ -375,22 +356,21 @@ func (s *Set) ConnectorMessages(ctx context.Context, connector, stage string, n 
 	if s == nil {
 		return
 	}
-	s.connectorMessages.Add(ctx, n, api.WithAttributes(
-		attribute.String("connector", connector), attribute.String("stage", stage)))
+	s.connectorMessages.WithLabelValues(connector, stage).Add(float64(n))
 }
 
 func (s *Set) ConnectorBytes(ctx context.Context, connector string, n int64) {
 	if s == nil {
 		return
 	}
-	s.connectorBytes.Add(ctx, n, api.WithAttributes(attribute.String("connector", connector)))
+	s.connectorBytes.WithLabelValues(connector).Add(float64(n))
 }
 
 func (s *Set) SourceMessages(ctx context.Context, source string, n int64) {
 	if s == nil {
 		return
 	}
-	s.sourceMessages.Add(ctx, n, api.WithAttributes(attribute.String("source", source)))
+	s.sourceMessages.WithLabelValues(source).Add(float64(n))
 }
 
 // SourceDrops records envelopes dropped by a full subscriber channel on a
@@ -402,14 +382,14 @@ func (s *Set) SourceDrops(ctx context.Context, component string, n int64) {
 	if s == nil {
 		return
 	}
-	s.subscriberDrops.Add(ctx, n, api.WithAttributes(attribute.String("component", component)))
+	s.subscriberDrops.WithLabelValues(component).Add(float64(n))
 }
 
 func (s *Set) SinkClients(sink string, delta int64) {
 	if s == nil {
 		return
 	}
-	s.sinkClients.Add(context.Background(), delta, api.WithAttributes(attribute.String("sink", sink)))
+	s.sinkClients.WithLabelValues(sink).Add(float64(delta))
 }
 
 // SinkHTTPRequest records one HTTP sink request attempt. status is the
@@ -423,16 +403,11 @@ func (s *Set) SinkHTTPRequest(ctx context.Context, sink, status, encoding string
 	if s == nil {
 		return
 	}
-	attrs := api.WithAttributes(
-		attribute.String("sink", sink),
-		attribute.String("status", status),
-		attribute.String("encoding", encoding),
-	)
-	s.sinkHTTPRequests.Add(ctx, 1, attrs)
-	s.sinkHTTPEnvelopes.Add(ctx, envelopes, attrs)
-	s.sinkHTTPPayloadBytes.Record(ctx, payloadBytes, attrs)
-	s.sinkHTTPOriginalBytes.Record(ctx, uncompressedBytes, attrs)
-	s.sinkHTTPLatency.Record(ctx, latency.Seconds(), attrs)
+	s.sinkHTTPRequests.WithLabelValues(sink, status, encoding).Inc()
+	s.sinkHTTPEnvelopes.WithLabelValues(sink, status, encoding).Add(float64(envelopes))
+	s.sinkHTTPPayloadBytes.WithLabelValues(sink, status, encoding).Observe(float64(payloadBytes))
+	s.sinkHTTPOriginalBytes.WithLabelValues(sink, status, encoding).Observe(float64(uncompressedBytes))
+	s.sinkHTTPLatency.WithLabelValues(sink, status, encoding).Observe(latency.Seconds())
 }
 
 // SinkHTTPRetryAfter records a valid Retry-After value returned by an HTTP
@@ -442,8 +417,7 @@ func (s *Set) SinkHTTPRetryAfter(ctx context.Context, sink, status string, delay
 	if s == nil {
 		return
 	}
-	s.sinkHTTPRetryAfter.Record(ctx, delay.Seconds(), api.WithAttributes(
-		attribute.String("sink", sink), attribute.String("status", status)))
+	s.sinkHTTPRetryAfter.WithLabelValues(sink, status).Observe(delay.Seconds())
 }
 
 func (s *Set) SetQueueDepth(connector string, depth, bytes int64) {
@@ -464,7 +438,7 @@ func (s *Set) SetComponentState(kind, id string, state int64) {
 	s.mu.Unlock()
 }
 
-// RemoveConnector drops the queue depth/bytes gauge entry for a connector.
+// RemoveConnector drops all delivery counters and queue gauges for a connector.
 // Called when a connector is removed from config entirely so its last
 // observed queue depth doesn't linger in the exposition forever.
 func (s *Set) RemoveConnector(connector string) {
@@ -474,6 +448,8 @@ func (s *Set) RemoveConnector(connector string) {
 	s.mu.Lock()
 	delete(s.depths, connector)
 	s.mu.Unlock()
+	s.connectorMessages.DeletePartialMatch(prometheus.Labels{"connector": connector})
+	s.connectorBytes.DeleteLabelValues(connector)
 }
 
 // RemoveComponent drops the component-state gauge entry for a source, sink,

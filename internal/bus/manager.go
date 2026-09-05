@@ -37,8 +37,10 @@ const (
 	// manager converts messages, and the write queue retains n2k's conservative
 	// default backpressure bound. extraOpts are appended after these defaults so
 	// tests and specialized deployments can override either value.
-	clientReceiveBuffer = 256
-	clientWriteQueue    = 64
+	clientReceiveBuffer  = 256
+	clientWriteQueue     = 64
+	maxCachedDeviceNames = 1024
+	deviceCacheRetention = 6 * time.Hour
 )
 
 var (
@@ -210,9 +212,11 @@ type busClient struct {
 	state   string
 	lastErr error
 
-	supported map[uint64]SupportedPGNs
-	requested map[uint64]time.Time
-	requestWG sync.WaitGroup
+	supported       map[uint64]SupportedPGNs
+	requested       map[uint64]time.Time
+	deviceSeen      map[uint64]time.Time
+	nextDeviceSweep time.Time
+	requestWG       sync.WaitGroup
 }
 
 type busSubscriber struct {
@@ -331,6 +335,9 @@ func (bc *busClient) run(ctx context.Context) {
 		close(iterDone) // retire this iteration's close watchdog
 		bc.mu.Lock()
 		bc.client = nil
+		clear(bc.supported)
+		clear(bc.requested)
+		clear(bc.deviceSeen)
 		bc.mu.Unlock()
 		if ctx.Err() == nil {
 			err := errors.New("receive loop ended; reconnecting")
@@ -479,6 +486,7 @@ func (bc *busClient) recordSupportedPGNs(name uint64, resp *pgn.ParameterGroupNu
 	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
 
 	bc.mu.Lock()
+	bc.touchDeviceLocked(name, time.Now())
 	lists := bc.supported[name]
 	switch uint64Value(resp.FunctionCode) {
 	case uint64(pgn.TransmitPGNList):
@@ -499,6 +507,7 @@ func (bc *busClient) maybeRequestPGNList(ctx context.Context, client *n2k.Client
 		return
 	}
 	bc.mu.Lock()
+	bc.touchDeviceLocked(device.RawName, time.Now())
 	if time.Since(bc.requested[device.RawName]) < time.Minute {
 		bc.mu.Unlock()
 		return
@@ -519,6 +528,39 @@ func (bc *busClient) maybeRequestPGNList(ctx context.Context, client *n2k.Client
 		// neither response ordering nor scheduler timing can hide it.
 		bc.recordSupportedPGNs(name, resp)
 	}(device.RawName, source)
+}
+
+// touchDeviceLocked bounds discovery bookkeeping independently of the n2k
+// client's current address registry. Replaced Device NAMEs must not accumulate
+// across a vessel's lifetime. All three maps share the same admission policy.
+func (bc *busClient) touchDeviceLocked(name uint64, now time.Time) {
+	if bc.deviceSeen == nil {
+		bc.deviceSeen = make(map[uint64]time.Time)
+	}
+	remove := func(name uint64) {
+		delete(bc.deviceSeen, name)
+		delete(bc.supported, name)
+		delete(bc.requested, name)
+	}
+	if !now.Before(bc.nextDeviceSweep) {
+		for candidate, seen := range bc.deviceSeen {
+			if now.Sub(seen) >= deviceCacheRetention {
+				remove(candidate)
+			}
+		}
+		bc.nextDeviceSweep = now.Add(time.Minute)
+	}
+	if _, exists := bc.deviceSeen[name]; !exists && len(bc.deviceSeen) >= maxCachedDeviceNames {
+		var oldest uint64
+		var oldestSeen time.Time
+		for candidate, seen := range bc.deviceSeen {
+			if oldestSeen.IsZero() || seen.Before(oldestSeen) {
+				oldest, oldestSeen = candidate, seen
+			}
+		}
+		remove(oldest)
+	}
+	bc.deviceSeen[name] = now
 }
 
 // Devices returns every device currently known across all running bus
@@ -751,6 +793,11 @@ func (h *Handle) Release() {
 			// Acquires of other endpoints. run never takes mgr.mu, so this
 			// cannot deadlock.
 			bc.wg.Wait()
+			mgr.mu.Lock()
+			if mgr.clients[bc.ep] == nil {
+				mgr.met.RemoveSourceDrops("bus:" + bc.ep.Kind + ":" + bc.ep.Name)
+			}
+			mgr.mu.Unlock()
 		}
 	})
 }

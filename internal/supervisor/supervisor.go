@@ -458,9 +458,11 @@ func (s *Supervisor) Reconcile(ctx context.Context) (retErr error) {
 	}
 	for _, id := range deletedSources {
 		s.reg.RemoveSource(id)
+		s.met.RemoveSource(id)
 	}
 	for _, id := range deletedSinks {
 		s.reg.RemoveSink(id)
+		s.met.RemoveSink(id)
 	}
 
 	// --- Purge sweep: connectors whose storage exists but who are absent

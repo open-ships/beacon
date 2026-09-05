@@ -12,6 +12,7 @@ import (
 
 	"github.com/open-ships/beacon/internal/metrics"
 	"github.com/open-ships/beacon/internal/model"
+	"github.com/open-ships/beacon/internal/mqtttransport"
 	"github.com/open-ships/beacon/internal/msg"
 	"github.com/open-ships/beacon/internal/retry"
 )
@@ -23,8 +24,9 @@ const (
 )
 
 var (
-	mqttReconnectMin = 2 * time.Second
-	mqttReconnectMax = time.Minute
+	mqttReconnectMin      = 2 * time.Second
+	mqttReconnectMax      = time.Minute
+	mqttPublishAckTimeout = 30 * time.Second
 )
 
 // mqttSink publishes connector entries to a broker topic with MQTT QoS 1.
@@ -59,9 +61,10 @@ type mqttSink struct {
 // failure. Closing done invalidates every waiter before another generation can
 // become active.
 type mqttClientGeneration struct {
-	id     uint64
-	client mqtt.Client
-	done   chan struct{}
+	id             uint64
+	client         mqtt.Client
+	done           chan struct{}
+	closeTransport func()
 
 	mu      sync.Mutex
 	err     error
@@ -121,6 +124,7 @@ func (s *mqttSink) newGeneration() *mqttClientGeneration {
 
 	g := &mqttClientGeneration{id: generationID, done: make(chan struct{})}
 	opts := mqtt.NewClientOptions()
+	g.closeTransport = mqtttransport.Configure(opts)
 	opts.AddBroker(s.broker)
 	opts.SetClientID(mqttClientID("beacon-sink", s.id))
 	opts.SetCleanSession(true)
@@ -273,6 +277,7 @@ func (s *mqttSink) invalidateGeneration(g *mqttClientGeneration, err error) {
 
 func (s *mqttSink) retireGeneration(g *mqttClientGeneration, err error) {
 	s.invalidateGeneration(g, err)
+	g.closeTransport()
 	// This is the generation's only Disconnect call. It is never used again:
 	// the next attempt constructs a fresh Paho client.
 	g.client.Disconnect(mqttDisconnectMsec)
@@ -328,10 +333,10 @@ func (s *mqttSink) Push(ctx context.Context, env *msg.Envelope) error {
 		s.invalidateGeneration(g, err)
 		return err
 	}
-	// Do not create a second application-level publish merely because an ACK is
-	// slow. The generation's done channel also terminates the wait if Paho's
-	// connection-loss callback races token registration. Any unsuccessful wait
-	// retires the whole client generation, bounding Paho token/message-id state.
+	// Wait for PUBACK within the attempt deadline. The generation's done
+	// channel also terminates the wait if connection loss races registration.
+	// Any unsuccessful wait retires the client before a retry, bounding Paho's
+	// retained tokens and preventing an ambiguous packet from confirming one.
 	token := g.client.Publish(s.topic, 1, false, doc)
 	// Publish checks Paho's connection status internally, but connection-loss
 	// cleanup and token registration are concurrent inside Paho. Accept an
@@ -370,6 +375,8 @@ func (s *mqttSink) Stop() {
 }
 
 func waitMQTTToken(ctx context.Context, token mqtt.Token) error {
+	ctx, cancel := context.WithTimeout(ctx, mqtttransport.ConnectTimeout)
+	defer cancel()
 	select {
 	case <-token.Done():
 		return token.Error()
@@ -379,6 +386,10 @@ func waitMQTTToken(ctx context.Context, token mqtt.Token) error {
 }
 
 func waitMQTTPublish(ctx context.Context, generation *mqttClientGeneration, token mqtt.Token) error {
+	// A responsive broker can still withhold PUBACK indefinitely. End the
+	// attempt and retire its generation before retrying from durable storage.
+	ctx, cancel := context.WithTimeout(ctx, mqttPublishAckTimeout)
+	defer cancel()
 	select {
 	case <-token.Done():
 		// With automatic reconnect disabled, nil is reachable only through the

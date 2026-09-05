@@ -1,7 +1,9 @@
 package filter
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +11,38 @@ import (
 	"github.com/open-ships/beacon/internal/msg"
 	"github.com/open-ships/beacon/internal/n2kcatalog"
 )
+
+func TestEvaluationBudgetRejectsQuadraticFilter(t *testing.T) {
+	c, err := Compile([]string{`msg.payload.a.exists(x, msg.payload.a.exists(y, x + y == -1))`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{"a": make([]int, 3200)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := c.Match(env(1, 1, string(payload))); ok || err == nil {
+		t.Fatalf("expensive filter = %v, %v; want evaluation budget error", ok, err)
+	}
+	// A budget failure cannot poison the compiled program for later messages.
+	if ok, err := c.Match(env(1, 1, `{"a":[-1,0]}`)); !ok || err != nil {
+		t.Fatalf("subsequent ordinary match = %v, %v", ok, err)
+	}
+}
+
+func TestMatchContextHonorsCancellation(t *testing.T) {
+	for _, exprs := range [][]string{nil, {`msg.pgn == 1`}} {
+		c, err := Compile(exprs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if ok, err := c.MatchContext(ctx, env(1, 1, `{}`)); ok || !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled match = %v, %v", ok, err)
+		}
+	}
+}
 
 func env(pgnNum uint32, source uint8, payload string) *msg.Envelope {
 	return &msg.Envelope{PGN: pgnNum, Source: source, Dest: 255, Priority: 2,

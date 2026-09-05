@@ -217,6 +217,21 @@ not include fixed JSON syntax, numbers, or Boolean settings.
 The inventory limit removes the oldest unapproved observations first. It does
 not apply to Device NAMEs in an approved commissioning baseline.
 
+The in-memory observation cache enforces this limit even when SQLite writes
+fail. Each physical bus endpoint also limits PGN discovery bookkeeping to
+1,024 Device NAMEs, evicts the oldest entries under pressure, and sweeps entries
+idle for six hours when new observations arrive. Reconnecting clears that
+endpoint's discovery cache.
+
+Deleting a configured source, sink, or connector retires its Prometheus
+counters and histograms after its runtime stops. Recreating the same ID starts
+new totals. Disabling or restarting an entity preserves its totals.
+
+When a connector stops, it unsubscribes before draining buffered messages.
+The final drain uses batches of at most 64 messages and one five-second grace
+period. Messages that cannot reach durable storage in that window are counted
+as `intake_loss`.
+
 ## Preview and network limits
 
 | Item | Limit |
@@ -227,11 +242,19 @@ not apply to Device NAMEs in an approved commissioning baseline.
 | Expanded gzip replay | 128 MiB |
 | Simultaneous expanded replays | 2, or 256 MiB total |
 | Remote MQTT, SSE, or WebSocket Envelope | 256 KiB |
+| Inbound MQTT packet body, including protocol overhead | 327,683 bytes |
 | Remote decoded `payload` JSON | 128 KiB |
 | Raw NMEA 2000 data in a remote Envelope | 1,785 bytes |
 | Remote physical fields | 256 |
 | Remote missing-field names | 256 |
 | Remote metadata string, field name, unit, or quantity | 1 KiB |
+
+MQTT packet lengths are checked before the decoder allocates a packet body,
+including connections over TLS and WebSocket. MQTT CONNECT and SUBSCRIBE
+acknowledgments have 15-second deadlines. A sink waits at most 30 seconds for
+PUBACK, then closes that connection and retries the still-pending message on a
+fresh client. A broker may have accepted a message whose acknowledgment was
+lost, so consumers must tolerate duplicates.
 
 Preview delivery does not block vessel traffic. A slow browser loses preview
 messages. Source and sink snapshots report `preview_documents_omitted`.

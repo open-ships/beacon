@@ -171,8 +171,7 @@ func TestUncommissionedInventoryIsBoundedButExpectedDevicesRemain(t *testing.T) 
 	if err := r.Observe(context.Background(), []bus.DeviceInfo{expected}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`UPDATE device_inventory SET expected = 1 WHERE endpoint = ? AND device_name = ?`,
-		expected.Endpoint, nameKey(expected.Name)); err != nil {
+	if err := r.CommitBaseline(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -198,5 +197,59 @@ func TestUncommissionedInventoryIsBoundedButExpectedDevicesRemain(t *testing.T) 
 	}
 	if len(r.latest) != maxUncommissionedDevices+1 || len(r.Records()) != maxUncommissionedDevices+1 {
 		t.Fatalf("in-memory inventory = latest %d records %d", len(r.latest), len(r.Records()))
+	}
+}
+
+func TestObservationCacheIsBoundedDuringPersistentWriteFailures(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "beacon.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	r := New(st)
+	ctx := context.Background()
+	initial := bus.DeviceInfo{Endpoint: "socketcan:can0", Name: 1, LastSeen: time.Now(), Model: "Expected"}
+	if err := r.Observe(ctx, []bus.DeviceInfo{initial}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.CommitBaseline(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`CREATE TRIGGER fail_inventory_insert BEFORE INSERT ON device_inventory
+		BEGIN SELECT RAISE(FAIL, 'injected inventory write failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	var newest bus.DeviceInfo
+	for batch := 0; batch < 100; batch++ {
+		devices := make([]bus.DeviceInfo, 32)
+		for i := range devices {
+			n := batch*len(devices) + i + 2
+			devices[i] = bus.DeviceInfo{Endpoint: initial.Endpoint, Name: uint64(n), LastSeen: initial.LastSeen.Add(time.Duration(n) * time.Millisecond)}
+		}
+		newest = devices[len(devices)-1]
+		if err := r.Observe(ctx, devices); err == nil {
+			t.Fatal("write should fail")
+		}
+		if len(r.latest) > maxUncommissionedDevices+1 {
+			t.Fatalf("cache grew to %d", len(r.latest))
+		}
+	}
+	if _, ok := r.latest[deviceKey(initial.Endpoint, initial.Name)]; !ok {
+		t.Fatal("commissioned device evicted")
+	}
+	if _, ok := r.latest[deviceKey(newest.Endpoint, newest.Name)]; !ok {
+		t.Fatal("newest observation evicted")
+	}
+	if len(r.persistedSeen) != 1 || len(r.persistedFP) != 1 {
+		t.Fatal("failed writes entered durable cache")
+	}
+	if _, err := st.DB().Exec(`DROP TRIGGER fail_inventory_insert`); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Observe(ctx, []bus.DeviceInfo{newest}); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Records()) != 2 {
+		t.Fatalf("recovery records = %d", len(r.Records()))
 	}
 }

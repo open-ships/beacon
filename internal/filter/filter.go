@@ -4,6 +4,7 @@
 package filter
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -11,6 +12,14 @@ import (
 	"github.com/google/cel-go/common/types"
 
 	"github.com/open-ships/beacon/internal/msg"
+)
+
+// Limits apply to each expression and to the complete chain respectively.
+// Normal header/field predicates cost far less than this budget; nested
+// comprehensions must not monopolize a connector or an inspection handler.
+const (
+	maxEvaluationCost = 10_000
+	evaluationTimeout = 50 * time.Millisecond
 )
 
 type Chain struct {
@@ -32,7 +41,7 @@ func Compile(exprs []string) (*Chain, error) {
 		if err := requireBooleanOutput(ast); err != nil {
 			return nil, fmt.Errorf("filter %q: %w", expr, err)
 		}
-		prg, err := env.Program(ast)
+		prg, err := env.Program(ast, cel.CostLimit(maxEvaluationCost), cel.InterruptCheckFrequency(64))
 		if err != nil {
 			return nil, fmt.Errorf("filter %q: %w", expr, err)
 		}
@@ -55,9 +64,20 @@ func newEnvironment() (*cel.Env, error) {
 // Match evaluates all expressions (AND). Returns an error if any
 // expression errors at eval time; callers drop the message and count it.
 func (c *Chain) Match(e *msg.Envelope) (bool, error) {
+	return c.MatchContext(context.Background(), e)
+}
+
+// MatchContext also allows shutdown and disconnected inspection clients to
+// interrupt evaluations already in progress.
+func (c *Chain) MatchContext(ctx context.Context, e *msg.Envelope) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if len(c.progs) == 0 {
 		return true, nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, evaluationTimeout)
+	defer cancel()
 	physical := make(map[string]any, len(e.Physical))
 	for name, field := range e.Physical {
 		physical[name] = map[string]any{
@@ -92,7 +112,10 @@ func (c *Chain) Match(e *msg.Envelope) (bool, error) {
 		"physical":          physical,
 	}}
 	for i, prg := range c.progs {
-		out, _, err := prg.Eval(in)
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		out, _, err := prg.ContextEval(ctx, in)
 		if err != nil {
 			return false, fmt.Errorf("filter %q: %w", c.exprs[i], err)
 		}

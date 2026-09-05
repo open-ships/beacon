@@ -180,7 +180,8 @@ func (c *Connector) wake() {
 
 func (c *Connector) intake(ctx context.Context, in <-chan *msg.Envelope, unsub func()) {
 	defer c.wg.Done()
-	defer unsub()
+	unsubscribe := sync.OnceFunc(unsub)
+	defer unsubscribe()
 
 	batch := make([]*msg.Envelope, 0, batchSize)
 	flushTimer := time.NewTicker(batchInterval)
@@ -201,6 +202,7 @@ func (c *Connector) intake(ctx context.Context, in <-chan *msg.Envelope, unsub f
 				c.st.RecordStage(c.cfg.ID, "queued", int64(len(batch)))
 				c.met.ConnectorMessages(context.Background(), c.cfg.ID, "queued", int64(len(batch)))
 				c.recordPrune(context.Background(), pruned)
+				clear(batch)
 				batch = batch[:0]
 				c.wake()
 				return true
@@ -222,68 +224,107 @@ func (c *Connector) intake(ctx context.Context, in <-chan *msg.Envelope, unsub f
 			}
 		}
 	}
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), appendTimeout)
-		defer cancel()
-		if !flush(shutdownCtx) && len(batch) > 0 {
-			c.st.RecordStage(c.cfg.ID, "intake_loss", int64(len(batch)))
-			c.met.ConnectorMessages(context.Background(), c.cfg.ID, "intake_loss", int64(len(batch)))
-			c.log.Error("queue append failed during shutdown", "lost", len(batch), "err", shutdownCtx.Err())
+	var interrupted *msg.Envelope
+	ingest := func(ingestCtx context.Context, e *msg.Envelope, alreadyReceived bool) bool {
+		if !alreadyReceived {
+			c.st.RecordConnectorEvent(c.cfg.ID, "received", e)
+			c.met.ConnectorMessages(ctx, c.cfg.ID, "received", 1)
+			c.st.RecordStage(c.cfg.ID, "received", 1)
 		}
-	}()
-
-	ingest := func(e *msg.Envelope) {
-		c.st.RecordConnectorEvent(c.cfg.ID, "received", e)
-		c.met.ConnectorMessages(ctx, c.cfg.ID, "received", 1)
-		c.st.RecordStage(c.cfg.ID, "received", 1)
 		if c.cfg.EffectiveMode() == model.BridgeTransparent && !c.cfg.ForwardManagement && n2kwire.IsManagementPGN(e.PGN) {
 			c.met.ConnectorMessages(ctx, c.cfg.ID, "management_filtered", 1)
 			c.st.RecordStage(c.cfg.ID, "management_filtered", 1)
-			return
+			return true
 		}
-		match, err := c.chain.Match(e)
+		match, err := c.chain.MatchContext(ingestCtx, e)
 		if err != nil {
+			if ingestCtx.Err() != nil {
+				interrupted = e
+				return false
+			}
 			c.met.ConnectorMessages(ctx, c.cfg.ID, "filter_error", 1)
 			c.st.RecordStage(c.cfg.ID, "filter_error", 1)
 			c.log.Debug("filter eval error", "err", err)
-			return
+			return true
 		}
 		if !match {
 			c.met.ConnectorMessages(ctx, c.cfg.ID, "filtered", 1)
 			c.st.RecordStage(c.cfg.ID, "filtered", 1)
-			return
+			return true
 		}
 		c.met.ConnectorMessages(ctx, c.cfg.ID, "matched", 1)
 		batch = append(batch, e)
 		if len(batch) >= batchSize {
-			_ = flush(ctx)
+			return flush(ingestCtx)
 		}
+		return true
 	}
 
-	for {
-		select {
-		case <-ctx.Done():
-			// Drain envelopes already buffered in the subscription so a
-			// graceful stop persists everything the source handed us; the
-			// deferred flush writes whatever remains batched.
-			for {
-				select {
-				case e, ok := <-in:
-					if !ok {
-						return
-					}
-					ingest(e)
-				default:
-					return
-				}
+	defer func() {
+		// Freeze intake before draining. Hot apply stops the connector while
+		// its source may remain active, so draining a live subscription can
+		// otherwise grow forever. Even an imperfect Runtime unsubscribe cannot
+		// extend this fixed snapshot of outstanding work.
+		unsubscribe()
+		remaining := len(in)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), appendTimeout)
+		defer cancel()
+		defer func() {
+			lost := len(batch) + remaining
+			if interrupted != nil {
+				lost++
 			}
-		case <-flushTimer.C:
-			_ = flush(ctx)
-		case e, ok := <-in:
-			if !ok {
+			if lost > 0 {
+				c.st.RecordStage(c.cfg.ID, "intake_loss", int64(lost))
+				c.met.ConnectorMessages(context.Background(), c.cfg.ID, "intake_loss", int64(lost))
+				c.log.Error("queue intake incomplete during shutdown", "lost", lost, "err", shutdownCtx.Err())
+			}
+		}()
+		// A canceled normal flush may have left a full batch. Persist it before
+		// admitting anything else, always within the same shutdown deadline.
+		if !flush(shutdownCtx) {
+			return
+		}
+		if interrupted != nil {
+			e := interrupted
+			interrupted = nil
+			if !ingest(shutdownCtx, e, true) {
 				return
 			}
-			ingest(e)
+		}
+		for remaining > 0 {
+			select {
+			case e, ok := <-in:
+				if !ok {
+					remaining = 0
+					break
+				}
+				remaining--
+				if !ingest(shutdownCtx, e, false) {
+					return
+				}
+			default:
+				remaining = 0
+			}
+		}
+		flush(shutdownCtx)
+	}()
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-flushTimer.C:
+			if !flush(ctx) {
+				return
+			}
+		case e, ok := <-in:
+			if !ok || !ingest(ctx, e, false) {
+				return
+			}
 		}
 	}
 }
