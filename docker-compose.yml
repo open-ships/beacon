@@ -3,6 +3,8 @@ services:
     build: .
     # host networking is required so the container can access the CAN interface
     network_mode: host
+    # Administration remains on host loopback (127.0.0.1:2112). Use an SSH
+    # tunnel for remote access; protect any explicit --admin-address override.
     volumes:
       # Persist the SQLite database (config + connector buffers) across restarts
       - ./data:/data

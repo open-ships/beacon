@@ -2,8 +2,9 @@
      frag_source_form.html; see its comments for rationale. */}}
 {{define "sink-form"}}
 <form class="card bg-base-200 border border-base-300 entity-form"
+      method="post" action="{{if .IsEdit}}/sinks/{{.ID}}{{else}}/sinks{{end}}"
       hx-post="{{if .IsEdit}}/sinks/{{.ID}}{{else}}/sinks{{end}}"
-      hx-target="#sink-form-container" hx-swap="innerHTML">
+      hx-target="closest .entity-form-container" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]" hx-disinherit="hx-disabled-elt">
   <div class="card-body gap-3">
     <div class="entity-form-heading">
       <h2 class="card-title" {{if .InDialog}}id="{{if .IsEdit}}sink-edit-dialog-title{{else}}sink-create-dialog-title{{end}}"{{end}}>{{if .IsEdit}}Edit sink {{.ID}}{{else}}Add sink{{end}}</h2>
@@ -12,6 +13,7 @@
               data-entity-create-dialog-close aria-label="Close {{if .IsEdit}}edit{{else}}add{{end}} sink dialog">&times;</button>
       {{end}}
     </div>
+    <div class="alert alert-error" data-status="error" role="alert" tabindex="-1" data-request-feedback hidden></div>
     {{if .Alert}}
     <div class="alert alert-error" data-status="error" data-variant="destructive" role="alert"><span>{{.Alert.Message}}</span></div>
     {{end}}
@@ -24,18 +26,18 @@
     {{if .IsEdit}}
     <input type="hidden" name="id" value="{{.ID}}">
     <fieldset class="fieldset">
-      <legend class="fieldset-legend">ID</legend>
+      <label class="fieldset-legend" for="sink-id">ID</label>
       <input type="text" id="sink-id" value="{{.ID}}" class="input w-full" disabled>
     </fieldset>
     {{end}}
     <fieldset class="fieldset">
-      <legend class="fieldset-legend">Name</legend>
+      <label class="fieldset-legend" for="sink-name">Name</label>
       <input type="text" id="sink-name" name="name" value="{{.Name}}" class="input w-full" required>
     </fieldset>
     <fieldset class="fieldset">
-      <legend class="fieldset-legend">Type</legend>
+      <label class="fieldset-legend" for="sink-type">Type</label>
       <select id="sink-type" name="type" class="select w-full"
-              hx-get="/frag/sink-type-fields" hx-include="closest form"
+              hx-post="/frag/sink-type-fields" hx-include="closest form"
               hx-target="#sink-type-fields" hx-swap="innerHTML">
         <option value="socketcan" {{if eq .TypeFields.Type "socketcan"}}selected{{end}}>socketcan</option>
         <option value="usbcan" {{if eq .TypeFields.Type "usbcan"}}selected{{end}}>usbcan</option>
@@ -50,6 +52,7 @@
         <option value="null" {{if eq .TypeFields.Type "null"}}selected{{end}}>null</option>
       </select>
     </fieldset>
+    <noscript><button type="submit" name="form_action" value="change_type" formnovalidate class="btn" data-variant="outline">Update type fields</button></noscript>
     <div id="sink-type-fields" class="flex flex-col gap-3">
       {{template "sink-type-fields" .TypeFields}}
     </div>
@@ -68,7 +71,7 @@
 {{define "sink-create-dialog"}}
 <dialog class="entity-create-dialog dialog" data-entity-create-dialog
         aria-labelledby="{{if .IsEdit}}sink-edit-dialog-title{{else}}sink-create-dialog-title{{end}}">
-  <div id="sink-form-container" class="entity-create-dialog-form">
+  <div id="sink-dialog-form-container" class="entity-create-dialog-form entity-form-container">
     {{template "sink-form" .}}
   </div>
 </dialog>

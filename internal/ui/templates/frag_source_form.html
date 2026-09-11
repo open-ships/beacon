@@ -5,8 +5,9 @@
      product theme. */}}
 {{define "source-form"}}
 <form class="card bg-base-200 border border-base-300 entity-form"
+      method="post" action="{{if .IsEdit}}/sources/{{.ID}}{{else}}/sources{{end}}"
       hx-post="{{if .IsEdit}}/sources/{{.ID}}{{else}}/sources{{end}}"
-      hx-target="#source-form-container" hx-swap="innerHTML">
+      hx-target="closest .entity-form-container" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]" hx-disinherit="hx-disabled-elt">
   <div class="card-body gap-3">
     <div class="entity-form-heading">
       <h2 class="card-title" {{if .InDialog}}id="{{if .IsEdit}}source-edit-dialog-title{{else}}source-create-dialog-title{{end}}"{{end}}>{{if .IsEdit}}Edit source {{.ID}}{{else}}Add source{{end}}</h2>
@@ -15,6 +16,7 @@
               data-entity-create-dialog-close aria-label="Close {{if .IsEdit}}edit{{else}}add{{end}} source dialog">&times;</button>
       {{end}}
     </div>
+    <div class="alert alert-error" data-status="error" role="alert" tabindex="-1" data-request-feedback hidden></div>
     {{if .Alert}}
     <div class="alert alert-error" data-status="error" data-variant="destructive" role="alert"><span>{{.Alert.Message}}</span></div>
     {{end}}
@@ -27,18 +29,18 @@
     {{if .IsEdit}}
     <input type="hidden" name="id" value="{{.ID}}">
     <fieldset class="fieldset">
-      <legend class="fieldset-legend">ID</legend>
+      <label class="fieldset-legend" for="src-id">ID</label>
       <input type="text" id="src-id" value="{{.ID}}" class="input w-full" disabled>
     </fieldset>
     {{end}}
     <fieldset class="fieldset">
-      <legend class="fieldset-legend">Name</legend>
+      <label class="fieldset-legend" for="src-name">Name</label>
       <input type="text" id="src-name" name="name" value="{{.Name}}" class="input w-full" required>
     </fieldset>
     <fieldset class="fieldset">
-      <legend class="fieldset-legend">Type</legend>
+      <label class="fieldset-legend" for="src-type">Type</label>
       <select id="src-type" name="type" class="select w-full"
-              hx-get="/frag/source-type-fields" hx-include="closest form"
+              hx-post="/frag/source-type-fields" hx-include="closest form"
               hx-target="#source-type-fields" hx-swap="innerHTML">
         <option value="socketcan" {{if eq .TypeFields.Type "socketcan"}}selected{{end}}>socketcan</option>
         <option value="usbcan" {{if eq .TypeFields.Type "usbcan"}}selected{{end}}>usbcan</option>
@@ -50,6 +52,7 @@
         <option value="file" {{if eq .TypeFields.Type "file"}}selected{{end}}>file</option>
       </select>
     </fieldset>
+    <noscript><button type="submit" name="form_action" value="change_type" formnovalidate class="btn" data-variant="outline">Update type fields</button></noscript>
     <div id="source-type-fields" class="flex flex-col gap-3">
       {{template "source-type-fields" .TypeFields}}
     </div>
@@ -68,7 +71,7 @@
 {{define "source-create-dialog"}}
 <dialog class="entity-create-dialog dialog" data-entity-create-dialog
         aria-labelledby="{{if .IsEdit}}source-edit-dialog-title{{else}}source-create-dialog-title{{end}}">
-  <div id="source-form-container" class="entity-create-dialog-form">
+  <div id="source-dialog-form-container" class="entity-create-dialog-form entity-form-container">
     {{template "source-form" .}}
   </div>
 </dialog>

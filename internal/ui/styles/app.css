@@ -668,7 +668,7 @@ a.brand-version:focus-visible {
 .dag-unused-heading p {
   max-width: 68ch;
   margin: var(--space-1) 0 0;
-  color: #666;
+  color: var(--muted-foreground);
   font-size: 0.8rem;
   line-height: 1.45;
 }
@@ -695,7 +695,7 @@ a.brand-version:focus-visible {
   justify-content: space-between;
   gap: var(--space-3);
   color: #555;
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   font-weight: 800;
   text-transform: uppercase;
 }
@@ -2105,11 +2105,11 @@ code.stream-message-content {
 .dag-node-unused-sink.component-status-surface {
   --component-state-border: var(--border);
   --component-state-bg: var(--surface-muted);
-  color: #666;
+  color: var(--muted-foreground);
 }
 
 .dag-node-unused-sink .dag-node-title {
-  color: #444;
+  color: var(--gray-dark);
 }
 
 .overview-card.component-status-surface {
@@ -2340,6 +2340,7 @@ code.stream-message-content {
 }
 
 .fieldset {
+  gap: 0.35rem;
   min-width: 0;
   border: 0;
   margin: 0;
@@ -2351,6 +2352,10 @@ code.stream-message-content {
   color: var(--black);
   font-size: 0.78rem;
   font-weight: 800;
+}
+
+.fieldset > label.fieldset-legend {
+  margin-bottom: 0;
 }
 
 .cel-autocomplete {

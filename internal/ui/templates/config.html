@@ -22,15 +22,15 @@
       <h3>Load JSON</h3>
     </div>
     <fieldset class="fieldset">
-      <legend class="fieldset-legend">Mode</legend>
-      <select name="mode" class="select w-full">
+      <label class="fieldset-legend" for="config-mode">Mode</label>
+      <select id="config-mode" name="mode" class="select w-full">
         <option value="replace" {{if ne .Mode "merge"}}selected{{end}}>replace</option>
         <option value="merge" {{if eq .Mode "merge"}}selected{{end}}>merge</option>
       </select>
     </fieldset>
     <fieldset class="fieldset">
-      <legend class="fieldset-legend">Configuration JSON</legend>
-      <textarea name="config_json" class="textarea config-json-textarea" spellcheck="false" rows="{{.ConfigRows}}">{{.ConfigJSON}}</textarea>
+      <label class="fieldset-legend" for="config-json">Configuration JSON</label>
+      <textarea id="config-json" name="config_json" class="textarea config-json-textarea" spellcheck="false" rows="{{.ConfigRows}}">{{.ConfigJSON}}</textarea>
     </fieldset>
     <div class="card-actions justify-end">
       <button type="submit" class="btn btn-primary" data-variant="primary">Load JSON</button>

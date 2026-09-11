@@ -66,5 +66,3 @@
 {{end}}
 
 {{define "sink-panel"}}<div id="sink-panel" class="flex flex-col gap-4" hx-on::load="var a=this.querySelector('[data-autodismiss]');if(a)setTimeout(function(){a.remove()},4000)">{{template "sink-panel-inner" .}}</div>{{end}}
-
-{{define "sink-panel-oob"}}<div id="sink-panel" hx-swap-oob="true" class="flex flex-col gap-4" hx-on::load="var a=this.querySelector('[data-autodismiss]');if(a)setTimeout(function(){a.remove()},4000)">{{template "sink-panel-inner" .}}</div>{{end}}

@@ -213,7 +213,7 @@ func TestSourceNewPageOpensCreateForm(t *testing.T) {
 	for _, want := range []string{
 		`<dialog class="entity-create-dialog dialog" data-entity-create-dialog`,
 		`aria-labelledby="source-create-dialog-title"`,
-		`id="source-form-container"`,
+		`id="source-dialog-form-container"`,
 		`type="hidden" name="dialog" value="1"`,
 		`data-entity-create-dialog-close`,
 	} {
@@ -265,7 +265,7 @@ func TestSourceEditPageOpensEditForm(t *testing.T) {
 	for _, want := range []string{
 		`<dialog class="entity-create-dialog dialog" data-entity-create-dialog`,
 		`aria-labelledby="source-edit-dialog-title"`,
-		`id="source-form-container"`,
+		`id="source-dialog-form-container"`,
 		`type="hidden" name="dialog" value="1"`,
 		`value="Engine CAN"`,
 		`data-entity-create-dialog-close`,
@@ -393,7 +393,7 @@ func TestSinkNewPageOpensCreateForm(t *testing.T) {
 	for _, want := range []string{
 		`<dialog class="entity-create-dialog dialog" data-entity-create-dialog`,
 		`aria-labelledby="sink-create-dialog-title"`,
-		`id="sink-form-container"`,
+		`id="sink-dialog-form-container"`,
 		`type="hidden" name="dialog" value="1"`,
 		`data-entity-create-dialog-close`,
 	} {
@@ -445,7 +445,7 @@ func TestSinkEditPageOpensEditForm(t *testing.T) {
 	for _, want := range []string{
 		`<dialog class="entity-create-dialog dialog" data-entity-create-dialog`,
 		`aria-labelledby="sink-edit-dialog-title"`,
-		`id="sink-form-container"`,
+		`id="sink-dialog-form-container"`,
 		`type="hidden" name="dialog" value="1"`,
 		`value="NMEA Out"`,
 		`data-entity-create-dialog-close`,
@@ -840,7 +840,7 @@ func assertCreateRedirect(t *testing.T, resp *http.Response, wantMsg string) {
 
 func TestSourceCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sources", url.Values{
+	resp := postFormHTMX(t, srv, "/sources", url.Values{
 		"id": {"can0"}, "name": {"Engine CAN"}, "type": {"socketcan"},
 		"enabled": {"1"}, "interface": {"can0"},
 	})
@@ -867,7 +867,7 @@ func TestSourceCreateRoundTrip(t *testing.T) {
 
 func TestSourceCreateGeneratesIDWhenOmitted(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sources", url.Values{
+	resp := postFormHTMX(t, srv, "/sources", url.Values{
 		"name": {"Generated ID"}, "type": {"socketcan"}, "enabled": {"1"}, "interface": {"can0"},
 	})
 	_ = resp.Body.Close()
@@ -892,13 +892,13 @@ func TestSourceUpdateRoundTrip(t *testing.T) {
 		ID: "can0", Name: "Old Name", Type: model.SourceSocketCAN, Interface: "can0",
 	}, true))
 
-	resp := postForm(t, srv, "/sources/can0", url.Values{
+	resp := postFormHTMX(t, srv, "/sources/can0", url.Values{
 		"id": {"can0"}, "name": {"New Name"}, "type": {"socketcan"}, "interface": {"can1"},
 	})
 	mustStatus(t, resp, http.StatusOK)
-	body := mustBody(t, resp)
-	if !strings.Contains(body, "New Name") {
-		t.Fatalf("update response missing new name:\n%s", body)
+	_ = mustBody(t, resp)
+	if got := resp.Header.Get("HX-Redirect"); got != "/sources/can0/" {
+		t.Fatalf("update redirect = %q", got)
 	}
 
 	got, err := svc.GetSource(context.Background(), "can0")
@@ -912,7 +912,7 @@ func TestSourceUpdateRoundTrip(t *testing.T) {
 
 func TestSourceHeadersRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sources", url.Values{
+	resp := postFormHTMX(t, srv, "/sources", url.Values{
 		"id": {"sse1"}, "name": {"SSE"}, "type": {"http_sse"},
 		"url":     {"https://example.com/stream"},
 		"headers": {"Authorization: Bearer tok\nX-Custom: value"},
@@ -939,7 +939,7 @@ func TestSourceHeadersRoundTrip(t *testing.T) {
 
 func TestMQTTSourceCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sources", url.Values{
+	resp := postFormHTMX(t, srv, "/sources", url.Values{
 		"id": {"mqtt-in"}, "name": {"MQTT input"}, "type": {"mqtt"},
 		"enabled": {"1"}, "url": {"mqtt://broker.local:1883"}, "topic": {"vessels/main/engine/#"},
 	})
@@ -967,7 +967,7 @@ func TestMQTTSourceCreateRoundTrip(t *testing.T) {
 
 func TestSinkCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sinks", url.Values{
+	resp := postFormHTMX(t, srv, "/sinks", url.Values{
 		"id": {"out1"}, "name": {"NMEA Out"}, "type": {"tcp"},
 		"enabled": {"1"}, "address": {"0.0.0.0:2000"},
 	})
@@ -984,7 +984,7 @@ func TestSinkCreateRoundTrip(t *testing.T) {
 
 func TestNullSinkCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sinks", url.Values{
+	resp := postFormHTMX(t, srv, "/sinks", url.Values{
 		"id": {"discard"}, "name": {"Discard"}, "type": {"null"}, "enabled": {"1"},
 	})
 	assertCreateRedirect(t, resp, `Sink "discard" created`)
@@ -1011,7 +1011,7 @@ func TestNullSinkCreateRoundTrip(t *testing.T) {
 
 func TestHTTPPostSinkCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sinks", url.Values{
+	resp := postFormHTMX(t, srv, "/sinks", url.Values{
 		"id": {"webhook"}, "name": {"Telemetry API"}, "type": {"http_post"}, "enabled": {"1"},
 		"url": {"https://api.example.com/v1/envelopes"}, "batch_size": {"250"},
 		"request_timeout": {"15s"},
@@ -1078,7 +1078,7 @@ func TestHTTPPostSinkFormParseErrorsPreserveValues(t *testing.T) {
 				"url": {"https://api.example.com/events"},
 			}
 			values.Set(tc.field, tc.value)
-			resp := postForm(t, srv, "/sinks", values)
+			resp := postFormHTMX(t, srv, "/sinks", values)
 			mustStatus(t, resp, http.StatusOK)
 			body := mustBody(t, resp)
 			if !strings.Contains(body, "alert-error") || !strings.Contains(body, tc.value) {
@@ -1093,7 +1093,7 @@ func TestHTTPPostSinkFormParseErrorsPreserveValues(t *testing.T) {
 
 func TestPostgresSinkCreateRoundTripAndRedactsOverview(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sinks", url.Values{
+	resp := postFormHTMX(t, srv, "/sinks", url.Values{
 		"id": {"telemetry-db"}, "name": {"Telemetry database"}, "type": {"postgres"}, "enabled": {"1"},
 		"url":   {"postgresql://beacon:super-secret@db.local:5432/vessel?sslmode=require"},
 		"table": {"telemetry.envelopes"}, "batch_size": {"250"}, "write_timeout": {"15s"},
@@ -1149,7 +1149,7 @@ func TestPostgresSinkCreateRoundTripAndRedactsOverview(t *testing.T) {
 
 func TestPostgresSinkFormParseErrorPreservesWriteTimeout(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sinks", url.Values{
+	resp := postFormHTMX(t, srv, "/sinks", url.Values{
 		"id": {"telemetry-db"}, "name": {"Telemetry database"}, "type": {"postgres"},
 		"url": {"postgres://db.local/vessel"}, "write_timeout": {"soon"},
 	})
@@ -1165,7 +1165,7 @@ func TestPostgresSinkFormParseErrorPreservesWriteTimeout(t *testing.T) {
 
 func TestMQTTSinkCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sinks", url.Values{
+	resp := postFormHTMX(t, srv, "/sinks", url.Values{
 		"id": {"mqtt-out"}, "name": {"MQTT output"}, "type": {"mqtt"},
 		"enabled": {"1"}, "url": {"mqtt://broker.local:1883"}, "topic": {"vessels/main/engine/json"},
 	})
@@ -1193,7 +1193,7 @@ func TestMQTTSinkCreateRoundTrip(t *testing.T) {
 
 func TestTCPGatewaySinkCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sinks", url.Values{
+	resp := postFormHTMX(t, srv, "/sinks", url.Values{
 		"id": {"gw-out"}, "name": {"YD gateway out"}, "type": {"tcp_gateway"},
 		"enabled": {"1"}, "address": {"192.168.4.1:1457"}, "format": {"ydraw"},
 	})
@@ -1230,7 +1230,7 @@ func TestTCPGatewaySinkCreateRoundTrip(t *testing.T) {
 // parseOptionalInt turn into 0, not an error.
 func TestFileSinkCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sinks", url.Values{
+	resp := postFormHTMX(t, srv, "/sinks", url.Values{
 		"id": {"navlog"}, "name": {"Nav log"}, "type": {"file"},
 		"enabled": {"1"}, "file_path": {"/data/nav.log"}, "format": {"ndjson"},
 	})
@@ -1270,7 +1270,7 @@ func TestFileSinkCreateRoundTrip(t *testing.T) {
 // the edit form as their literal values, not the defaults.
 func TestFileSinkMaxFileBytesAndMaxFilesRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sinks", url.Values{
+	resp := postFormHTMX(t, srv, "/sinks", url.Values{
 		"id": {"navlog"}, "name": {"Nav log"}, "type": {"file"},
 		"file_path": {"/data/nav.candump"}, "format": {"candump"},
 		"max_file_bytes": {"52428800"}, "max_files": {"3"},
@@ -1307,7 +1307,7 @@ func TestFileSinkMaxFileBytesAndMaxFilesRoundTrip(t *testing.T) {
 // validation failure follows (see TestSinkCreateValidationErrorRendersFormNot500).
 func TestFileSinkCreateRelativePathRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sinks", url.Values{
+	resp := postFormHTMX(t, srv, "/sinks", url.Values{
 		"id": {"navlog"}, "name": {"Nav log"}, "type": {"file"},
 		"file_path": {"relative/nav.log"}, "format": {"ndjson"},
 	})
@@ -1331,7 +1331,7 @@ func TestFileSinkCreateRelativePathRendersFormNot500(t *testing.T) {
 // for the connector form's buffer fields.
 func TestFileSinkNonNumericMaxFileBytesRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sinks", url.Values{
+	resp := postFormHTMX(t, srv, "/sinks", url.Values{
 		"id": {"navlog"}, "name": {"Nav log"}, "type": {"file"},
 		"file_path": {"/data/nav.log"}, "format": {"ndjson"},
 		"max_file_bytes": {"not-a-number"},
@@ -1355,7 +1355,7 @@ func TestFileSinkNonNumericMaxFileBytesRendersFormNot500(t *testing.T) {
 // — see forms.go).
 func TestFileSinkNonNumericMaxFilesRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sinks", url.Values{
+	resp := postFormHTMX(t, srv, "/sinks", url.Values{
 		"id": {"navlog"}, "name": {"Nav log"}, "type": {"file"},
 		"file_path": {"/data/nav.log"}, "format": {"ndjson"},
 		"max_files": {"not-a-number"},
@@ -1402,7 +1402,7 @@ func TestSinksPageShowsFilePathDetailForFileSink(t *testing.T) {
 func TestSourceCreateValidationErrorRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	// socketcan requires an interface; omit it.
-	resp := postForm(t, srv, "/sources", url.Values{
+	resp := postFormHTMX(t, srv, "/sources", url.Values{
 		"id": {"bad"}, "name": {"Bad Source"}, "type": {"socketcan"}, "dialog": {"1"},
 	})
 	mustStatus(t, resp, http.StatusOK)
@@ -1457,7 +1457,7 @@ func TestSourceCreateParseFormErrorRendersAlertNot500(t *testing.T) {
 
 func TestSourceCreateMalformedHeadersRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sources", url.Values{
+	resp := postFormHTMX(t, srv, "/sources", url.Values{
 		"id": {"sse1"}, "name": {"SSE Source"}, "type": {"http_sse"},
 		"url":     {"https://example.com/stream"},
 		"headers": {"not-a-valid-header-line"},
@@ -1481,7 +1481,7 @@ func TestSourceCreateExistingIDRendersFormNot500(t *testing.T) {
 		ID: "can0", Name: "Engine", Type: model.SourceSocketCAN, Interface: "can0",
 	}, true))
 
-	resp := postForm(t, srv, "/sources", url.Values{
+	resp := postFormHTMX(t, srv, "/sources", url.Values{
 		"id": {"can0"}, "name": {"Dup"}, "type": {"socketcan"}, "interface": {"can1"},
 	})
 	mustStatus(t, resp, http.StatusOK)
@@ -1493,7 +1493,7 @@ func TestSourceCreateExistingIDRendersFormNot500(t *testing.T) {
 
 func TestSinkCreateValidationErrorRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sinks", url.Values{
+	resp := postFormHTMX(t, srv, "/sinks", url.Values{
 		"id": {"bad"}, "name": {"Bad Sink"}, "type": {"tcp"}, "address": {"not-a-valid-address"},
 	})
 	mustStatus(t, resp, http.StatusOK)
@@ -1518,7 +1518,7 @@ func TestSourceDeleteAndDeleteInUse(t *testing.T) {
 	must(t, svc.PutSink(ctx, model.Sink{ID: "sink1", Name: "Sink One", Type: model.SinkTCP, Address: "127.0.0.1:9000"}, true))
 	must(t, svc.PutConnector(ctx, model.Connector{ID: "conn1", Name: "Conn One", SourceID: "src1", SinkID: "sink1"}, true))
 
-	resp := postForm(t, srv, "/sources/src1/delete", nil)
+	resp := postFormHTMX(t, srv, "/sources/src1/delete", nil)
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
 	if !strings.Contains(body, "conn1") || !strings.Contains(body, "alert-error") {
@@ -1534,7 +1534,7 @@ func TestSourceDeleteAndDeleteInUse(t *testing.T) {
 	}
 
 	must(t, svc.DeleteConnector(ctx, "conn1"))
-	resp2 := postForm(t, srv, "/sources/src1/delete", nil)
+	resp2 := postFormHTMX(t, srv, "/sources/src1/delete", nil)
 	mustStatus(t, resp2, http.StatusOK)
 	body2 := mustBody(t, resp2)
 	if !strings.Contains(body2, "alert-success") {
@@ -1558,7 +1558,7 @@ func TestSinkDeleteAndDeleteInUse(t *testing.T) {
 	must(t, svc.PutSink(ctx, model.Sink{ID: "sink1", Name: "Sink One", Type: model.SinkTCP, Address: "127.0.0.1:9000"}, true))
 	must(t, svc.PutConnector(ctx, model.Connector{ID: "conn1", Name: "Conn One", SourceID: "src1", SinkID: "sink1"}, true))
 
-	resp := postForm(t, srv, "/sinks/sink1/delete", nil)
+	resp := postFormHTMX(t, srv, "/sinks/sink1/delete", nil)
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
 	if !strings.Contains(body, "conn1") || !strings.Contains(body, "alert-error") {
@@ -1566,7 +1566,7 @@ func TestSinkDeleteAndDeleteInUse(t *testing.T) {
 	}
 
 	must(t, svc.DeleteConnector(ctx, "conn1"))
-	resp2 := postForm(t, srv, "/sinks/sink1/delete", nil)
+	resp2 := postFormHTMX(t, srv, "/sinks/sink1/delete", nil)
 	mustStatus(t, resp2, http.StatusOK)
 	body2 := mustBody(t, resp2)
 	if !strings.Contains(body2, "alert-success") {
@@ -1579,7 +1579,7 @@ func TestSinkDeleteAndDeleteInUse(t *testing.T) {
 
 func TestSourceDeleteUnknownID(t *testing.T) {
 	srv, _ := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sources/nope/delete", nil)
+	resp := postFormHTMX(t, srv, "/sources/nope/delete", nil)
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
 	if !strings.Contains(body, "alert-error") || !strings.Contains(body, "not found") {
@@ -1789,7 +1789,7 @@ func TestConnectorNewPageOpensCreateForm(t *testing.T) {
 	for _, want := range []string{
 		`<dialog class="entity-create-dialog entity-create-dialog-wide dialog" data-entity-create-dialog`,
 		`aria-labelledby="connector-create-dialog-title"`,
-		`id="connector-form-container"`,
+		`id="connector-dialog-form-container"`,
 		`type="hidden" name="dialog" value="1"`,
 		`data-entity-create-dialog-close`,
 	} {
@@ -1902,7 +1902,7 @@ func TestConnectorEditPageOpensEditForm(t *testing.T) {
 	for _, want := range []string{
 		`<dialog class="entity-create-dialog entity-create-dialog-wide dialog" data-entity-create-dialog`,
 		`aria-labelledby="connector-edit-dialog-title"`,
-		`id="connector-form-container"`,
+		`id="connector-dialog-form-container"`,
 		`type="hidden" name="dialog" value="1"`,
 		`value="NMEA Bridge"`,
 		`value="src1" selected`,
@@ -1962,7 +1962,7 @@ func TestConnectorCreateRoundTrip(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	seedSourceSink(t, svc)
 
-	resp := postForm(t, srv, "/connectors", url.Values{
+	resp := postFormHTMX(t, srv, "/connectors", url.Values{
 		"id": {"conn1"}, "name": {"NMEA Bridge"}, "source_id": {"src1"}, "sink_id": {"sink1"},
 		"enabled":      {"1"},
 		"filters":      {"msg.pgn == 127250\n\n  msg.priority < 4  \n"},
@@ -1998,7 +1998,7 @@ func TestConnectorCreateRoundTrip(t *testing.T) {
 // cookie, so a subsequent load never shows it again.
 func TestCreateFlashShownOnDashboardOnce(t *testing.T) {
 	srv, _ := newUIServerWithService(t)
-	resp := postForm(t, srv, "/sinks", url.Values{
+	resp := postFormHTMX(t, srv, "/sinks", url.Values{
 		"id": {"out1"}, "name": {"NMEA Out"}, "type": {"tcp"},
 		"enabled": {"1"}, "address": {"0.0.0.0:2000"},
 	})
@@ -2053,14 +2053,14 @@ func TestConnectorUpdateRoundTrip(t *testing.T) {
 		ID: "conn1", Name: "Old Name", SourceID: "src1", SinkID: "sink1",
 	}, true))
 
-	resp := postForm(t, srv, "/connectors/conn1", url.Values{
+	resp := postFormHTMX(t, srv, "/connectors/conn1", url.Values{
 		"id": {"conn1"}, "name": {"New Name"}, "source_id": {"src1"}, "sink_id": {"sink1"},
 		"max_age": {"90s"},
 	})
 	mustStatus(t, resp, http.StatusOK)
-	body := mustBody(t, resp)
-	if !strings.Contains(body, "New Name") {
-		t.Fatalf("update response missing new name:\n%s", body)
+	_ = mustBody(t, resp)
+	if got := resp.Header.Get("HX-Redirect"); got != "/connectors/conn1/" {
+		t.Fatalf("update redirect = %q", got)
 	}
 
 	got, err := svc.GetConnector(context.Background(), "conn1")
@@ -2155,7 +2155,7 @@ func TestConnectorMaxAgeParseErrorRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	seedSourceSink(t, svc)
 
-	resp := postForm(t, srv, "/connectors", url.Values{
+	resp := postFormHTMX(t, srv, "/connectors", url.Values{
 		"id": {"conn1"}, "name": {"Bad Connector"}, "source_id": {"src1"}, "sink_id": {"sink1"},
 		"max_age": {"notaduration"},
 	})
@@ -2184,7 +2184,7 @@ func TestConnectorMaxAgeParseErrorPreservesSelectionsAndFilters(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	seedSourceSink(t, svc)
 
-	resp := postForm(t, srv, "/connectors", url.Values{
+	resp := postFormHTMX(t, srv, "/connectors", url.Values{
 		"id": {"conn1"}, "name": {"Bad Connector"}, "source_id": {"src1"}, "sink_id": {"sink1"},
 		"filters": {"msg.pgn == 127250\nmsg.priority == 4"},
 		"max_age": {"notaduration"},
@@ -2211,7 +2211,7 @@ func TestConnectorCreateValidationErrorRendersFormNot500(t *testing.T) {
 	srv, svc := newUIServerWithService(t)
 	seedSourceSink(t, svc)
 	// source_id is required (model.Connector.Validate); omit it.
-	resp := postForm(t, srv, "/connectors", url.Values{
+	resp := postFormHTMX(t, srv, "/connectors", url.Values{
 		"id": {"conn1"}, "name": {"No Source"}, "sink_id": {"sink1"},
 	})
 	mustStatus(t, resp, http.StatusOK)
@@ -2234,7 +2234,7 @@ func TestConnectorCreateExistingIDRendersFormNot500(t *testing.T) {
 		ID: "conn1", Name: "Existing", SourceID: "src1", SinkID: "sink1",
 	}, true))
 
-	resp := postForm(t, srv, "/connectors", url.Values{
+	resp := postFormHTMX(t, srv, "/connectors", url.Values{
 		"id": {"conn1"}, "name": {"Dup"}, "source_id": {"src1"}, "sink_id": {"sink1"},
 	})
 	mustStatus(t, resp, http.StatusOK)
@@ -2250,7 +2250,7 @@ func TestConnectorDeleteRoundTripAndUnknownID(t *testing.T) {
 	ctx := context.Background()
 	must(t, svc.PutConnector(ctx, model.Connector{ID: "conn1", Name: "Conn One", SourceID: "src1", SinkID: "sink1"}, true))
 
-	resp := postForm(t, srv, "/connectors/conn1/delete", nil)
+	resp := postFormHTMX(t, srv, "/connectors/conn1/delete", nil)
 	mustStatus(t, resp, http.StatusOK)
 	body := mustBody(t, resp)
 	if !strings.Contains(body, "alert-success") {
@@ -2269,7 +2269,7 @@ func TestConnectorDeleteRoundTripAndUnknownID(t *testing.T) {
 	// No ErrInUse case for connector delete (config.Service:
 	// "nothing else references a connector") — the only failure mode left
 	// to exercise is unknown id.
-	resp2 := postForm(t, srv, "/connectors/nope/delete", nil)
+	resp2 := postFormHTMX(t, srv, "/connectors/nope/delete", nil)
 	mustStatus(t, resp2, http.StatusOK)
 	body2 := mustBody(t, resp2)
 	if !strings.Contains(body2, "alert-error") || !strings.Contains(body2, "not found") {

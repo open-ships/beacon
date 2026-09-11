@@ -71,7 +71,7 @@ var pages = map[string]*template.Template{
 // template set (unlike pages above, these are never cloned from
 // baseLayout — a fragment is never wrapped in layout.html). This is safe
 // only because every {{define}} name across every frag_*.html file is
-// unique within the set (source-panel/source-panel-oob/source-form/
+// unique within the set (source-panel/source-form/
 // source-type-fields and their sink-*/connector-* counterparts, plus
 // filter-validate, connector-stats, and dashboard-content) — html/template
 // panics at parse time on a duplicate define name in one set, so a future

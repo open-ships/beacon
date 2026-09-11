@@ -28,6 +28,21 @@ beacon --db beacon.db
 
 Open `http://localhost:2112` in a browser.
 
+Administration binds to `127.0.0.1:2112` by default. The UI, API, and MCP can
+read credentials and change the appliance; they have no built-in login.
+For remote access, run this command on your workstation:
+
+```bash
+ssh -N -L 12112:127.0.0.1:2112 operator@beacon-host
+```
+
+Open `http://127.0.0.1:12112`. SSH supplies authentication and encryption.
+Existing installations that need direct LAN access must explicitly set
+`--admin-address` and protect the listener with network access controls.
+
+Forms also work without JavaScript. After selecting a source or sink type,
+select **Update type fields** before entering its settings, then **Save**.
+
 ## Add the CAN source
 
 1. Open **Sources**.

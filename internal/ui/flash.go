@@ -18,10 +18,14 @@ const flashCookie = "beacon_flash"
 // to navigate the whole browser to dest. htmx honours the HX-Redirect
 // response header with a full page load, so dest receives the flash cookie
 // and consumes it. The create handlers use this instead of swapping a
-// fragment in place.
-func flashRedirect(w http.ResponseWriter, msg, dest string) {
+// fragment in place. Native submissions use a 303 redirect to the same target.
+func flashRedirect(w http.ResponseWriter, r *http.Request, msg, dest string) {
 	setFlash(w, msg)
-	w.Header().Set("HX-Redirect", dest)
+	if isHTMXRequest(r) {
+		w.Header().Set("HX-Redirect", dest)
+	} else {
+		http.Redirect(w, r, dest, http.StatusSeeOther)
+	}
 }
 
 func setFlash(w http.ResponseWriter, msg string) {

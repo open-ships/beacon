@@ -7,9 +7,10 @@
      placeholders so the operator can see what "blank" actually means
      without this template hardcoding the numbers. */}}
 {{define "sink-type-fields"}}
+<input type="hidden" name="rendered_type" value="{{.Type}}">
 {{if eq .Type "socketcan"}}
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Interface</legend>
+  <label class="fieldset-legend" for="sink-interface">Interface</label>
   <input type="text" id="sink-interface" name="interface" list="sink-can-ifaces"
          value="{{.Interface}}" class="input w-full" required>
   <datalist id="sink-can-ifaces">
@@ -18,7 +19,7 @@
 </fieldset>
 {{else if eq .Type "usbcan"}}
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Port</legend>
+  <label class="fieldset-legend" for="sink-port">Port</label>
   <input type="text" id="sink-port" name="port" list="sink-serial-ports"
          value="{{.Port}}" class="input w-full" required>
   <datalist id="sink-serial-ports">
@@ -27,88 +28,88 @@
 </fieldset>
 {{else if or (eq .Type "http_sse") (eq .Type "http_ws")}}
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Path</legend>
+  <label class="fieldset-legend" for="sink-path">Path</label>
   <input type="text" id="sink-path" name="path" value="{{.Path}}"
          placeholder="/nmea/out" class="input w-full" required>
 </fieldset>
 {{else if eq .Type "http_post"}}
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Endpoint URL</legend>
+  <label class="fieldset-legend" for="sink-url">Endpoint URL</label>
   <input type="url" id="sink-url" name="url" value="{{.URL}}"
-         placeholder="https://api.example.com/v1/envelopes" class="input w-full" required>
-  <p class="text-xs opacity-70">Beacon sends each available batch as a JSON array and confirms it after a 2xx response. Redirects are not followed; valid Retry-After responses extend the retry delay.</p>
+         placeholder="https://api.example.com/v1/envelopes" class="input w-full" required aria-describedby="sink-url-help-1">
+  <p class="text-xs opacity-70" id="sink-url-help-1">Beacon sends each available batch as a JSON array and confirms it after a 2xx response. Redirects are not followed; valid Retry-After responses extend the retry delay.</p>
 </fieldset>
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Maximum envelopes per request</legend>
+  <label class="fieldset-legend" for="sink-batch-size">Maximum envelopes per request</label>
   <input type="number" id="sink-batch-size" name="batch_size" value="{{.BatchSize}}"
-         placeholder="{{.DefaultHTTPPostBatchSize}}" class="input w-full" min="1" max="{{.MaxHTTPPostBatchSize}}">
-  <p class="text-xs opacity-70">Blank = {{.DefaultHTTPPostBatchSize}}. Short batches send immediately; Beacon does not wait to fill a request.</p>
+         placeholder="{{.DefaultHTTPPostBatchSize}}" class="input w-full" min="1" max="{{.MaxHTTPPostBatchSize}}" aria-describedby="sink-batch-size-help-1">
+  <p class="text-xs opacity-70" id="sink-batch-size-help-1">Blank = {{.DefaultHTTPPostBatchSize}}. Short batches send immediately; Beacon does not wait to fill a request.</p>
 </fieldset>
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Request timeout</legend>
+  <label class="fieldset-legend" for="sink-request-timeout">Request timeout</label>
   <input type="text" id="sink-request-timeout" name="request_timeout" value="{{.RequestTimeout}}"
-         placeholder="{{.DefaultHTTPPostTimeout}}" class="input w-full">
-  <p class="text-xs opacity-70">Go duration such as 5s or 1m. Blank = {{.DefaultHTTPPostTimeout}}.</p>
+         placeholder="{{.DefaultHTTPPostTimeout}}" class="input w-full" aria-describedby="sink-request-timeout-help-1">
+  <p class="text-xs opacity-70" id="sink-request-timeout-help-1">Go duration such as 5s or 1m. Blank = {{.DefaultHTTPPostTimeout}}.</p>
 </fieldset>
 <fieldset class="fieldset">
   <legend class="fieldset-legend">Payload encoding</legend>
   <label class="label cursor-pointer justify-start gap-2">
-    <input type="checkbox" id="sink-gzip" name="gzip" value="1" class="checkbox" {{if .Gzip}}checked{{end}}>
+    <input type="checkbox" id="sink-gzip" name="gzip" value="1" class="checkbox" {{if .Gzip}}checked{{end}} aria-describedby="sink-gzip-help-1">
     <span>Compress request payloads with gzip</span>
   </label>
-  <p class="text-xs opacity-70">Adds <code>Content-Encoding: gzip</code>. Batch size still counts envelopes, not bytes.</p>
+  <p class="text-xs opacity-70" id="sink-gzip-help-1">Adds <code>Content-Encoding: gzip</code>. Batch size still counts envelopes, not bytes.</p>
 </fieldset>
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Authentication and custom headers</legend>
+  <label class="fieldset-legend" for="sink-headers">Authentication and custom headers</label>
   <textarea id="sink-headers" name="headers" rows="4" class="textarea w-full"
             autocomplete="off" spellcheck="false"
-            placeholder="Authorization: Bearer token&#10;X-API-Key: secret">{{.HeadersText}}</textarea>
-  <p class="text-xs opacity-70">One “Header-Name: value” per line. Values are stored in Beacon configuration; protect its database and exports. Overviews show only the header count.</p>
+            placeholder="Authorization: Bearer token&#10;X-API-Key: secret" aria-describedby="sink-headers-help-1">{{.HeadersText}}</textarea>
+  <p class="text-xs opacity-70" id="sink-headers-help-1">One “Header-Name: value” per line. Values are stored in Beacon configuration; protect its database and exports. Overviews show only the header count.</p>
 </fieldset>
 {{else if eq .Type "tcp"}}
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Listen address</legend>
+  <label class="fieldset-legend" for="sink-address">Listen address</label>
   <input type="text" id="sink-address" name="address" value="{{.Address}}"
          placeholder="0.0.0.0:2000" class="input w-full" required>
 </fieldset>
 {{else if eq .Type "mqtt"}}
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Broker URL</legend>
+  <label class="fieldset-legend" for="sink-url">Broker URL</label>
   <input type="text" id="sink-url" name="url" value="{{.URL}}"
          placeholder="mqtt://broker.local:1883" class="input w-full" required>
 </fieldset>
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Topic</legend>
+  <label class="fieldset-legend" for="sink-topic">Topic</label>
   <input type="text" id="sink-topic" name="topic" value="{{.Topic}}"
          placeholder="vessels/main/engine/json" class="input w-full" required>
 </fieldset>
 {{else if eq .Type "postgres"}}
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Connection URL</legend>
+  <label class="fieldset-legend" for="sink-url">Connection URL</label>
   <input type="url" id="sink-url" name="url" value="{{.URL}}"
          placeholder="postgresql://beacon:password@db.local:5432/vessel" class="input w-full"
-         autocomplete="off" spellcheck="false" required>
-  <p class="text-xs opacity-70">Use a <code>postgres://</code> or <code>postgresql://</code> URL. Credentials are stored in Beacon configuration and omitted from sink overview pages.</p>
+         autocomplete="off" spellcheck="false" required aria-describedby="sink-url-help-1">
+  <p class="text-xs opacity-70" id="sink-url-help-1">Use a <code>postgres://</code> or <code>postgresql://</code> URL. Credentials are stored in Beacon configuration and omitted from sink overview pages.</p>
 </fieldset>
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Destination table</legend>
+  <label class="fieldset-legend" for="sink-postgres-table">Destination table</label>
   <input type="text" id="sink-postgres-table" name="table" value="{{.Table}}"
          placeholder="{{.DefaultPostgresTable}}" class="input w-full" spellcheck="false"
          hx-get="/frag/sink-postgres-ddl" hx-trigger="input changed delay:250ms"
-         hx-include="closest form" hx-target="#sink-postgres-ddl" hx-swap="outerHTML">
-  <p class="text-xs opacity-70">A table name or <code>schema.table</code>. Blank = <code>{{.DefaultPostgresTable}}</code>; the schema must already exist.</p>
+         hx-include="closest form" hx-params="table,timescaledb,auto_create_table" hx-target="#sink-postgres-ddl" hx-swap="outerHTML" aria-describedby="sink-postgres-table-help-1">
+  <p class="text-xs opacity-70" id="sink-postgres-table-help-1">A table name or <code>schema.table</code>. Blank = <code>{{.DefaultPostgresTable}}</code>; the schema must already exist.</p>
 </fieldset>
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Maximum envelopes per write</legend>
+  <label class="fieldset-legend" for="sink-postgres-batch-size">Maximum envelopes per write</label>
   <input type="number" id="sink-postgres-batch-size" name="batch_size" value="{{.BatchSize}}"
-         placeholder="{{.DefaultPostgresBatchSize}}" class="input w-full" min="1" max="{{.MaxPostgresBatchSize}}">
-  <p class="text-xs opacity-70">Blank = {{.DefaultPostgresBatchSize}}. Each batch is one atomic, confirmed database write.</p>
+         placeholder="{{.DefaultPostgresBatchSize}}" class="input w-full" min="1" max="{{.MaxPostgresBatchSize}}" aria-describedby="sink-postgres-batch-size-help-1">
+  <p class="text-xs opacity-70" id="sink-postgres-batch-size-help-1">Blank = {{.DefaultPostgresBatchSize}}. Each batch is one atomic, confirmed database write.</p>
 </fieldset>
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Write timeout</legend>
+  <label class="fieldset-legend" for="sink-postgres-write-timeout">Write timeout</label>
   <input type="text" id="sink-postgres-write-timeout" name="write_timeout" value="{{.WriteTimeout}}"
-         placeholder="{{.DefaultPostgresTimeout}}" class="input w-full">
-  <p class="text-xs opacity-70">Go duration such as 5s or 1m. Blank = {{.DefaultPostgresTimeout}}.</p>
+         placeholder="{{.DefaultPostgresTimeout}}" class="input w-full" aria-describedby="sink-postgres-write-timeout-help-1">
+  <p class="text-xs opacity-70" id="sink-postgres-write-timeout-help-1">Go duration such as 5s or 1m. Blank = {{.DefaultPostgresTimeout}}.</p>
 </fieldset>
 <fieldset class="fieldset">
   <legend class="fieldset-legend">Database engine</legend>
@@ -116,10 +117,10 @@
     <input type="checkbox" id="sink-timescaledb" name="timescaledb" value="1" class="checkbox"
            {{if .TimescaleDB}}checked{{end}}
            hx-get="/frag/sink-postgres-ddl" hx-trigger="change"
-           hx-include="closest form" hx-target="#sink-postgres-ddl" hx-swap="outerHTML">
+           hx-include="closest form" hx-params="table,timescaledb,auto_create_table" hx-target="#sink-postgres-ddl" hx-swap="outerHTML" aria-describedby="sink-timescaledb-help-1">
     <span>Use a TimescaleDB hypertable</span>
   </label>
-  <p class="text-xs opacity-70">Partitions on <code>observed_at</code>. The TimescaleDB extension must already be installed in this database.</p>
+  <p class="text-xs opacity-70" id="sink-timescaledb-help-1">Partitions on <code>observed_at</code>. The TimescaleDB extension must already be installed in this database.</p>
 </fieldset>
 <fieldset class="fieldset">
   <legend class="fieldset-legend">Table management</legend>
@@ -127,46 +128,46 @@
     <input type="checkbox" id="sink-auto-create-table" name="auto_create_table" value="1" class="checkbox"
            {{if .AutoCreateTable}}checked{{end}}
            hx-get="/frag/sink-postgres-ddl" hx-trigger="change"
-           hx-include="closest form" hx-target="#sink-postgres-ddl" hx-swap="outerHTML">
+           hx-include="closest form" hx-params="table,timescaledb,auto_create_table" hx-target="#sink-postgres-ddl" hx-swap="outerHTML" aria-describedby="sink-auto-create-table-help-1">
     <span>Automatically create and verify the table</span>
   </label>
-  <p class="text-xs opacity-70">When disabled, Beacon waits for the table and recovers automatically after an operator creates it.</p>
+  <p class="text-xs opacity-70" id="sink-auto-create-table-help-1">When disabled, Beacon waits for the table and recovers automatically after an operator creates it.</p>
 </fieldset>
 {{template "sink-postgres-ddl" .}}
 {{else if eq .Type "file"}}
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">File path</legend>
+  <label class="fieldset-legend" for="sink-file-path">File path</label>
   <input type="text" id="sink-file-path" name="file_path" value="{{.FilePath}}"
          placeholder="/data/nav.log" class="input w-full" required>
 </fieldset>
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Format</legend>
+  <label class="fieldset-legend" for="sink-format">Format</label>
   <select id="sink-format" name="format" class="select w-full">
     <option value="ndjson" {{if or (eq .Format "ndjson") (eq .Format "")}}selected{{end}}>ndjson</option>
     <option value="candump" {{if eq .Format "candump"}}selected{{end}}>candump</option>
   </select>
 </fieldset>
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Max file bytes</legend>
+  <label class="fieldset-legend" for="sink-max-file-bytes">Max file bytes</label>
   <input type="number" id="sink-max-file-bytes" name="max_file_bytes" value="{{.MaxFileBytes}}"
-         placeholder="{{.DefaultMaxFileBytes}}" class="input w-full" min="0">
-  <p class="text-xs opacity-70">0 or blank = default ({{.DefaultMaxFileBytes}} bytes)</p>
+         placeholder="{{.DefaultMaxFileBytes}}" class="input w-full" min="0" aria-describedby="sink-max-file-bytes-help-1">
+  <p class="text-xs opacity-70" id="sink-max-file-bytes-help-1">0 or blank = default ({{.DefaultMaxFileBytes}} bytes)</p>
 </fieldset>
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Max files</legend>
+  <label class="fieldset-legend" for="sink-max-files">Max files</label>
   <input type="number" id="sink-max-files" name="max_files" value="{{.MaxFiles}}"
-         placeholder="{{.DefaultMaxFiles}}" class="input w-full" min="0">
-  <p class="text-xs opacity-70">0 or blank = default ({{.DefaultMaxFiles}} files)</p>
+         placeholder="{{.DefaultMaxFiles}}" class="input w-full" min="0" aria-describedby="sink-max-files-help-1">
+  <p class="text-xs opacity-70" id="sink-max-files-help-1">0 or blank = default ({{.DefaultMaxFiles}} files)</p>
 </fieldset>
 {{else if eq .Type "tcp_gateway"}}
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Gateway address</legend>
+  <label class="fieldset-legend" for="sink-gateway-address">Gateway address</label>
   <input type="text" id="sink-gateway-address" name="address" value="{{.Address}}"
-         placeholder="192.168.4.1:1457" class="input w-full" required>
-  <p class="text-xs opacity-70">Transmits onto the remote NMEA 2000 bus through a Yacht Devices or Actisense TCP gateway.</p>
+         placeholder="192.168.4.1:1457" class="input w-full" required aria-describedby="sink-gateway-address-help-1">
+  <p class="text-xs opacity-70" id="sink-gateway-address-help-1">Transmits onto the remote NMEA 2000 bus through a Yacht Devices or Actisense TCP gateway.</p>
 </fieldset>
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Format</legend>
+  <label class="fieldset-legend" for="sink-gateway-format">Format</label>
   <select id="sink-gateway-format" name="format" class="select w-full">
     <option value="ydraw" {{if or (eq .Format "ydraw") (eq .Format "")}}selected{{end}}>ydraw (Yacht Devices RAW)</option>
     <option value="actisense" {{if eq .Format "actisense"}}selected{{end}}>actisense</option>

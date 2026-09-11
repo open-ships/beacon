@@ -1,7 +1,8 @@
 # Use the API
 
-The web UI uses the REST API on the admin port. The default admin port is
-`2112`. Scripts and agents can use the same API.
+The web UI and REST API share the same configuration validation and storage.
+The default admin address is `127.0.0.1:2112`. Scripts and agents can use the
+API locally or through the SSH tunnel described in Getting started.
 
 Use these onboard references for the current Beacon version:
 
@@ -10,6 +11,29 @@ Use these onboard references for the current Beacon version:
 
 Use the onboard OpenAPI document as the source of truth for request and
 response schemas.
+
+## Configuration contract
+
+The schema enumerates transport types, bridge modes, type-dependent required
+fields, and limits. Each property describes its meaning and default behavior.
+Text limits use UTF-8 bytes; `x-max-bytes` records that budget because JSON
+Schema's `maxLength` counts Unicode characters. Cross-entity constraints, CEL
+compilation, URL validity, and duration ranges are also checked on each write.
+
+Duration fields (`request_timeout`, `write_timeout`, and `buffer.max_age`) are
+strings such as `"10s"`, `"1m30s"`, and `"24h"`, not numeric nanoseconds. Omitted
+or `"0s"` values use the default described for that field. An exported document
+uses the same representation and can be imported without conversion.
+
+`PUT /api/v1/{sources|sinks|connectors}/{id}` upserts a complete entity; its
+body ID must match the path. Read it first when retaining existing fields.
+Invalid configuration returns a structured HTTP 422 error and is not persisted.
+Protect exports: they contain configured headers and connection credentials.
+
+Unsafe requests from foreign browser origins are rejected with HTTP 403,
+including bodyless commissioning operations. CLI clients without browser
+Origin/Fetch Metadata headers remain supported. Origin checks do not provide
+authentication; protect any listener exposed beyond loopback.
 
 [![Beacon's embedded interactive API reference showing resource operations, the configuration export endpoint, a curl example, and response schema](/assets/manual/api-reference.png)](/assets/manual/api-reference.png)
 

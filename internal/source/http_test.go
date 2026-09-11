@@ -266,3 +266,33 @@ func TestWSDialerReceives(t *testing.T) {
 		t.Fatal("no envelope from WS dialer")
 	}
 }
+
+func TestHTTPSourceRedirectsDoNotForwardCredentials(t *testing.T) {
+	for name, run := range map[string]runFunc{"sse": runSSE, "websocket": runWS} {
+		t.Run(name, func(t *testing.T) {
+			var leaked atomic.Bool
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				leaked.Store(true)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer target.Close()
+			for _, status := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+				origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Header.Get("X-API-Key") != "test-only-key" {
+						t.Error("configured endpoint did not receive its credential")
+					}
+					http.Redirect(w, r, target.URL, status)
+				}))
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				connected := false
+				err := run(ctx, model.Source{URL: origin.URL, Headers: map[string]string{"X-API-Key": "test-only-key"}},
+					func(*msg.Envelope) {}, func() { connected = true })
+				cancel()
+				origin.Close()
+				if err == nil || connected || leaked.Load() {
+					t.Fatalf("redirect %d: err=%v connected=%v target contacted=%v", status, err, connected, leaked.Load())
+				}
+			}
+		})
+	}
+}

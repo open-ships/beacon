@@ -66,8 +66,10 @@ func New(svc *config.Service, reg *stats.Registry, version string, log *slog.Log
 	}
 
 	router := chi.NewRouter()
+	router.Use(http.NewCrossOriginProtection().Handler)
 
 	humaConfig := huma.DefaultConfig("beacon config API", version)
+	configureSchemas(humaConfig.Components.Schemas)
 	// Served at /api/openapi.json (and .yaml); huma appends the extension.
 	humaConfig.OpenAPIPath = "/api/openapi"
 	// Disable huma's built-in docs UI: it pulls its renderer from a CDN,

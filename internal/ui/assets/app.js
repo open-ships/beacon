@@ -1381,6 +1381,7 @@
       function requestClose(event) {
         if (event) event.preventDefault();
         var container = dialog.closest("#entity-create-dialog-container");
+        cleanupUI(dialog);
         if (dialog.open && typeof dialog.close === "function") dialog.close();
         if (container) container.replaceChildren();
         else dialog.remove();
@@ -1390,12 +1391,12 @@
         entityDialogReturnFocus = null;
       }
 
-      dialog.querySelectorAll("[data-entity-create-dialog-close]").forEach(function (button) {
-        button.addEventListener("click", requestClose);
-      });
       dialog.addEventListener("cancel", requestClose);
+      // Delegate from the stable dialog: validation replaces the form controls.
       dialog.addEventListener("click", function (event) {
-        if (event.target === dialog) requestClose(event);
+        if (event.target === dialog || event.target.closest("[data-entity-create-dialog-close]")) {
+          requestClose(event);
+        }
       });
 
       if (typeof dialog.showModal === "function") {
@@ -1611,6 +1612,39 @@
     initCopyControls(document);
     initDAGs(document);
   }
+  function requestFeedback(event, failed) {
+    var detail = event.detail || {};
+    var trigger = detail.elt || event.target;
+    if (!trigger || !trigger.closest) return;
+    var form = trigger.closest(".entity-form");
+    var feedback = form ? form.querySelector("[data-request-feedback]") : document.getElementById("request-feedback");
+    if (!feedback) return;
+    var path = detail.requestConfig && detail.requestConfig.path || trigger.getAttribute("hx-get") || trigger.getAttribute("hx-post") || "";
+    if (!failed) {
+      if (form || feedback.dataset.requestPath === path) {
+        feedback.hidden = true;
+        feedback.textContent = "";
+      }
+      return;
+    }
+    var polling = trigger.matches("[data-live-poll]");
+    feedback.textContent = polling
+      ? "Live status could not refresh. Values may be out of date. Retrying automatically."
+      : form && trigger === form
+        ? "Save could not be confirmed. Your entries are kept. Check the current configuration before retrying."
+        : "The requested content could not load. Check your connection and try again.";
+    feedback.dataset.requestPath = path;
+    feedback.hidden = false;
+    if (form && trigger === form) feedback.focus();
+  }
+
+  ["htmx:sendError", "htmx:timeout"].forEach(function (name) {
+    document.addEventListener(name, function (event) { requestFeedback(event, true); });
+  });
+  document.addEventListener("htmx:afterRequest", function (event) {
+    requestFeedback(event, !event.detail.successful);
+  });
+
   document.addEventListener("htmx:beforeRequest", function (event) {
     var trigger = event.detail && event.detail.elt;
     if (trigger && trigger.matches("[data-live-poll]") && document.hidden) {
@@ -1634,8 +1668,7 @@
     initCopyControls(root);
     initDAGs(root);
   });
-  document.addEventListener("htmx:beforeCleanupElement", function (event) {
-    var root = event.detail && event.detail.elt;
+  function cleanupUI(root) {
     if (!root || !root.querySelectorAll) return;
     cleanupDAGs(root);
     var editors = Array.prototype.slice.call(root.querySelectorAll("[data-cel-autocomplete]"));
@@ -1648,6 +1681,10 @@
     panels.forEach(function (panel) {
       if (typeof panel.stopStreamCapture === "function") panel.stopStreamCapture();
     });
+  }
+
+  document.addEventListener("htmx:beforeCleanupElement", function (event) {
+    cleanupUI(event.detail && event.detail.elt);
   });
   document.addEventListener("htmx:afterRequest", function (event) {
     var trigger = event.detail && event.detail.elt;

@@ -14,7 +14,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strconv"
 
 	"github.com/open-ships/beacon/internal/bus"
@@ -64,7 +63,7 @@ var assetsFS embed.FS
 // The returned handler is an *http.ServeMux serving root-level UI routes
 // such as GET /dashboard and GET /sources, plus GET /assets/. internal/app
 // mounts it as the "/" fallback after registering the API, MCP, health, and
-// metrics endpoints. sameOriginGuard protects its state-changing routes.
+// metrics endpoints. CrossOriginProtection protects its state-changing routes.
 func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, devices func() []bus.DeviceInfo, version string, log *slog.Logger, runtimeInfo ...RuntimeInfo) http.Handler {
 	if log == nil {
 		log = slog.Default()
@@ -147,8 +146,9 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 	mux.HandleFunc("GET /frag/sources/{id}/device-rows", handleSourceDeviceRowsFrag(svc, reg, statuses, log))
 	mux.HandleFunc("GET /ui/streams/sources/{id}", handleComponentStream(svc, reg, "source", log))
 	mux.HandleFunc("GET /frag/source-type-fields", handleSourceTypeFieldsFrag(log))
-	mux.HandleFunc("POST /sources", handleSourceCreate(svc, log))
-	mux.HandleFunc("POST /sources/{id}", handleSourceUpdate(svc, log))
+	mux.HandleFunc("POST /frag/source-type-fields", handleSourceTypeFieldsFrag(log))
+	mux.HandleFunc("POST /sources", handleSourceCreate(svc, assetVersion, log))
+	mux.HandleFunc("POST /sources/{id}", handleSourceUpdate(svc, assetVersion, log))
 	mux.HandleFunc("POST /sources/{id}/delete", handleSourceDelete(svc, log))
 
 	// Sinks: exactly parallel to sources above.
@@ -160,9 +160,10 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 	mux.HandleFunc("GET /frag/sinks/{id}/overview", handleSinkOverviewFrag(svc, reg, statuses, log))
 	mux.HandleFunc("GET /ui/streams/sinks/{id}", handleComponentStream(svc, reg, "sink", log))
 	mux.HandleFunc("GET /frag/sink-type-fields", handleSinkTypeFieldsFrag(log))
+	mux.HandleFunc("POST /frag/sink-type-fields", handleSinkTypeFieldsFrag(log))
 	mux.HandleFunc("GET /frag/sink-postgres-ddl", handleSinkPostgresDDLFrag(log))
-	mux.HandleFunc("POST /sinks", handleSinkCreate(svc, log))
-	mux.HandleFunc("POST /sinks/{id}", handleSinkUpdate(svc, log))
+	mux.HandleFunc("POST /sinks", handleSinkCreate(svc, assetVersion, log))
+	mux.HandleFunc("POST /sinks/{id}", handleSinkUpdate(svc, assetVersion, log))
 	mux.HandleFunc("POST /sinks/{id}/delete", handleSinkDelete(svc, log))
 
 	// Connectors: the list/add/edit/delete pages parallel sources/sinks
@@ -178,8 +179,8 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 	mux.HandleFunc("POST /frag/validate-filters", handleValidateFiltersFrag(svc, log))
 	mux.HandleFunc("GET /frag/connectors/{id}/stats", handleConnectorStatsFrag(svc, reg, log))
 	mux.HandleFunc("GET /frag/connectors/{id}/overview", handleConnectorOverviewFrag(svc, reg, statuses, log))
-	mux.HandleFunc("POST /connectors", handleConnectorCreate(svc, reg, statuses, log))
-	mux.HandleFunc("POST /connectors/{id}", handleConnectorUpdate(svc, reg, statuses, log))
+	mux.HandleFunc("POST /connectors", handleConnectorCreate(svc, reg, statuses, assetVersion, log))
+	mux.HandleFunc("POST /connectors/{id}", handleConnectorUpdate(svc, reg, statuses, assetVersion, log))
 	mux.HandleFunc("POST /connectors/{id}/delete", handleConnectorDelete(svc, reg, statuses, log))
 
 	mux.HandleFunc("GET /config", handleConfigPage(svc, assetVersion, log))
@@ -207,7 +208,7 @@ func Handler(svc *config.Service, reg *stats.Registry, statuses func() []supervi
 	fileServer := http.StripPrefix("/assets/", http.FileServer(http.FS(assets)))
 	mux.Handle("GET /assets/", withImmutableCache(fileServer))
 
-	return sameOriginGuard(mux)
+	return http.NewCrossOriginProtection().Handler(mux)
 }
 
 func assetCacheVersion(version string) string {
@@ -233,61 +234,6 @@ func assetCacheVersion(version string) string {
 		return "dev"
 	}
 	return "dev-" + hex.EncodeToString(h.Sum(nil))[:12]
-}
-
-// sameOriginGuard wraps next so every POST request is checked against a
-// same-origin policy before reaching next — beacon's only defense against
-// cross-site form/fetch submissions forging a write through the UI's
-// state-changing endpoints (POST /sources, /sinks, /connectors,
-// and their .../delete and /frag/validate-filters counterparts). GET
-// requests (and every other method) pass through untouched: they're not
-// state-changing, so there's nothing here for a forged cross-site request
-// to gain by making one.
-//
-// Two signals are checked, in order, either sufficient on its own to allow
-// the request through:
-//
-//   - Origin, sent by every fetch/XHR/form POST a modern browser makes,
-//     same-origin or not. If present, its host must equal the request's own
-//     Host or the request is rejected — this is the primary signal, and the
-//     one every browser that matters sends.
-//   - Sec-Fetch-Site, checked only when Origin is absent (some same-origin
-//     requests omit Origin per the Fetch spec, and a handful of older
-//     browsers never send it at all): if present, it must read
-//     "same-origin" or "none" (a user-typed URL, bookmark, or browser
-//     extension — not a cross-site page) or the request is rejected.
-//
-// A request carrying NEITHER header — curl, most non-browser HTTP clients,
-// and any htmx request a stripping proxy scrubbed both headers from — is
-// allowed. beacon has no cookie or bearer-token auth on /* for such a
-// client to have forged in the first place, so a headerless request is
-// exactly as trusted as one that proves same-origin.
-func sameOriginGuard(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && !sameOrigin(r) {
-			http.Error(w, "cross-origin POST forbidden", http.StatusForbidden)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// sameOrigin implements sameOriginGuard's Origin/Sec-Fetch-Site check; see
-// its doc comment for the full rationale.
-//
-// The Origin comparison is host:port only, deliberately ignoring scheme:
-// beacon serves plain HTTP and has no view of any TLS-terminating proxy in
-// front of it, so requiring a scheme match would break legitimate setups
-// without blocking anything a host mismatch doesn't already block.
-func sameOrigin(r *http.Request) bool {
-	if origin := r.Header.Get("Origin"); origin != "" {
-		u, err := url.Parse(origin)
-		return err == nil && u.Host == r.Host
-	}
-	if sfs := r.Header.Get("Sec-Fetch-Site"); sfs != "" {
-		return sfs == "same-origin" || sfs == "none"
-	}
-	return true
 }
 
 // withImmutableCache marks every response next serves as safe for clients

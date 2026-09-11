@@ -274,3 +274,16 @@ func TestRunImportInvalidJSON(t *testing.T) {
 		t.Fatal("runImport with malformed JSON: want error, got nil")
 	}
 }
+
+func TestAdminDefaultsToLoopbackAndAllowsExplicitNetworkBinding(t *testing.T) {
+	cmd := newRootCmd()
+	if got := cmd.Flags().Lookup("admin-address").DefValue; got != "127.0.0.1:2112" {
+		t.Fatalf("default admin address = %q", got)
+	}
+	if err := cmd.ParseFlags([]string{"--admin-address", "192.0.2.1:2112"}); err != nil {
+		t.Fatal(err)
+	}
+	if adminAddr != "192.0.2.1:2112" {
+		t.Fatalf("explicit admin address = %q", adminAddr)
+	}
+}

@@ -3,7 +3,6 @@ cmd    := "./cmd/beacon"
 image  := "beacon"
 version := `git describe --tags --always --dirty 2>/dev/null || echo "dev"`
 golangci_lint_version := "v2.12.0"
-secure_go_toolchain := "go1.25.12"
 govulncheck_version := "v1.5.0"
 gosec_version := "v2.27.1"
 air_version := "v1.64.5"
@@ -98,8 +97,8 @@ lint:
 
 # run security review (vulnerability scan + static analysis)
 secure:
-    GOTOOLCHAIN={{secure_go_toolchain}} govulncheck ./...
-    GOTOOLCHAIN={{secure_go_toolchain}} gosec -exclude-generated -exclude-dir=.claude ./...
+    govulncheck ./...
+    gosec -exclude-generated -exclude-dir=.claude ./...
 
 # remove build artifacts
 clean:
