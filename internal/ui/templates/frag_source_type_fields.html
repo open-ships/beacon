@@ -1,5 +1,5 @@
 {{/* Data: internal/ui/forms.go's sourceTypeFieldsData. Rendered both
-     standalone (GET /frag/source-type-fields, the type select's hx-get
+     standalone (POST /frag/source-type-fields, the type select's hx-post
      target) and inline inside frag_source_form.html's "source-form".
      Only the selected type's fields render as inputs, so values typed
      into another type's fields are discarded when the type select changes
@@ -9,7 +9,7 @@
 {{define "source-type-fields"}}
 {{if eq .Type "socketcan"}}
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Interface</legend>
+  <label class="fieldset-legend" for="src-interface">Interface</label>
   <input type="text" id="src-interface" name="interface" list="src-can-ifaces"
          value="{{.Interface}}" class="input w-full" required>
   <datalist id="src-can-ifaces">
@@ -18,7 +18,7 @@
 </fieldset>
 {{else if eq .Type "usbcan"}}
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Port</legend>
+  <label class="fieldset-legend" for="src-port">Port</label>
   <input type="text" id="src-port" name="port" list="src-serial-ports"
          value="{{.Port}}" class="input w-full" required>
   <datalist id="src-serial-ports">
@@ -27,34 +27,34 @@
 </fieldset>
 {{else if or (eq .Type "http_sse") (eq .Type "http_ws")}}
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">URL</legend>
+  <label class="fieldset-legend" for="src-url">URL</label>
   <input type="text" id="src-url" name="url" value="{{.URL}}"
          placeholder="https://host:port/path" class="input w-full" required>
 </fieldset>
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Headers (one "Header-Name: value" per line)</legend>
+  <label class="fieldset-legend" for="src-headers">Headers (one "Header-Name: value" per line)</label>
   <textarea id="src-headers" name="headers" rows="3" class="textarea w-full"
             placeholder="Authorization: Bearer token">{{.HeadersText}}</textarea>
 </fieldset>
 {{else if eq .Type "mqtt"}}
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Broker URL</legend>
+  <label class="fieldset-legend" for="src-url">Broker URL</label>
   <input type="text" id="src-url" name="url" value="{{.URL}}"
          placeholder="mqtt://broker.local:1883" class="input w-full" required>
 </fieldset>
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Topic</legend>
+  <label class="fieldset-legend" for="src-topic">Topic</label>
   <input type="text" id="src-topic" name="topic" value="{{.Topic}}"
          placeholder="vessels/main/engine/#" class="input w-full" required>
 </fieldset>
 {{else if or (eq .Type "tcp") (eq .Type "udp")}}
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Gateway address</legend>
+  <label class="fieldset-legend" for="src-address">Gateway address</label>
   <input type="text" id="src-address" name="address" value="{{.Address}}"
          placeholder="192.168.4.1:1457" class="input w-full" required>
 </fieldset>
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Format</legend>
+  <label class="fieldset-legend" for="src-format">Format</label>
   <select id="src-format" name="format" class="select w-full">
     <option value="ydraw" {{if or (eq .Format "ydraw") (eq .Format "")}}selected{{end}}>ydraw (Yacht Devices RAW)</option>
     <option value="actisense" {{if eq .Format "actisense"}}selected{{end}}>actisense</option>
@@ -62,10 +62,10 @@
 </fieldset>
 {{else if eq .Type "file"}}
 <fieldset class="fieldset">
-  <legend class="fieldset-legend">Capture file path</legend>
+  <label class="fieldset-legend" for="src-file-path">Capture file path</label>
   <input type="text" id="src-file-path" name="file_path" value="{{.FilePath}}"
-         placeholder="/data/capture.log" class="input w-full" required>
-  <p class="text-xs opacity-70">Replays a candump/canboat/YD/Actisense log at its recorded timing. Gzip is detected automatically; if this path is missing, its .gz counterpart is tried.</p>
+         placeholder="/data/capture.log" class="input w-full" required aria-describedby="src-file-path-help-1">
+  <p class="text-xs opacity-70" id="src-file-path-help-1">Replays a candump/canboat/YD/Actisense log at its recorded timing. Gzip is detected automatically; if this path is missing, its .gz counterpart is tried.</p>
 </fieldset>
 {{end}}
 {{end}}

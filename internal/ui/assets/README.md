@@ -22,6 +22,11 @@ Used for progressive-enhancement navigation (`hx-boost`) and form fragments.
 Plain links and server-rendered pages still work without it; htmx only avoids
 full page reloads and handles the fragment swaps.
 
+Entity forms use native POST actions and full-page validation/redirects when
+JavaScript is disabled. A type change then requires **Update type fields**
+before Save. Enhanced type changes use POST bodies so typed credentials do
+not enter fragment request URLs.
+
 ## app.js
 
 Hand-authored progressive enhancement for the connector form's CEL filter
@@ -35,6 +40,11 @@ are still validated server-side on Save. The same file progressively enhances
 source and sink overview pages with their stopped-by-default stream inspector,
 live CEL filtering and field suggestions, bounded browser-local capture,
 JSON/CAN view switching, clipboard copy, and export.
+
+Dialog dismissal and htmx removal share subtree cleanup for editors, stream
+capture, and routing diagrams. Failed saves preserve entries and show an
+accessible warning; failed live polls mark displayed values as stale until
+the corresponding request recovers. Requests time out after 15 seconds.
 
 ## app.css
 

@@ -1,9 +1,5 @@
-{{/* connector-panel-inner is the alert + table markup shared by the plain
-     ("connector-panel", initial page load + delete responses) and
-     out-of-band ("connector-panel-oob", create/update success responses)
-     wrapper templates below. Mirrors frag_source_table.html; see its
-     comments for the auto-dismiss/hx-swap-oob rationale not repeated here.
-     Data: internal/ui/forms.go's connectorTableData. */}}
+{{/* connector-panel-inner renders table rows and delete feedback. Data:
+     internal/ui/forms.go's connectorTableData. */}}
 {{define "connector-panel-inner"}}
 {{if .Alert}}
 {{if eq .Alert.Kind "success"}}
@@ -72,5 +68,3 @@
 {{end}}
 
 {{define "connector-panel"}}<div id="connector-panel" class="flex flex-col gap-4" hx-on::load="var a=this.querySelector('[data-autodismiss]');if(a)setTimeout(function(){a.remove()},4000)">{{template "connector-panel-inner" .}}</div>{{end}}
-
-{{define "connector-panel-oob"}}<div id="connector-panel" hx-swap-oob="true" class="flex flex-col gap-4" hx-on::load="var a=this.querySelector('[data-autodismiss]');if(a)setTimeout(function(){a.remove()},4000)">{{template "connector-panel-inner" .}}</div>{{end}}

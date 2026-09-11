@@ -7,7 +7,7 @@
        hx-get="/sources/new" hx-target="#entity-create-dialog-container" hx-swap="innerHTML">Add source</a>
     {{end}}
   </div>
-  <div id="source-form-container">{{if .SourceForm}}{{template "source-form" .SourceForm}}{{end}}</div>
+  <div id="source-form-container" class="entity-form-container">{{if .SourceForm}}{{template "source-form" .SourceForm}}{{end}}</div>
   {{if not .SourceForm}}
   {{template "source-panel" .}}
   {{end}}

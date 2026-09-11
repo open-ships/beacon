@@ -46,7 +46,14 @@ func newSourceHTTPClient() *http.Client {
 	transport.TLSHandshakeTimeout = sourceHTTPAttemptTimeout
 	transport.MaxConnsPerHost = 1
 	transport.MaxIdleConnsPerHost = 1
-	return &http.Client{Transport: transport}
+	return &http.Client{
+		Transport: transport,
+		// Custom authentication headers must never follow a redirect to an
+		// endpoint the operator did not configure. This matches HTTP POST sinks.
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 // dialerSource maintains a dial-reconnect loop around a runFunc.

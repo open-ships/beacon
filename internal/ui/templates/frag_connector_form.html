@@ -7,8 +7,9 @@
      type-driven fieldset. */}}
 {{define "connector-form"}}
 <form class="card bg-base-200 border border-base-300 entity-form"
+      method="post" action="{{if .IsEdit}}/connectors/{{.ID}}{{else}}/connectors{{end}}"
       hx-post="{{if .IsEdit}}/connectors/{{.ID}}{{else}}/connectors{{end}}"
-      hx-target="#connector-form-container" hx-swap="innerHTML">
+      hx-target="closest .entity-form-container" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]" hx-disinherit="hx-disabled-elt">
   <div class="card-body gap-3">
     <div class="entity-form-heading">
       <h2 class="card-title" {{if .InDialog}}id="{{if .IsEdit}}connector-edit-dialog-title{{else}}connector-create-dialog-title{{end}}"{{end}}>{{if .IsEdit}}Edit connector {{.ID}}{{else}}Add connector{{end}}</h2>
@@ -17,6 +18,7 @@
               data-entity-create-dialog-close aria-label="Close {{if .IsEdit}}edit{{else}}add{{end}} connector dialog">&times;</button>
       {{end}}
     </div>
+    <div class="alert alert-error" data-status="error" role="alert" tabindex="-1" data-request-feedback hidden></div>
     {{if .Alert}}
     <div class="alert alert-error" data-status="error" data-variant="destructive" role="alert"><span>{{.Alert.Message}}</span></div>
     {{end}}
@@ -29,16 +31,16 @@
     {{if .IsEdit}}
     <input type="hidden" name="id" value="{{.ID}}">
     <fieldset class="fieldset">
-      <legend class="fieldset-legend">ID</legend>
+      <label class="fieldset-legend" for="conn-id">ID</label>
       <input type="text" id="conn-id" value="{{.ID}}" class="input w-full" disabled>
     </fieldset>
     {{end}}
     <fieldset class="fieldset">
-      <legend class="fieldset-legend">Name</legend>
+      <label class="fieldset-legend" for="conn-name">Name</label>
       <input type="text" id="conn-name" name="name" value="{{.Name}}" class="input w-full" required>
     </fieldset>
     <fieldset class="fieldset">
-      <legend class="fieldset-legend">Source</legend>
+      <label class="fieldset-legend" for="conn-source">Source</label>
       <select id="conn-source" name="source_id" class="select w-full" required>
         <option value="" {{if eq .SourceID ""}}selected{{end}} disabled>Select a source&hellip;</option>
         {{$sourceID := .SourceID}}
@@ -48,7 +50,7 @@
       </select>
     </fieldset>
     <fieldset class="fieldset">
-      <legend class="fieldset-legend">Sink</legend>
+      <label class="fieldset-legend" for="conn-sink">Sink</label>
       <select id="conn-sink" name="sink_id" class="select w-full" required>
         <option value="" {{if eq .SinkID ""}}selected{{end}} disabled>Select a sink&hellip;</option>
         {{$sinkID := .SinkID}}
@@ -58,20 +60,20 @@
       </select>
     </fieldset>
     <fieldset class="fieldset">
-      <legend class="fieldset-legend">Bridge mode</legend>
-      <select id="conn-mode" name="mode" class="select w-full">
+      <label class="fieldset-legend" for="conn-mode">Bridge mode</label>
+      <select id="conn-mode" name="mode" class="select w-full" aria-describedby="conn-mode-help-1">
         <option value="semantic" {{if or (eq .Mode "") (eq .Mode "semantic")}}selected{{end}}>Semantic — decode and re-originate as Beacon</option>
         <option value="transparent" {{if eq .Mode "transparent"}}selected{{end}}>Transparent — preserve source address and raw payload (SocketCAN sink)</option>
         <option value="observe" {{if eq .Mode "observe"}}selected{{end}}>Observe — retain and inspect without forwarding</option>
       </select>
-      <p class="field-help">Transparent mode blocks N2K management traffic by default and cannot target the source interface.</p>
+      <p class="field-help" id="conn-mode-help-1">Transparent mode blocks N2K management traffic by default and cannot target the source interface.</p>
     </fieldset>
     <label class="field label cursor-pointer justify-start gap-2" data-orientation="horizontal">
       <input type="checkbox" name="forward_management" value="1" class="checkbox" {{if .ForwardManagement}}checked{{end}}>
       Forward N2K management PGNs in transparent mode
     </label>
     <fieldset class="fieldset">
-      <legend class="fieldset-legend">Filters (one CEL expression per line)</legend>
+      <label class="fieldset-legend" for="conn-filters">Filters (one CEL expression per line)</label>
       <div class="cel-autocomplete" data-cel-autocomplete>
         <div class="cel-filter-editor">
           <pre class="cel-filter-highlight" data-cel-highlight aria-hidden="true">{{.FiltersText}}</pre>
@@ -91,19 +93,19 @@
       <div id="filter-feedback" class="filter-validation-feedback" data-cel-validation-feedback aria-live="polite"></div>
     </fieldset>
     <fieldset class="fieldset">
-      <legend class="fieldset-legend">Max messages</legend>
-      <input type="number" id="conn-max-messages" name="max_messages" value="{{.MaxMessages}}" class="input w-full" min="0">
-      <p class="field-help">Every route has an independent count guard. Empty or 0 uses the safe default of 10,000 messages.</p>
+      <label class="fieldset-legend" for="conn-max-messages">Max messages</label>
+      <input type="number" id="conn-max-messages" name="max_messages" value="{{.MaxMessages}}" class="input w-full" min="0" aria-describedby="conn-max-messages-help-1">
+      <p class="field-help" id="conn-max-messages-help-1">Every route has an independent count guard. Empty or 0 uses the safe default of 10,000 messages.</p>
     </fieldset>
     <fieldset class="fieldset">
-      <legend class="fieldset-legend">Max age</legend>
-      <input type="text" id="conn-max-age" name="max_age" value="{{.MaxAge}}" placeholder="No age limit (for example, 24h)" class="input w-full">
-      <p class="field-help">Optional. Empty means messages do not expire by age.</p>
+      <label class="fieldset-legend" for="conn-max-age">Max age</label>
+      <input type="text" id="conn-max-age" name="max_age" value="{{.MaxAge}}" placeholder="No age limit (for example, 24h)" class="input w-full" aria-describedby="conn-max-age-help-1">
+      <p class="field-help" id="conn-max-age-help-1">Optional. Empty means messages do not expire by age.</p>
     </fieldset>
     <fieldset class="fieldset">
-      <legend class="fieldset-legend">Max bytes</legend>
-      <input type="number" id="conn-max-bytes" name="max_bytes" value="{{.MaxBytes}}" placeholder="64 MiB default" class="input w-full" min="0">
-      <p class="field-help">Every route has an independent logical-byte guard. Empty or 0 uses the safe default of 64 MiB.</p>
+      <label class="fieldset-legend" for="conn-max-bytes">Max bytes</label>
+      <input type="number" id="conn-max-bytes" name="max_bytes" value="{{.MaxBytes}}" placeholder="64 MiB default" class="input w-full" min="0" aria-describedby="conn-max-bytes-help-1">
+      <p class="field-help" id="conn-max-bytes-help-1">Every route has an independent logical-byte guard. Empty or 0 uses the safe default of 64 MiB.</p>
     </fieldset>
     <div class="card-actions justify-end">
       {{if .InDialog}}
@@ -120,7 +122,7 @@
 {{define "connector-create-dialog"}}
 <dialog class="entity-create-dialog entity-create-dialog-wide dialog" data-entity-create-dialog
         aria-labelledby="{{if .IsEdit}}connector-edit-dialog-title{{else}}connector-create-dialog-title{{end}}">
-  <div id="connector-form-container" class="entity-create-dialog-form">
+  <div id="connector-dialog-form-container" class="entity-create-dialog-form entity-form-container">
     {{template "connector-form" .}}
   </div>
 </dialog>

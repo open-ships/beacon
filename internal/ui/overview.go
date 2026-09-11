@@ -133,7 +133,7 @@ func sourceConfigRows(s model.Source) []configRow {
 	}
 	add("Interface", s.Interface, true)
 	add("Port", s.Port, true)
-	add("URL", s.URL, true)
+	add("URL", redactEndpointURL(s.URL), true)
 	add("Topic", s.Topic, true)
 	add("File path", s.FilePath, true)
 	add("Address", s.Address, true)
@@ -160,11 +160,7 @@ func sinkConfigRows(s model.Sink) []configRow {
 	add("Port", s.Port, true)
 	add("Path", s.Path, true)
 	add("Address", s.Address, true)
-	if s.Type == model.SinkPostgres {
-		add("URL", redactPostgresURL(s.URL), true)
-	} else {
-		add("URL", s.URL, true)
-	}
+	add("URL", redactEndpointURL(s.URL), true)
 	add("Topic", s.Topic, true)
 	if len(s.Headers) > 0 {
 		rows = append(rows, configRow{"Headers", strconv.Itoa(len(s.Headers)), false})
@@ -200,7 +196,7 @@ func sinkConfigRows(s model.Sink) []configRow {
 	return rows
 }
 
-func redactPostgresURL(raw string) string {
+func redactEndpointURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "configured"
@@ -209,6 +205,16 @@ func redactPostgresURL(raw string) string {
 		if _, hasPassword := u.User.Password(); hasPassword {
 			u.User = url.UserPassword(u.User.Username(), "redacted")
 		}
+	}
+	// Query parameters can carry credentials under arbitrary provider-specific
+	// names. Keep names useful for identification without displaying values.
+	query := u.Query()
+	for key := range query {
+		query.Set(key, "redacted")
+	}
+	u.RawQuery = query.Encode()
+	if u.Fragment != "" {
+		u.Fragment = "redacted"
 	}
 	return u.String()
 }

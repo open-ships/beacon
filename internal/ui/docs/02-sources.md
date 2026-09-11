@@ -53,6 +53,10 @@ from changing after a restart.
 Set `url` to the complete upstream endpoint. Use `headers` for static request
 headers when the upstream service requires them.
 
+Use the final endpoint URL. SSE and WebSocket sources reject redirects,
+including redirects on the same host, to prevent forwarding credentials to
+an unintended destination. Use HTTPS or WSS for encrypted remote connections.
+
 The upstream service must publish Beacon Envelopes. Beacon reconnects after a
 connection failure. It limits each dial, TLS, and response-header phase to
 15 seconds. An established stream can remain open.

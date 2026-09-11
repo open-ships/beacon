@@ -30,7 +30,7 @@ go run ./cmd/beacon \
   --data-address 127.0.0.1:8080
 ```
 
-This route requires Go 1.25.12 or newer. Prefer a container? The published
+This route requires Go 1.26.6 or newer (see [`go.mod`](go.mod)). Prefer a container? The published
 image provides the same no-hardware preview:
 
 ```bash
@@ -39,7 +39,8 @@ docker run --rm \
   -p 127.0.0.1:2112:2112 \
   -p 127.0.0.1:8080:8080 \
   -v "$(pwd)/data:/data" \
-  ghcr.io/open-ships/beacon:latest
+  ghcr.io/open-ships/beacon:latest \
+  --db /data/beacon.db --admin-address 0.0.0.0:2112
 ```
 
 Once it is running:
@@ -636,9 +637,37 @@ The admin API also exposes the complete PGN and field catalog, best-effort
 CAN/USB hardware discovery, stable Device NAME inventory, commissioning
 baselines, and a machine-readable commissioning report.
 
-Beacon does not currently provide built-in authentication or TLS. Bind the
-admin server to loopback for local use, or place it behind the access controls
-appropriate for the vessel network.
+### Administration and remote access
+
+The admin listener defaults to `127.0.0.1:2112`. It provides full control of the
+appliance and access to configuration secrets through the UI, REST API, and
+MCP. Beacon does not provide built-in authentication or TLS. Local processes
+with access to this port are trusted administrators.
+
+For authenticated remote access, keep the default binding on the Beacon host
+and forward the port over SSH:
+
+```bash
+ssh -N -L 12112:127.0.0.1:2112 operator@beacon-host
+```
+
+Open `http://127.0.0.1:12112` locally. REST clients use
+`http://127.0.0.1:12112/api/v1`; agents use `http://127.0.0.1:12112/mcp`.
+The SSH server authenticates the operator and encrypts the connection.
+
+**Upgrade note:** releases that defaulted to `0.0.0.0:2112` accepted remote
+connections directly. To retain direct network access, explicitly set
+`--admin-address <protected-interface>:2112` and provide authenticated TLS
+access controls or a trusted private network. The bridge-network container
+preview above binds all interfaces *inside the container* and publishes the
+port only on the host's loopback interface. Host-network containers use the
+normal loopback default.
+
+Unsafe browser requests from another origin are rejected on the admin API
+and UI. Headerless CLI clients remain supported. This origin check does not
+authenticate clients. Protect configuration exports and the SQLite database
+as credentials, and use final upstream URLs: HTTP SSE, WebSocket, and HTTP
+POST transports reject redirects to prevent forwarding secrets elsewhere.
 
 ## Running in production
 
@@ -664,7 +693,7 @@ that those automated proxies cannot replace.
 |---|---|---|
 | `--db` | `beacon.db` | SQLite configuration, appliance identity, inventory, and connector buffers |
 | `--data-address` | `0.0.0.0:8080` | Bind address for HTTP sink endpoints |
-| `--admin-address` | `0.0.0.0:2112` | Bind address for UI, API, MCP, health, and metrics |
+| `--admin-address` | `127.0.0.1:2112` | Bind address for UI, API, MCP, health, and metrics; protect any network exposure |
 | `--seed` | none | Config loaded into an empty database; ignored after configuration exists |
 | `--log-level` | `info` | `debug`, `info`, `warn`, or `error` JSON logs |
 

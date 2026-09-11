@@ -4,7 +4,7 @@ Beacon provides live status in the UI, JSON measurements for scripts, health
 endpoints for service checks, and a Prometheus exposition for monitoring.
 
 All monitoring endpoints use the admin server. The default admin address is
-`0.0.0.0:2112`.
+`127.0.0.1:2112`.
 
 ## Choose a monitoring surface
 

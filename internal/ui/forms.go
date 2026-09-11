@@ -19,7 +19,6 @@
 package ui
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -196,28 +195,6 @@ func discoverHardware() (canIfaces, serialPorts []string) {
 	return sysinfo.DiscoverCAN(), sysinfo.DiscoverSerial()
 }
 
-// writeFragmentSuccess renders panelOOBName (a "*-panel-oob" fragment,
-// e.g. "source-panel-oob") from fragTemplates and appends an empty
-// <div id="formContainerID">. The form the request came from has
-// hx-target="#<formContainerID>" hx-swap="innerHTML", so the empty trailing
-// div is what actually satisfies that swap — clearing the just-submitted
-// form now that the write succeeded. The OOB-marked panel ahead of it
-// (hx-swap-oob="true" is baked into every "*-panel-oob" template, see
-// frag_source_table.html/frag_sink_table.html) updates the table wherever
-// it currently lives in the DOM, independent of the form's own hx-target.
-// This is htmx's standard "one response, two DOM updates" pattern.
-func writeFragmentSuccess(w http.ResponseWriter, log *slog.Logger, panelOOBName, formContainerID string, data any) {
-	var buf bytes.Buffer
-	if err := fragTemplates.ExecuteTemplate(&buf, panelOOBName, data); err != nil {
-		log.Error("ui: fragment render failed", "fragment", panelOOBName, "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	fmt.Fprintf(&buf, `<div id="%s"></div>`, formContainerID)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = buf.WriteTo(w)
-}
-
 // --- Sources ---
 
 // sourceRow is one row of the sources table (frag_source_table.html):
@@ -244,7 +221,7 @@ func sourceDetail(s model.Source) string {
 	case model.SourceUSBCAN:
 		return s.Port
 	case model.SourceHTTPSSE, model.SourceHTTPWS:
-		return s.URL
+		return redactEndpointURL(s.URL)
 	case model.SourceMQTT:
 		return mqttDetail(s.URL, s.Topic)
 	case model.SourceFile:
@@ -256,9 +233,7 @@ func sourceDetail(s model.Source) string {
 	}
 }
 
-// sourceTableData is frag_source_table.html's "source-panel"/
-// "source-panel-oob" data: the table rows plus an optional one-shot alert
-// (a just-completed write/delete's result).
+// sourceTableData contains table rows and optional delete feedback.
 type sourceTableData struct {
 	Sources []sourceRow
 	Alert   *alertData
@@ -493,9 +468,8 @@ func handleSourceEditPage(svc *config.Service, statuses func() []supervisor.Stat
 	}
 }
 
-// handleSourceTypeFieldsFrag serves GET /frag/source-type-fields: the
-// type select's hx-get target. hx-include="closest form" resends every
-// field currently in the form as a query parameter, so the newly selected
+// handleSourceTypeFieldsFrag serves the type select's POST fragment.
+// hx-include="closest form" resends fields in the request body, so the newly selected
 // type's own field keeps its value if it happens to still be in the DOM —
 // but a previously selected type's fields are NOT preserved across an
 // A→B→A switch: B's render removed A's inputs from the DOM, so nothing
@@ -504,7 +478,12 @@ func handleSourceEditPage(svc *config.Service, statuses func() []supervisor.Stat
 func handleSourceTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		can, serial := discoverHardware()
-		q := r.URL.Query()
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form submission", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		q := r.Form
 		data := sourceTypeFieldsData{
 			Type:          q.Get("type"),
 			Interface:     q.Get("interface"),
@@ -523,16 +502,16 @@ func handleSourceTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
 }
 
 // handleSourceCreate serves POST /sources.
-func handleSourceCreate(svc *config.Service, log *slog.Logger) http.HandlerFunc {
+func handleSourceCreate(svc *config.Service, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeSource(w, r, svc, log, true, "")
+		writeSource(w, r, svc, version, log, true, "")
 	}
 }
 
 // handleSourceUpdate serves POST /sources/{id}.
-func handleSourceUpdate(svc *config.Service, log *slog.Logger) http.HandlerFunc {
+func handleSourceUpdate(svc *config.Service, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeSource(w, r, svc, log, false, r.PathValue("id"))
+		writeSource(w, r, svc, version, log, false, r.PathValue("id"))
 	}
 }
 
@@ -543,7 +522,15 @@ func handleSourceUpdate(svc *config.Service, log *slog.Logger) http.HandlerFunc 
 // browsers never submit it) alongside a hidden input that does carry it,
 // but trusting the URL path directly is simpler and can't be spoofed by
 // tampering with that hidden field.
-func writeSource(w http.ResponseWriter, r *http.Request, svc *config.Service, log *slog.Logger, isCreate bool, pathID string) {
+func writeSource(w http.ResponseWriter, r *http.Request, svc *config.Service, version string, log *slog.Logger, isCreate bool, pathID string) {
+	renderForm := func(view sourceFormViewData) {
+		if isHTMXRequest(r) {
+			renderFragment(w, log, "source-form", view)
+		} else {
+			view.InDialog = false
+			renderSourcesPage(w, r, svc, svc.Statuses, version, log, &view)
+		}
+	}
 	can, serial := discoverHardware()
 	if err := r.ParseForm(); err != nil {
 		// Malformed request body itself (not just a malformed field's
@@ -551,7 +538,7 @@ func writeSource(w http.ResponseWriter, r *http.Request, svc *config.Service, lo
 		view := blankSourceFormView(can, serial)
 		view.IsEdit, view.ID = !isCreate, pathID
 		view.Alert = &alertData{Kind: "error", Message: "invalid form submission: " + err.Error()}
-		renderFragment(w, log, "source-form", view)
+		renderForm(view)
 		return
 	}
 	view := sourceFormViewFromRequest(r, !isCreate, can, serial)
@@ -566,10 +553,14 @@ func writeSource(w http.ResponseWriter, r *http.Request, svc *config.Service, lo
 		}
 		view.ID = id
 	}
+	if r.PostFormValue("form_action") == "change_type" {
+		renderForm(view)
+		return
+	}
 	v, err := view.toModel()
 	if err != nil {
 		view.Alert = &alertData{Kind: "error", Message: err.Error()}
-		renderFragment(w, log, "source-form", view)
+		renderForm(view)
 		return
 	}
 	if err := svc.PutSource(r.Context(), v, isCreate); err != nil {
@@ -579,29 +570,19 @@ func writeSource(w http.ResponseWriter, r *http.Request, svc *config.Service, lo
 			return
 		}
 		view.Alert = &alertData{Kind: "error", Message: entityWriteErrorMessage(err, "source", v.ID)}
-		renderFragment(w, log, "source-form", view)
+		renderForm(view)
 		return
 	}
 	if isCreate {
-		flashRedirect(w, fmt.Sprintf("Source %q created", v.ID), "/dashboard")
+		flashRedirect(w, r, fmt.Sprintf("Source %q created", v.ID), "/dashboard")
 		return
 	}
-	if view.InDialog {
+	if isHTMXRequest(r) && view.InDialog {
 		w.Header().Set("HX-Refresh", "true")
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	sources, err := svc.ListSources(r.Context())
-	if err != nil {
-		log.Error("ui: list sources failed", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	data := sourceTableData{
-		Sources: sourceRows(sources, svc.Statuses()),
-		Alert:   &alertData{Kind: "success", Message: fmt.Sprintf("source %q saved", v.ID)},
-	}
-	writeFragmentSuccess(w, log, "source-panel-oob", "source-form-container", data)
+	flashRedirect(w, r, fmt.Sprintf("Source %q saved", v.ID), "/sources/"+v.ID+"/")
 }
 
 // isUserFacingWriteErr reports whether err from a Service PutXxx/DeleteXxx
@@ -713,7 +694,7 @@ func sinkDetail(s model.Sink) string {
 	case model.SinkHTTPSSE, model.SinkHTTPWS:
 		return s.Path
 	case model.SinkHTTPPost:
-		return s.URL
+		return redactEndpointURL(s.URL)
 	case model.SinkTCP:
 		return s.Address
 	case model.SinkFile:
@@ -732,6 +713,7 @@ func sinkDetail(s model.Sink) string {
 }
 
 func mqttDetail(broker, topic string) string {
+	broker = redactEndpointURL(broker)
 	if broker == "" {
 		return topic
 	}
@@ -741,7 +723,7 @@ func mqttDetail(broker, topic string) string {
 	return broker + " / " + topic
 }
 
-// sinkTableData is frag_sink_table.html's "sink-panel"/"sink-panel-oob"
+// sinkTableData is frag_sink_table.html's "sink-panel"
 // data.
 type sinkTableData struct {
 	Sinks []sinkRow
@@ -1095,7 +1077,7 @@ func handleSinkEditPage(svc *config.Service, statuses func() []supervisor.Status
 	}
 }
 
-// handleSinkTypeFieldsFrag serves GET /frag/sink-type-fields. The same
+// handleSinkTypeFieldsFrag serves POST /frag/sink-type-fields. The same
 // type-switch caveat as handleSourceTypeFieldsFrag applies: a previously
 // selected type's field values are discarded on switch, not carried over.
 func handleSinkTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
@@ -1104,9 +1086,14 @@ func handleSinkTypeFieldsFrag(log *slog.Logger) http.HandlerFunc {
 		defMaxFileBytes, defMaxFiles := fileSinkDefaults()
 		defBatchSize, maxBatchSize, defRequestTimeout := httpPostSinkDefaults()
 		defPostgresTable, defPostgresBatch, maxPostgresBatch, defPostgresTimeout := postgresSinkDefaults()
-		q := r.URL.Query()
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form submission", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		q := r.Form
 		autoCreateTable := q.Get("auto_create_table") != ""
-		if q.Get("type") == string(model.SinkPostgres) && !q.Has("auto_create_table") {
+		if q.Get("type") == string(model.SinkPostgres) && q.Get("rendered_type") != string(model.SinkPostgres) && !q.Has("auto_create_table") {
 			autoCreateTable = true
 		}
 		data := sinkTypeFieldsData{
@@ -1159,27 +1146,35 @@ func handleSinkPostgresDDLFrag(log *slog.Logger) http.HandlerFunc {
 }
 
 // handleSinkCreate serves POST /sinks.
-func handleSinkCreate(svc *config.Service, log *slog.Logger) http.HandlerFunc {
+func handleSinkCreate(svc *config.Service, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeSink(w, r, svc, log, true, "")
+		writeSink(w, r, svc, version, log, true, "")
 	}
 }
 
 // handleSinkUpdate serves POST /sinks/{id}.
-func handleSinkUpdate(svc *config.Service, log *slog.Logger) http.HandlerFunc {
+func handleSinkUpdate(svc *config.Service, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeSink(w, r, svc, log, false, r.PathValue("id"))
+		writeSink(w, r, svc, version, log, false, r.PathValue("id"))
 	}
 }
 
 // writeSink mirrors writeSource; see its comments for rationale.
-func writeSink(w http.ResponseWriter, r *http.Request, svc *config.Service, log *slog.Logger, isCreate bool, pathID string) {
+func writeSink(w http.ResponseWriter, r *http.Request, svc *config.Service, version string, log *slog.Logger, isCreate bool, pathID string) {
+	renderForm := func(view sinkFormViewData) {
+		if isHTMXRequest(r) {
+			renderFragment(w, log, "sink-form", view)
+		} else {
+			view.InDialog = false
+			renderSinksPage(w, r, svc, svc.Statuses, version, log, &view)
+		}
+	}
 	can, serial := discoverHardware()
 	if err := r.ParseForm(); err != nil {
 		view := blankSinkFormView(can, serial)
 		view.IsEdit, view.ID = !isCreate, pathID
 		view.Alert = &alertData{Kind: "error", Message: "invalid form submission: " + err.Error()}
-		renderFragment(w, log, "sink-form", view)
+		renderForm(view)
 		return
 	}
 	view := sinkFormViewFromRequest(r, !isCreate, can, serial)
@@ -1194,10 +1189,17 @@ func writeSink(w http.ResponseWriter, r *http.Request, svc *config.Service, log 
 		}
 		view.ID = id
 	}
+	if r.PostFormValue("form_action") == "change_type" {
+		if view.TypeFields.Type == string(model.SinkPostgres) && r.PostFormValue("rendered_type") != string(model.SinkPostgres) {
+			view.TypeFields.AutoCreateTable = true
+		}
+		renderForm(view)
+		return
+	}
 	v, err := view.toModel()
 	if err != nil {
 		view.Alert = &alertData{Kind: "error", Message: err.Error()}
-		renderFragment(w, log, "sink-form", view)
+		renderForm(view)
 		return
 	}
 	if err := svc.PutSink(r.Context(), v, isCreate); err != nil {
@@ -1207,29 +1209,19 @@ func writeSink(w http.ResponseWriter, r *http.Request, svc *config.Service, log 
 			return
 		}
 		view.Alert = &alertData{Kind: "error", Message: entityWriteErrorMessage(err, "sink", v.ID)}
-		renderFragment(w, log, "sink-form", view)
+		renderForm(view)
 		return
 	}
 	if isCreate {
-		flashRedirect(w, fmt.Sprintf("Sink %q created", v.ID), "/dashboard")
+		flashRedirect(w, r, fmt.Sprintf("Sink %q created", v.ID), "/dashboard")
 		return
 	}
-	if view.InDialog {
+	if isHTMXRequest(r) && view.InDialog {
 		w.Header().Set("HX-Refresh", "true")
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	sinks, err := svc.ListSinks(r.Context())
-	if err != nil {
-		log.Error("ui: list sinks failed", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	data := sinkTableData{
-		Sinks: sinkRows(sinks, svc.Statuses()),
-		Alert: &alertData{Kind: "success", Message: fmt.Sprintf("sink %q saved", v.ID)},
-	}
-	writeFragmentSuccess(w, log, "sink-panel-oob", "sink-form-container", data)
+	flashRedirect(w, r, fmt.Sprintf("Sink %q saved", v.ID), "/sinks/"+v.ID+"/")
 }
 
 // handleSinkDelete serves POST /sinks/{id}/delete.
@@ -1322,8 +1314,7 @@ func connectorRows(connectors []model.Connector, reg *stats.Registry, statuses [
 	return rows
 }
 
-// connectorTableData is frag_connector_table.html's "connector-panel"/
-// "connector-panel-oob" data.
+// connectorTableData contains route rows and optional delete feedback.
 type connectorTableData struct {
 	Connectors []connectorRow
 	Alert      *alertData
@@ -1739,23 +1730,31 @@ func handleValidateFiltersFrag(svc *config.Service, log *slog.Logger) http.Handl
 }
 
 // handleConnectorCreate serves POST /connectors.
-func handleConnectorCreate(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, log *slog.Logger) http.HandlerFunc {
+func handleConnectorCreate(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeConnector(w, r, svc, reg, statuses, log, true, "")
+		writeConnector(w, r, svc, reg, statuses, version, log, true, "")
 	}
 }
 
 // handleConnectorUpdate serves POST /connectors/{id}.
-func handleConnectorUpdate(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, log *slog.Logger) http.HandlerFunc {
+func handleConnectorUpdate(svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, version string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeConnector(w, r, svc, reg, statuses, log, false, r.PathValue("id"))
+		writeConnector(w, r, svc, reg, statuses, version, log, false, r.PathValue("id"))
 	}
 }
 
 // writeConnector backs both handleConnectorCreate and handleConnectorUpdate,
 // mirroring writeSource/writeSink; see writeSource's comments for the
 // pathID-is-authoritative rationale.
-func writeConnector(w http.ResponseWriter, r *http.Request, svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, log *slog.Logger, isCreate bool, pathID string) {
+func writeConnector(w http.ResponseWriter, r *http.Request, svc *config.Service, reg *stats.Registry, statuses func() []supervisor.Status, version string, log *slog.Logger, isCreate bool, pathID string) {
+	renderForm := func(view connectorFormViewData) {
+		if isHTMXRequest(r) {
+			renderFragment(w, log, "connector-form", view)
+		} else {
+			view.InDialog = false
+			renderConnectorsPage(w, r, svc, reg, statuses, version, log, &view)
+		}
+	}
 	sources, sinks, err := listSourcesAndSinks(r.Context(), svc)
 	if err != nil {
 		log.Error("ui: list sources/sinks failed", "err", err)
@@ -1766,7 +1765,7 @@ func writeConnector(w http.ResponseWriter, r *http.Request, svc *config.Service,
 		view := blankConnectorFormView(sources, sinks)
 		view.IsEdit, view.ID = !isCreate, pathID
 		view.Alert = &alertData{Kind: "error", Message: "invalid form submission: " + err.Error()}
-		renderFragment(w, log, "connector-form", view)
+		renderForm(view)
 		return
 	}
 	view := connectorFormViewFromRequest(r, !isCreate, sources, sinks)
@@ -1784,7 +1783,7 @@ func writeConnector(w http.ResponseWriter, r *http.Request, svc *config.Service,
 	v, err := view.toModel()
 	if err != nil {
 		view.Alert = &alertData{Kind: "error", Message: err.Error()}
-		renderFragment(w, log, "connector-form", view)
+		renderForm(view)
 		return
 	}
 	if err := svc.PutConnector(r.Context(), v, isCreate); err != nil {
@@ -1794,29 +1793,19 @@ func writeConnector(w http.ResponseWriter, r *http.Request, svc *config.Service,
 			return
 		}
 		view.Alert = &alertData{Kind: "error", Message: entityWriteErrorMessage(err, "connector", v.ID)}
-		renderFragment(w, log, "connector-form", view)
+		renderForm(view)
 		return
 	}
 	if isCreate {
-		flashRedirect(w, fmt.Sprintf("Connector %q created", v.ID), "/dashboard")
+		flashRedirect(w, r, fmt.Sprintf("Connector %q created", v.ID), "/dashboard")
 		return
 	}
-	if view.InDialog {
+	if isHTMXRequest(r) && view.InDialog {
 		w.Header().Set("HX-Refresh", "true")
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	connectors, err := svc.ListConnectors(r.Context())
-	if err != nil {
-		log.Error("ui: list connectors failed", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	data := connectorTableData{
-		Connectors: connectorRows(connectors, reg, statuses(), sourceNames(sources), sinkNames(sinks)),
-		Alert:      &alertData{Kind: "success", Message: fmt.Sprintf("connector %q saved", v.ID)},
-	}
-	writeFragmentSuccess(w, log, "connector-panel-oob", "connector-form-container", data)
+	flashRedirect(w, r, fmt.Sprintf("Connector %q saved", v.ID), "/connectors/"+v.ID+"/")
 }
 
 // handleConnectorDelete serves POST /connectors/{id}/delete. Unlike

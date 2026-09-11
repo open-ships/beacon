@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="htmx-config" content='{"timeout":15000}'>
 <title>{{.Title}} - beacon</title>
 <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg?v={{.AssetVersion}}">
 <link rel="stylesheet" href="/assets/app.css?v={{.AssetVersion}}">
@@ -24,6 +25,7 @@
     </nav>
   </header>
   <main class="app-content{{if eq .Active "dashboard"}} app-content-home{{end}}">
+    <div id="request-feedback" class="alert alert-error" data-status="error" role="alert" hidden></div>
     {{if .Flash}}
     {{/* One-shot flash banner (see flash.go). It auto-dismisses after 4s to
          match the source/sink/connector panels' success alerts. Those are
