@@ -17,7 +17,8 @@ ARG TARGETOS
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags "-X main.version=${VERSION}" \
-    -o beacon ./cmd/beacon
+    -o beacon ./cmd/beacon \
+    && sh scripts/check-cgo-disabled.sh beacon
 
 # --- Runtime stage ---
 FROM alpine:3.24

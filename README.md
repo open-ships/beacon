@@ -676,6 +676,11 @@ on [GitHub Releases](https://github.com/open-ships/beacon/releases). Physical
 SocketCAN operation requires Linux; the other builds remain useful for USB-CAN,
 remote streams, development, and administration.
 
+All release binaries and container images are built with `CGO_ENABLED=0`.
+Their binary build metadata is checked before packaging. On macOS, serial
+communication works without CGO; n2k's serial discovery returns port names
+without USB identity metadata in these builds.
+
 After successful CI on the current `main` commit, the exact-version-tagged
 shared Open Ships release policy publishes an annotated tag, the GoReleaser
 archives and checksums, a complete checksum manifest, CycloneDX SBOM, toolchain

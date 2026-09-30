@@ -12,3 +12,10 @@ wait for the user to request it. One bump per PR is sufficient.
   change. If the release checker changes, run `bash scripts/release-check-test.sh`.
 - Include the chosen version and validation in the PR description. Do not create
   a release tag manually: the release workflow publishes the version after CI.
+
+# Distribution
+
+All distributed Beacon binaries, including release archives and container
+images, must be built with `CGO_ENABLED=0`. Keep the binary metadata checks in
+the release and Docker builds. Fix incompatible dependencies instead of enabling
+CGO for distribution; the race detector may still use CGO during testing.
