@@ -8,10 +8,10 @@ require (
 	github.com/danielgtaylor/huma/v2 v2.38.0
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/go-chi/chi/v5 v5.3.1
-	github.com/google/cel-go v0.29.2
+	github.com/google/cel-go v0.30.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
-	github.com/open-ships/n2k v1.2.0
+	github.com/open-ships/n2k v1.8.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/cobra v1.10.2
 	github.com/yuin/goldmark v1.8.4

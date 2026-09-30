@@ -33,3 +33,18 @@ func TestListIsSortedAndLookupUsesSameCatalog(t *testing.T) {
 		t.Fatalf("lookup = %+v, %v", item, ok)
 	}
 }
+
+func TestDeviceFunctionNameUsesDeviceClass(t *testing.T) {
+	for _, tc := range []struct {
+		class, function uint8
+		want            string
+	}{
+		{25, 130, "PC Gateway"},
+		{20, 130, "Emergency Position Indicating Radio Beacon (EPIRB)"},
+		{25, 255, ""},
+	} {
+		if got := DeviceFunctionName(tc.class, tc.function); got != tc.want {
+			t.Errorf("class %d function %d = %q, want %q", tc.class, tc.function, got, tc.want)
+		}
+	}
+}

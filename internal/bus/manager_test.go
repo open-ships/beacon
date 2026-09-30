@@ -87,7 +87,7 @@ func TestSharedClientRefcount(t *testing.T) {
 func TestRecordSupportedPGNsKeepsBothSortedLists(t *testing.T) {
 	bc := &busClient{supported: map[uint64]SupportedPGNs{}}
 	name := uint64(0xFEDCBA9876543210)
-	tx, rx := uint64(pgn.TransmitPGNList), uint64(pgn.ReceivePGNList)
+	tx, rx := uint64(pgn.PgnListFunctionTransmitPGNList), uint64(pgn.PgnListFunctionReceivePGNList)
 	p127250, p126992, duplicate, outOfRange := uint64(127250), uint64(126992), uint64(127250), uint64(0x40000)
 	bc.recordSupportedPGNs(name, &pgn.ParameterGroupNumberListTransmitAndReceive{
 		FunctionCode: &tx,
@@ -112,7 +112,7 @@ func TestRecordSupportedPGNsKeepsBothSortedLists(t *testing.T) {
 
 func TestDiscoveryCachesBoundDeviceNameChurnAndExpireTogether(t *testing.T) {
 	bc := &busClient{supported: map[uint64]SupportedPGNs{}, requested: map[uint64]time.Time{}}
-	tx := uint64(pgn.TransmitPGNList)
+	tx := uint64(pgn.PgnListFunctionTransmitPGNList)
 	for name := uint64(1); name <= 10_000; name++ {
 		bc.recordSupportedPGNs(name, &pgn.ParameterGroupNumberListTransmitAndReceive{FunctionCode: &tx})
 		bc.mu.Lock()
@@ -249,10 +249,10 @@ func TestUSBCANMissingPortReportsError(t *testing.T) {
 }
 
 // writeFailBus is a Bus whose frame writes always fail, simulating a bus that
-// cannot transmit the initial NMEA address claim. n2k v0.3.0 performs claiming
-// during NewClient and returns the write error ("n2k: starting address
-// claim: ..."), which the manager must surface as an "error" state rather than
-// hang or crash.
+// cannot transmit the initial NMEA address claim. The manager must surface
+// the underlying write error as an "error" state rather than hang or crash.
+var errClaimWrite = errors.New("claim write failed")
+
 type writeFailBus struct{}
 
 func (writeFailBus) Run(ctx context.Context, _ func(can.Frame)) error {
@@ -261,7 +261,7 @@ func (writeFailBus) Run(ctx context.Context, _ func(can.Frame)) error {
 }
 
 func (writeFailBus) WriteFrame(can.Frame) error {
-	return errors.New("claim write failed")
+	return errClaimWrite
 }
 
 func (writeFailBus) Close() error { return nil }
@@ -315,8 +315,7 @@ func TestClientStartupWriteFailureReportsError(t *testing.T) {
 	defer h.Release()
 
 	err = waitState(t, h, "error")
-	if err == nil || !strings.Contains(err.Error(), "starting address claim") ||
-		!strings.Contains(err.Error(), "claim write failed") {
+	if !errors.Is(err, errClaimWrite) {
 		t.Fatalf("state err = %v, want surfaced claim write failure", err)
 	}
 }
@@ -342,8 +341,7 @@ func TestClientStartupWritePanicReportsError(t *testing.T) {
 	defer h.Release()
 
 	err = waitState(t, h, "error")
-	if err == nil || !strings.Contains(err.Error(), "panic during address claim") ||
-		!strings.Contains(err.Error(), "claim write panic") {
+	if err == nil || !strings.Contains(err.Error(), "claim write panic") {
 		t.Fatalf("state err = %v, want recovered claim-write panic", err)
 	}
 }
