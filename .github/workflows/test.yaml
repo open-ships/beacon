@@ -39,9 +39,14 @@ jobs:
             exit 1
           fi
           go vet ./...
-          CGO_ENABLED=0 go build ./...
         fi
         go test ./... -timeout 300s
+        artifact_dir=$(mktemp -d)
+        for arch in amd64 arm64; do
+          binary="$artifact_dir/beacon-$arch"
+          CGO_ENABLED=0 GOARCH="$arch" go build -o "$binary" ./cmd/beacon
+          sh scripts/check-cgo-disabled.sh "$binary"
+        done
 
   browser:
     uses: open-ships/ci/.github/workflows/check-go.yaml@95d4b3ed5452a99525c240688de146553e57cee0 # shared CI v1.2.0 candidate
