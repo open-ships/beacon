@@ -790,6 +790,13 @@ tests/browser/    Playwright end-to-end tests
 
 ## Development
 
+Every PR to `main` must bump `VERSION` above both the base branch's version and
+existing release tags, using SemVer (patch for fixes and maintenance, minor for
+compatible features, major for breaking changes). Run `just release-check`
+before pushing. CI rejects missing bumps, and the release workflow validates
+`VERSION` before publishing that exact version. The release workflow creates
+the annotated tag after successful CI; contributors should not tag manually.
+
 Common tasks use [just](https://just.systems):
 
 ```bash

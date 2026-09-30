@@ -9,6 +9,20 @@ permissions:
   contents: read
 
 jobs:
+  version:
+    name: Require version bump
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Test release checks
+        run: bash scripts/release-check-test.sh
+      - name: Validate version against the base commit and release tags
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: bash scripts/release-check.sh "$BASE_REF"
+
   test:
     strategy:
       fail-fast: false
@@ -70,7 +84,7 @@ jobs:
 
   release-gate:
     if: ${{ always() }}
-    needs: [test, browser, race, lint, secure, vessel]
+    needs: [version, test, browser, race, lint, secure, vessel]
     uses: open-ships/ci/.github/workflows/gate.yaml@95d4b3ed5452a99525c240688de146553e57cee0 # shared CI v1.2.0 candidate
     with:
       results: ${{ toJSON(needs) }}

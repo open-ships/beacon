@@ -70,6 +70,11 @@ test-browser-ui:
 test-race:
     go test -race ./...
 
+# require an explicit version bump above main and existing release tags
+release-check:
+    git fetch origin main --tags
+    bash scripts/release-check.sh origin/main
+
 # run Linux vessel resource and SQLite recovery release gates
 vessel-gate:
     bash scripts/vessel-release-gate.sh
