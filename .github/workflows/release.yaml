@@ -18,13 +18,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  version:
+    name: Validate release version
     if: >-
       ${{
         github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.event == 'push' &&
         github.event.workflow_run.head_repository.full_name == github.repository
       }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - run: bash scripts/release-check.sh
+
+  release:
+    needs: version
     uses: open-ships/ci/.github/workflows/release-go.yaml@95d4b3ed5452a99525c240688de146553e57cee0 # shared CI v1.2.0 candidate
     with:
       commit-sha: ${{ github.event.workflow_run.head_sha }}
