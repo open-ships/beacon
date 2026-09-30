@@ -20,6 +20,7 @@ import (
 	"github.com/open-ships/beacon/internal/metrics"
 	"github.com/open-ships/beacon/internal/model"
 	"github.com/open-ships/beacon/internal/msg"
+	"github.com/open-ships/beacon/internal/n2kcatalog"
 	"github.com/open-ships/beacon/internal/retry"
 	"github.com/open-ships/beacon/internal/stats"
 )
@@ -32,7 +33,7 @@ import (
 var ErrNotEncodable = errors.New("envelope cannot be encoded for CAN transmission")
 
 const (
-	// n2k subscriptions and writes are bounded in v0.3. Keep Beacon's budgets
+	// n2k subscriptions and writes are bounded. Keep Beacon's budgets
 	// explicit: a larger receive window absorbs short CAN bursts while the
 	// manager converts messages, and the write queue retains n2k's conservative
 	// default backpressure bound. extraOpts are appended after these defaults so
@@ -224,7 +225,7 @@ type busSubscriber struct {
 	ch    chan *msg.Envelope
 }
 
-// run maintains the client: (re)connect, pump Receive into subscribers,
+// run maintains the client: (re)connect, pump messages into subscribers,
 // back off on failure, until cancelled by the last Release.
 func (bc *busClient) run(ctx context.Context) {
 	defer bc.wg.Done()
@@ -262,7 +263,7 @@ func (bc *busClient) run(ctx context.Context) {
 			n2k.WithWriteQueue(clientWriteQueue),
 		)
 		opts = append(opts, bc.mgr.extraOpts...)
-		client, err := bc.newClient(ctx, opts...)
+		client, received, err := bc.newClient(ctx, opts...)
 		if err != nil {
 			bc.setState("error", err)
 			consecutiveFailures++
@@ -287,11 +288,9 @@ func (bc *busClient) run(ctx context.Context) {
 		bc.setState("up", nil)
 		connectedAt := time.Now()
 
-		// n2k's real socketcan/usbcan Bus.Run implementations ignore ctx
-		// (they only unblock when the underlying socket/port is closed), so
-		// cancelling ctx would not by itself end the Receive loop on real
-		// hardware. Force-close the client on cancellation; client.Close is
-		// idempotent, so racing the loop-exit Close below is harmless.
+		// Close on cancellation even for custom buses that only stop when
+		// their transport closes. Client.Close is idempotent and joins startup
+		// and transport workers, so racing the loop-exit Close is safe.
 		iterDone := make(chan struct{})
 		go func() {
 			select {
@@ -301,37 +300,10 @@ func (bc *busClient) run(ctx context.Context) {
 			}
 		}()
 
-		var receiveErr error
-		for m, err := range client.Receive() {
-			if err != nil {
-				receiveErr = err
-				bc.mgr.log.Debug("n2k receive error", "endpoint", bc.ep.Name, "err", err)
-				break
-			}
-			e, err := msg.FromPGN(m)
-			if err != nil {
-				bc.mgr.log.Debug("envelope conversion error", "err", err)
-				continue
-			}
-			e.Ingress = bc.ep.Kind + ":" + bc.ep.Name
-			e.OriginIngress = e.Ingress
-			if device, ok := client.DeviceAt(e.Source); ok {
-				name := device.RawName
-				e.DeviceName = &name
-				e.DeviceNameHex = fmt.Sprintf("%016X", name)
-				if list, ok := m.(*pgn.ParameterGroupNumberListTransmitAndReceive); ok {
-					bc.recordSupportedPGNs(name, list)
-				}
-			}
-			bc.maybeRequestPGNList(ctx, client, e.Source)
-			bc.broadcast(ctx, e)
-		}
-		if receiveErr == nil {
-			receiveErr = client.Err()
-		}
-		bc.requestWG.Wait()
-		// Receive ended: client dead or ctx cancelled.
+		receiveErr := <-received
+		// Closing cancels pending discovery requests before joining them.
 		_ = client.Close()
+		bc.requestWG.Wait()
 		close(iterDone) // retire this iteration's close watchdog
 		bc.mu.Lock()
 		bc.client = nil
@@ -367,17 +339,66 @@ func (bc *busClient) run(ctx context.Context) {
 	}
 }
 
-func (bc *busClient) newClient(ctx context.Context, opts ...n2k.Option) (client *n2k.Client, err error) {
+// newClient registers and drains a scanner before starting the bus. The pump
+// must run during Start: waiting for address claiming before consuming traffic
+// lets a busy bus fill n2k's bounded startup backlog.
+func (bc *busClient) newClient(ctx context.Context, opts ...n2k.Option) (client *n2k.Client, received <-chan error, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			if client != nil {
-				_ = client.Close()
-			}
-			client = nil
 			err = fmt.Errorf("bus %s:%s: n2k client startup panic: %v", bc.ep.Kind, bc.ep.Name, r)
 		}
+		if err != nil && client != nil {
+			_ = client.Close()
+			if received != nil {
+				<-received
+			}
+			bc.mu.Lock()
+			clear(bc.supported)
+			clear(bc.requested)
+			clear(bc.deviceSeen)
+			bc.mu.Unlock()
+			client = nil
+		}
 	}()
-	return n2k.NewClient(ctx, opts...)
+	client, err = n2k.NewUnstartedClient(ctx, opts...)
+	if err != nil {
+		return nil, nil, err
+	}
+	scanner := client.Scanner() // Subscribes immediately, unlike Receive's iterator.
+	done := make(chan error, 1)
+	received = done
+	go func(client *n2k.Client) { done <- bc.receive(ctx, client, scanner) }(client)
+	err = client.Start()
+	return client, received, err
+}
+
+func (bc *busClient) receive(ctx context.Context, client *n2k.Client, scanner *n2k.Scanner) error {
+	defer func() { _ = scanner.Close() }()
+	for scanner.Next() {
+		m := scanner.Message()
+		e, err := msg.FromPGN(m)
+		if err != nil {
+			bc.mgr.log.Debug("envelope conversion error", "err", err)
+			continue
+		}
+		e.Ingress = bc.ep.Kind + ":" + bc.ep.Name
+		e.OriginIngress = e.Ingress
+		if device, ok := client.DeviceAt(e.Source); ok {
+			name := device.RawName
+			e.DeviceName = &name
+			e.DeviceNameHex = fmt.Sprintf("%016X", name)
+			if list, ok := m.(*pgn.ParameterGroupNumberListTransmitAndReceive); ok {
+				bc.recordSupportedPGNs(name, list)
+			}
+		}
+		bc.maybeRequestPGNList(ctx, client, e.Source)
+		bc.broadcast(ctx, e)
+	}
+	if err := scanner.Err(); err != nil {
+		bc.mgr.log.Debug("n2k receive error", "endpoint", bc.ep.Name, "err", err)
+		return err
+	}
+	return client.Err()
 }
 
 func (bc *busClient) broadcast(ctx context.Context, e *msg.Envelope) {
@@ -489,9 +510,9 @@ func (bc *busClient) recordSupportedPGNs(name uint64, resp *pgn.ParameterGroupNu
 	bc.touchDeviceLocked(name, time.Now())
 	lists := bc.supported[name]
 	switch uint64Value(resp.FunctionCode) {
-	case uint64(pgn.TransmitPGNList):
+	case uint64(pgn.PgnListFunctionTransmitPGNList):
 		lists.Transmit = values
-	case uint64(pgn.ReceivePGNList):
+	case uint64(pgn.PgnListFunctionReceivePGNList):
 		lists.Receive = values
 	default:
 		bc.mu.Unlock()
@@ -507,6 +528,11 @@ func (bc *busClient) maybeRequestPGNList(ctx context.Context, client *n2k.Client
 		return
 	}
 	bc.mu.Lock()
+	if bc.client != client {
+		// The receive pump also runs during startup, before writes are ready.
+		bc.mu.Unlock()
+		return
+	}
 	bc.touchDeviceLocked(device.RawName, time.Now())
 	if time.Since(bc.requested[device.RawName]) < time.Minute {
 		bc.mu.Unlock()
@@ -604,9 +630,7 @@ func (m *Manager) Devices() []DeviceInfo {
 				IndustryGroupName:       pgn.IndustryCodeConst(name.IndustryGroup).String(),
 				ArbitraryAddressCapable: d.RawName&(uint64(1)<<63) != 0,
 			}
-			if functions := pgn.DeviceFunctionConstMap[int(name.DeviceClass)]; functions != nil {
-				di.DeviceFunctionName = functions[int(name.DeviceFunction)]
-			}
+			di.DeviceFunctionName = n2kcatalog.DeviceFunctionName(name.DeviceClass, name.DeviceFunction)
 			if d.ProductInfo != nil {
 				di.Model = strings.TrimSpace(d.ProductInfo.ModelId)
 				di.Serial = strings.TrimSpace(d.ProductInfo.ModelSerialCode)

@@ -13,6 +13,7 @@ import (
 	n2k "github.com/open-ships/n2k"
 	"github.com/open-ships/n2k/pgn"
 
+	"github.com/open-ships/beacon/internal/n2kcatalog"
 	"github.com/open-ships/beacon/internal/stats"
 )
 
@@ -317,10 +318,7 @@ func applySourceDeviceName(device *sourceDeviceAggregate, rawName uint64) {
 	applySourceManufacturer(device, name.ManufacturerCode)
 
 	className := pgn.DeviceClassConst(name.DeviceClass).String()
-	functionName := ""
-	if functions := pgn.DeviceFunctionConstMap[int(name.DeviceClass)]; functions != nil {
-		functionName = functions[int(name.DeviceFunction)]
-	}
+	functionName := n2kcatalog.DeviceFunctionName(name.DeviceClass, name.DeviceFunction)
 	if functionName == "" {
 		functionName = fmt.Sprintf("function %d", name.DeviceFunction)
 	}

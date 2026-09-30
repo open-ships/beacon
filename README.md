@@ -744,6 +744,10 @@ Important design invariants:
 
 - One persistent appliance NAME is reused across restarts and independently
   connected bus endpoints.
+- Bus endpoints consume received messages during transport readiness and
+  address claiming, using n2k's staged startup API. They report "up" only after
+  claiming succeeds. Receive buffers remain bounded; sustained consumer lag can
+  still cause overflow.
 - Raw wire values remain canonical; physical values and catalog metadata are
   additive.
 - Every connector route declares one bridge mode and one delivery class.

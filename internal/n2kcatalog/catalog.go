@@ -142,3 +142,14 @@ func normalize(value string) string {
 		return -1
 	}, value)
 }
+
+// DeviceFunctionName resolves a function within its device class. n2k's
+// indirect enumeration packs the class into the high byte. Unknown pairs
+// retain Beacon's empty-name contract so callers can supply their own fallback.
+func DeviceFunctionName(class, function uint8) string {
+	name := pgn.DeviceFunctionConst(uint16(class)<<8 | uint16(function)).String()
+	if strings.HasPrefix(name, "DeviceFunctionConst(") {
+		return ""
+	}
+	return name
+}

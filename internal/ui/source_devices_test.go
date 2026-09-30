@@ -16,11 +16,11 @@ import (
 func TestSourceDeviceRowsOrderIdentityAndTraffic(t *testing.T) {
 	now := time.Now().UTC()
 	garminName := n2k.DeviceName{
-		IdentityNumber: 301, ManufacturerCode: uint16(pgn.Garmin),
+		IdentityNumber: 301, ManufacturerCode: uint16(pgn.ManufacturerCodeGarmin),
 		DeviceClass: 25, DeviceFunction: 130,
 	}.Pack(true)
 	raymarineName := n2k.DeviceName{
-		IdentityNumber: 1201, ManufacturerCode: uint16(pgn.Raymarine),
+		IdentityNumber: 1201, ManufacturerCode: uint16(pgn.ManufacturerCodeRaymarine),
 		DeviceClass: 25, DeviceFunction: 130, DeviceInstance: 2, SystemInstance: 1,
 	}.Pack(true)
 	claimPayload := make([]byte, 8)
